@@ -81,7 +81,6 @@ class MultiMeshRayCasterCamera(RayCasterCamera, MultiMeshRayCaster):
         self._data.image_mesh_ids = torch.zeros(
             self._num_envs, *self.image_shape, 1, device=self.device, dtype=torch.int16
         )
-
     def _initialize_rays_impl(self):
         # Create all indices buffer
         self._ALL_INDICES = torch.arange(self._view.count, device=self._device, dtype=torch.long)
@@ -179,7 +178,7 @@ class MultiMeshRayCasterCamera(RayCasterCamera, MultiMeshRayCaster):
         # draw_interface.draw_lines(start_pts.tolist(), end_pts.tolist(), lines_colors, line_thicknesses)
 
         # ray cast and store the hits
-        self.ray_hits_w, ray_depth, ray_normal, _, ray_mesh_ids = raycast_dynamic_meshes(
+        self.ray_hits_w, ray_depth, ray_normal, ray_face_id, ray_mesh_ids = raycast_dynamic_meshes(
             self._ray_starts_w[env_ids],
             self._ray_directions_w[env_ids],
             mesh_ids_wp=self._mesh_ids_wp,  # list with shape num_envs x num_meshes_per_env
@@ -190,6 +189,7 @@ class MultiMeshRayCasterCamera(RayCasterCamera, MultiMeshRayCaster):
                 [name in self.cfg.data_types for name in ["distance_to_image_plane", "distance_to_camera"]]
             ),
             return_normal="normals" in self.cfg.data_types,
+            return_face_id="face_ids" in self.cfg.data_types,
             return_mesh_id=self.cfg.update_mesh_ids,
         )
 
@@ -213,6 +213,9 @@ class MultiMeshRayCasterCamera(RayCasterCamera, MultiMeshRayCaster):
             )
         if "normals" in self.cfg.data_types:
             self._data.output["normals"][env_ids_tensor] = ray_normal.view(-1, *self.image_shape, 3)
+
+        if "face_ids" in self.cfg.data_types:
+            self._data.output["face_ids"][env_ids_tensor] = ray_face_id.view(-1, *self.image_shape, 1)
 
         if self.cfg.update_mesh_ids:
             self._data.image_mesh_ids[env_ids_tensor] = ray_mesh_ids.view(-1, *self.image_shape, 1)
