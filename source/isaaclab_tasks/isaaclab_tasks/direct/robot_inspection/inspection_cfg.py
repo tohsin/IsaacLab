@@ -66,6 +66,14 @@ Env_params = {
         "env_file_path": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
         "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
         "env_prim_path": "/World/envs/env_.*/warehouse"
+    },
+    'empty_room':{
+        "num_faces": 2_000,
+        "semantics_type": "class",
+        "semantics_name": "wall",
+        "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
+        "file_name": "/home/tosin/IsaacLab_inspection/environments/empty_room.usd",
+        "prim_path": "/World/ground/terrain/empty_room" ,
     }
 }
 env_parameters = Env_params["complex_forklift_2"]
@@ -97,8 +105,15 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # semantic_config_path = "source/isaaclab_tasks/isaaclab_tasks/direct/robot_inspection/semantic_config_warehouse.json"
     episode_length_s = 42
     action_scale = 1.0  # [N]
-    #action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
-    # action_space = spaces.Discrete(3)
+    '''
+        Action Space Discrete(5):
+            - [v_high, ω_zero] (Go Straight Fast)
+            - [v_mid, ω_zero] (Go Straight Slow)
+            - [v_mid, ω_high_left] (Turn Left)
+            - [v_mid, ω_high_right] (Turn Right)
+            - [v_zero, ω_high_left] (Rotate in Place)
+    '''
+    # action_space = spaces.Discrete(5)
     action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
     #behind the shelves
     # viewer = ViewerCfg( eye=(-24, 29, 8.4), lookat=(-13, 27.6, 0.0))
@@ -187,25 +202,30 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         colorize_semantic_segmentation=False,
         debug_vis=False  # Disable for performance
     )
-    face_Camera_cfg = MultiMeshRayCasterCameraCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
-        update_period=0.1,
-        data_types=["face_ids"],#face_ids
-        offset=RayCasterCameraCfg.OffsetCfg(
-            pos=(0.3, 0.0, 0.15),
-            rot = (0,  0, -0.7071068, 0.7071068),
-            convention="ros"
-        ),
-        pattern_cfg= patterns.PinholeCameraPatternCfg(
-            height=_height,
-            width=_width,
-            focal_length=24.0,
-            horizontal_aperture=20.955,
-        ),
-        mesh_prim_paths = [inspection_objective_prim_path],
-        update_mesh_ids=True,
-        debug_vis=True
-    )
+    # face_Camera_cfg = MultiMeshRayCasterCameraCfg(
+    #     prim_path="/World/envs/env_.*/Robot/base_link",
+    #     update_period=0.1,
+    #     data_types=["face_ids"],#face_ids
+    #     offset=RayCasterCameraCfg.OffsetCfg(
+    #         pos=(0.3, 0.0, 0.15),
+    #         rot = (0,  0, -0.7071068, 0.7071068),
+    #         convention="ros"
+    #     ),
+    #     pattern_cfg= patterns.PinholeCameraPatternCfg(
+    #         height=_height,
+    #         width=_width,
+    #         focal_length=24.0,
+    #         horizontal_aperture=20.955,
+    #     ),
+    #     mesh_prim_paths = [inspection_objective_prim_path],
+    #     update_mesh_ids=True,
+    #     debug_vis=True
+    # )
+      # -- Occupancy Mapping --
+    use_occupancy_map: bool = True
+    occupancy_map_dims: tuple = (80, 80, 32)  # X, Y, Z dimensions in voxels
+    occupancy_map_voxel_size: float = 0.1  # Voxel size in meters (e.g., 10 cm)
+    
     LOCAL_MAP_SIZE = 40
 
     observation_space = spaces.Dict({
@@ -226,7 +246,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # scene
     scene: WarehouseSceneCfg = WarehouseSceneCfg(
         num_envs=16, 
-        env_spacing= 50.0, 
+        env_spacing= 60.0, 
         replicate_physics=True
     )
 
@@ -246,7 +266,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     # inspection
     init_inspection_threshold = 0.3 # Coverage % threshold to count as valid inspection
-    init_spatial_level = 6
+    init_spatial_level = 0
     max_inspection_threshold = 0.95
     curriculum_difficulty_increment = 0.05
     coverage_reward = 3.0

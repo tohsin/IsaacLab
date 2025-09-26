@@ -31,12 +31,12 @@ from isaaclab.markers.config import RAY_CASTER_MARKER_CFG
 # from isaaclab.assets import RigidObject, RigidObjectCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.utils.math import quat_mul, quat_apply, quat_conjugate, quat_apply_inverse
-# from semantic_manager import SemanticManager, add_semantic_tags_from_config
+# from semanc_manager import SemanticManager, add_semantic_tags_from_config
 from .inspection_cfg import Isaac3dinspectionEnvCfg
 import wandb
 from .currilum_manager import Curriculum
 from .utils import  NormalizeReward, visualise_faces
-# from .occupancy_grid_mapper import OccupancyGridMapper
+from .occupancy_grid_mapper import OccupancyGridMapper
 import time
 
 try:
@@ -46,7 +46,7 @@ except ModuleNotFoundError:
 import omni.usd
 from pxr import UsdGeom, Gf
 
-debug = False
+debug = True
 use_wandb = not debug
 
 class Isaac3dinspectionEnv(DirectRLEnv):
@@ -115,8 +115,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._inspection_camera = Camera(self.cfg.inspection_camera)
         self.scene.sensors["inspection_camera"] = self._inspection_camera
 
-        self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.face_Camera_cfg)
-        self.scene.sensors["raycaster_camera"] = self._raycaster_camera
+        # self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.face_Camera_cfg)
+        # self.scene.sensors["raycaster_camera"] = self._raycaster_camera
         # clone and replicate
     
         # we need to explicitly filter collisions for CPU simulation
@@ -155,9 +155,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # x = target
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
+            action_scale = 1.0  # [N]
+            '''
+                Action Space Discrete(5):
+                    - [v_high, ω_zero] (Go Straight Fast)
+                    - [v_mid, ω_zero] (Go Straight Slow)
+                    - [v_mid, ω_high_left] (Turn Left)
+                    - [v_mid, ω_high_right] (Turn Right)
+                    - [v_zero, ω_high_left] (Rotate in Place)
+            '''
             left_wheel_velocity = torch.zeros_like(self.actions, dtype=torch.float32, device=self.device)
             right_wheel_velocity = torch.zeros_like(self.actions, dtype=torch.float32, device=self.device)
-            # Action 0: Forward
+            # Action 0: Forward Fast
             left_wheel_velocity[self.actions == 0] = self.cfg.forward_vel
             right_wheel_velocity[self.actions == 0] = self.cfg.forward_vel
            
@@ -178,6 +187,33 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # print(f"[INFO] Wheel Commands: {self.wheel_commands.clone()}")
         self.robot.set_joint_velocity_target(target, joint_ids=self._wheel_joint_indices)
+
+    def update_map(self):
+        robot_pos = self.robot.data.root_pos_w[0, :]
+        robot_quat = self.robot.data.root_quat_w[0, :]  # (w, x, y, z)
+
+        camera_local_pos = torch.tensor(self.cfg.observation_camera.offset.pos, device=self.device)
+        camera_local_quat = torch.tensor(self.cfg.observation_camera.offset.rot, device=self.device)
+
+        rotated_offset = quat_apply(robot_quat, camera_local_pos)
+        camera_world_pos = robot_pos + rotated_offset
+
+        camera_world_quat = quat_mul(robot_quat, camera_local_quat)
+        
+        robot_quat_w = self.robot.data.root_state_w[0, 3:7]
+        camera_local_quat_ros = self._obs_camera.data.quat_w_ros[0]
+        camera_world_quat = quat_mul(robot_quat_w, camera_local_quat_ros)
+
+        pointcloud = create_pointcloud_from_depth(
+                intrinsic_matrix=self._obs_camera.data.intrinsic_matrices[0],
+                depth=self._obs_camera.data.output["distance_to_image_plane"][0],
+                position=camera_world_pos,
+                orientation= camera_world_quat,
+                device=self.device,
+        )
+        front_points_3d_world_np = pointcloud.cpu().numpy()
+        robot_pos_np = self.robot_pos[0, :3].cpu().numpy()
+
 
     def _compute_pose_observation(self) -> torch.Tensor:
         """Compute the robot's pose observation.
@@ -334,14 +370,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 pass
                 # self._visualise_faces(face_ids_to_show=occlusion_filtered_face_ids)
         return face_rewards, num_faces_inspected
-    
-        
+       
     def _get_rewards(self) -> torch.Tensor:
         """
             Face Coverage Rewards,
             Exploration Rewards,
             Visibility Rewards
         """
+        return torch.ones(self.num_envs, device=self.device)
         face_discovery_reward_fast, num_faces_inspected_fast = self._compute_face_discovery_reward_fast()
 
 
@@ -379,7 +415,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         #     print(f"Coverage Condition Met: {coverage_condition.nonzero(as_tuple=False).squeeze(-1)}")
 
         return coverage_condition, time_out
-    
     
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
