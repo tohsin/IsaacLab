@@ -46,63 +46,66 @@ def main():
     )
     # create environment
     env = gym.make(args_cli.task, cfg=env_cfg)
+    try:
 
-    # print info (this is vectorized environment)
-    #cartpole
-    #INFO]: Gym observation space: Box(-inf, inf, (1, 100, 100, 3), float32)
-    print(f"[INFO]: Gym observation space: {env.observation_space}")
-    print(f"[INFO]: Gym action space: {env.action_space}")
-    # reset environment
+        # print info (this is vectorized environment)
+        #cartpole
+        #INFO]: Gym observation space: Box(-inf, inf, (1, 100, 100, 3), float32)
+        print(f"[INFO]: Gym observation space: {env.observation_space}")
+        print(f"[INFO]: Gym action space: {env.action_space}")
+        # reset environment
 
-    env.reset()
-    # 
-    # simulate environment
-    while simulation_app.is_running():
-        # run everything in inference mode
-        with torch.inference_mode():
-            
-            def move_forward():
-                return torch.tensor([[1.0, 0.0]], device=env.unwrapped.device)
-            def turn_left():
-                return torch.tensor([[0.0, 1.0]], device=env.unwrapped.device)
-            def turn_right():
-                return torch.tensor([[0.0, -1.0]], device=env.unwrapped.device)
+        env.reset()
+        # 
+        # simulate environment
+        while simulation_app.is_running():
+            # run everything in inference mode
+            with torch.inference_mode():
+                
+                def move_forward():
+                    return torch.tensor([[0.3, 0.0]], device=env.unwrapped.device)
+                def turn_left():
+                    return torch.tensor([[0.0, 1.0]], device=env.unwrapped.device)
+                def turn_right():
+                    return torch.tensor([[0.0, -0.5]], device=env.unwrapped.device)
 
-            for i in range(3000):
-            
-                if i < 200:
-                    actions = move_forward()
-                elif i >= 70 and i < 160:
-                    actions = turn_right()
-                elif i >= 160 and i < 300:
-                    actions = move_forward()
-                elif i >= 300 and i < 400:
-                    actions = turn_right()
-                elif i >= 400 and i < 500:
-                    actions = move_forward()
-                elif i >= 500 and i < 600:
-                    actions = turn_right()
-                elif i >= 600 and i < 700:
-                    actions = move_forward()
-                elif i >= 700 and i < 800:
-                    actions = turn_right()
-                else: actions = move_forward()
-
-
-
-                # actions = torch.tensor([[0.3, -1.0]], device=env.unwrapped.device)
-                # actions = torch.from_numpy(actions).to(env.unwrapped.device)
-                # print(f"Actions: {actions}")
-                # actions = 2 * torch.rand(env.action_space.shape, device=env.unwrapped.device) - 1
-                # apply actions
-                # action = move_forward()
-                obs, rewards, terminated, truncated, info  = env.step(actions)
-                obs_v = obs['policy']
-            #now 
+                for i in range(3000):
+                
+                    if i < 40:
+                        actions = turn_left()
+                    elif i >= 40 and i < 130:
+                        actions = move_forward()
+                    elif i >= 130 and i < 170:
+                        actions = turn_left()   
+                    # elif i >= 70 and i < 160:
+                    #     actions = turn_right()
+                    # elif i >= 160 and i < 300:
+                    #     actions = move_forward()
+                    # elif i >= 300 and i < 400:
+                    #     actions = turn_right()
+                    # elif i >= 400 and i < 500:
+                    #     actions = move_forward()
+                    # elif i >= 500 and i < 600:
+                    #     actions = turn_right()
+                    # elif i >= 600 and i < 700:
+                    #     actions = move_forward()
+                    # elif i >= 700 and i < 800:
+                    #     actions = turn_right()
+                    # else: actions = move_forward()
 
 
-    # close the simulator
-    env.close() 
+
+                    # actions = torch.tensor([[0.3, -1.0]], device=env.unwrapped.device)
+                    # actions = torch.from_numpy(actions).to(env.unwrapped.device)
+                    # print(f"Actions: {actions}")
+                    # actions = 2 * torch.rand(env.action_space.shape, device=env.unwrapped.device) - 1
+                    # apply actions
+                    # action = move_forward()
+                    obs, rewards, terminated, truncated, info  = env.step(actions)
+                    obs_v = obs['policy']
+                #now 
+    finally:
+          env.close()
 
 
 if __name__ == "__main__":

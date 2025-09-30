@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 
 
+from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.envs.utils import spaces
 from isaaclab.sensors.camera import tiled_camera
 import isaaclab.sim as sim_utils
@@ -72,11 +73,11 @@ Env_params = {
         "semantics_type": "class",
         "semantics_name": "wall",
         "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
-        "file_name": "/home/tosin/IsaacLab_inspection/environments/empty_room.usd",
-        "prim_path": "/World/ground/terrain/empty_room" ,
+        "env_prim_path": "/World/envs/env_.*/warehouse" ,
+        "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
     }
 }
-env_parameters = Env_params["complex_forklift_2"]
+env_parameters = Env_params["empty_room"]
 
 @configclass
 class WarehouseSceneCfg(InteractiveSceneCfg):
@@ -144,6 +145,33 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     wheel_radius = 0.098
     forward_vel = 5.5
     turn_vel = 5.0
+    # Occlusion Objects, Cone, Cuboid and Sphere
+    cube_cfg = RigidObjectCfg( 
+        prim_path="/World/envs/env_.*/Cube",
+        spawn=sim_utils.CuboidCfg(
+            size=(0.5, 0.5, 1.0),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0))
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(3.0, 3.0, 0.02))
+    )
+
+    cone_cfg = RigidObjectCfg( 
+        prim_path="/World/envs/env_.*/Cone",
+        spawn=sim_utils.ConeCfg(
+            radius=0.3,
+            height=1.0,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(-3.0, 15.0, 0.02))
+    )
+
+    
 
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
@@ -223,9 +251,13 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # )
       # -- Occupancy Mapping --
     use_occupancy_map: bool = True
-    occupancy_map_dims: tuple = (80, 80, 32)  # X, Y, Z dimensions in voxels
-    occupancy_map_voxel_size: float = 0.1  # Voxel size in meters (e.g., 10 cm)
-    
+    occupancy_map_resolution: float = 0.25  # Voxel size in meters (e.g., 25 cm)
+    occupancy_map_bounds: dict = {
+        "x_min": -10.5, "x_max": 9.5,
+        "y_min": -12.5, "y_max": 18.0,
+        "z_min": 0.0, "z_max": 2.5
+    }
+
     LOCAL_MAP_SIZE = 40
 
     observation_space = spaces.Dict({

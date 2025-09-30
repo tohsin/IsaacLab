@@ -1,7 +1,90 @@
 import numpy as np
 import warp as wp
 import open3d as o3d
-from .warp_occupancy_fast import update_occupancy_fast, clamp_map_values
+from scipy.spatial.transform import Rotation 
+from .warp_occupancy_fast import mark_visible_voxels, update_occupancy_fast, clamp_map_values, reset_maps_kernel
+
+
+class InteractiveVoxelVisualizer:
+    """Manages an interactive Open3D visualization window."""
+    def __init__(self, voxel_size: float, title="Voxel Grid"):
+        self.vis = o3d.visualization.Visualizer()
+        self.vis.create_window(window_name=title)
+
+        self.voxel_size = voxel_size
+        self.grid = o3d.geometry.VoxelGrid()
+        self._initialized = False
+        self.robot_pose_marker = None
+
+    def update_grid(self, points, colors):
+        """Updates the point cloud geometry in the visualizer."""
+        if points.shape[0] == 0:
+            # Clear the geometry if there are no points
+            if self._initialized:
+                self.grid.clear()
+                self.vis.update_geometry(self.grid)
+            return
+        temp_pcd = o3d.geometry.PointCloud()
+        try:
+            temp_pcd.points = o3d.utility.Vector3dVector(points)
+            temp_pcd.colors = o3d.utility.Vector3dVector(colors)
+            new_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(temp_pcd, voxel_size=self.voxel_size)
+        except Exception as e:
+            print(f"Error creating voxel grid: {e}")
+            return
+
+        if not self._initialized:
+            self.grid = new_grid
+            self.vis.add_geometry(self.grid)
+            self._initialized = True
+
+            view_ctl = self.vis.get_view_control()
+            view_ctl.set_lookat([0.0, 0.0, 0.3])  # Point the camera at the center of your map
+            view_ctl.set_front([-2, -1, 0.8]) # Set the camera's position (where it's looking from)
+            view_ctl.set_up([0, 0, 1])     # Define the "up" direction (Z-axis is up)
+            view_ctl.set_zoom(0.1)
+
+        else:
+            self.vis.remove_geometry(self.grid, reset_bounding_box=False)
+            self.grid = new_grid # Combine the new grid into our existing one
+            self.vis.add_geometry(self.grid, reset_bounding_box=False)
+        # Process events to keep the window responsive
+        self.vis.poll_events()
+        self.vis.update_renderer()
+    
+    def update_robot_pose(self, position: np.ndarray, orientation_quat: np.ndarray):
+        """Creates or updates a coordinate frame representing the robot's pose."""
+        # Create the coordinate frame geometry
+        # The size parameter controls how large the axis marker is
+        pose_marker = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+
+        # Create a 4x4 transformation matrix from the position and quaternion
+        transform_matrix = np.eye(4)
+        
+        # Isaac Sim uses (w, x, y, z), while SciPy uses (x, y, z, w)
+        # We need to convert from Isaac Sim's convention to SciPy's
+        w, x, y, z = orientation_quat
+        scipy_quat = [x, y, z, w]
+        
+        # Set the rotation part of the matrix
+        transform_matrix[:3, :3] = Rotation.from_quat(scipy_quat).as_matrix()
+        # Set the translation part of the matrix
+        transform_matrix[:3, 3] = position
+        
+        # Apply the transformation to the coordinate frame
+        pose_marker.transform(transform_matrix)
+        
+        # If a marker already exists, remove it first
+        if self.robot_pose_marker is not None:
+            self.vis.remove_geometry(self.robot_pose_marker, reset_bounding_box=False)
+        
+        # Add the new, transformed marker to the visualizer
+        self.vis.add_geometry(pose_marker, reset_bounding_box=False)
+        self.robot_pose_marker = pose_marker
+
+    def close(self):
+        """Closes the visualization window."""
+        self.vis.destroy_window()
 
 class OccupancyGridMapper:
     """
@@ -11,41 +94,89 @@ class OccupancyGridMapper:
     def __init__(
                 self,
                 num_envs,
-                map_dims=(128, 128, 64),
-                voxel_size=0.1, 
-                map_origin=(-6.4, -6.4, 0.0),
+                map_bounds: dict,
+                resolution  :float,
+                visualize_env_id: int | None = None,
                 device="cuda"):
         """
         Initializes the occupancy grid mapper.
 
         Args:
-            map_dims (tuple): The dimensions of the grid in voxels (X, Y, Z).
+            map_bounds (dict): A dictionary with keys {'x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max'}.
             voxel_size (float): The size of each voxel in meters.
-            map_origin (tuple): The world coordinate (X, Y, Z) of the grid's corner.
+            resolution (float): The size of each voxel in meters.
+            visualize_env_id (int | None): The ID of the environment to visualize.
             device (str): The compute device for Warp ("cuda" or "cpu").
         """
         self.num_envs = num_envs
         self.device = device
-        self.map_dims = np.array(map_dims, dtype=np.int32)
-        self.voxel_size = float(voxel_size)
-        self.map_origin = np.array(map_origin, dtype=np.float32)
+        self.map_bounds = map_bounds
+        self.resolution = resolution
+
+        self.map_origin = np.array([
+            self.map_bounds['x_min'],
+            self.map_bounds['y_min'],
+            self.map_bounds['z_min']
+        ])
+         # Call this after setting map_bounds and resolution
+        self.initialize_map_dimensions()
         
         # Log-odds parameters
         self.log_odds_free = -0.4  # P(free) = 0.4
-        self.log_odds_occupied = 0.85 # P(occupied) = 0.7
+        self.log_odds_occupied = 0.8 # P(occupied) = 0.7
+        self.log_odds_neutral = 0.0
         self.clamp_min = -5.0      # Min log-odds
         self.clamp_max = 5.0       # Max log-odds
-        
-        # Initialize the occupancy map on the GPU
-        # A value of 0.0 represents a 50% probability (unknown state).
-        num_voxels = int(np.prod(self.map_dims))
-        self.occupancy_map = wp.zeros(self.num_envs, num_voxels, dtype=float, device=self.device)
-        print(f"Initialized Occupancy Grid on '{self.device}':")
-        print(f"  - Dimensions: {self.map_dims} voxels")
-        print(f"  - Voxel Size: {self.voxel_size} m")
-        print(f"  - Map Origin: {self.map_origin} m")
 
-    def update(self, sensor_origins: np.ndarray, point_clouds: np.ndarray):
+        self.log_odds_visible = 0.4
+        
+        self.visualizer = None
+        self.vis_env_id = visualize_env_id
+        if self.vis_env_id is not None:
+            if self.vis_env_id >= self.num_envs:
+                print(f"Warning: visualize_env_id {self.vis_env_id} is out of bounds. Disabling visualization.")
+                self.vis_env_id = None
+            else:
+                self.visualizer = InteractiveVoxelVisualizer(voxel_size=self.voxel_size, title=f"Voxel Grid (Env {self.vis_env_id})")
+                print(f"Visualization enabled for environment {self.vis_env_id}.")
+
+    def initialize_map_dimensions(self):
+        self.x_width = int(np.ceil((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.resolution))
+        self.y_width = int(np.ceil((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.resolution))
+        self.z_width = int(np.ceil((self.map_bounds['z_max'] - self.map_bounds['z_min']) / self.resolution))
+        self.map_dims = (self.x_width, self.y_width, self.z_width)
+        # voxel size in meters
+        self.voxel_size = self.resolution
+        self.num_voxels_per_map = int(np.prod(self.map_dims))
+        total_voxels = self.num_envs * self.num_voxels_per_map
+        self.occupancy_map = wp.zeros(total_voxels, dtype=float, device=self.device)
+        self.visibility_map = wp.zeros(total_voxels, dtype=float, device=self.device)
+
+
+
+        print(f"Initialized {self.num_envs} Occupancy Grids on '{self.device}':")
+        print(f"  - World Bounds: {self.map_bounds}")
+        print(f"  - Dimensions per grid: {self.map_dims} voxels")
+        print(f"  - Voxel Size: {self.voxel_size} m")
+        print(f"  - Total Voxels: {total_voxels}")
+        print(f"  - Map Origin (World Coords): {self.map_origin}")
+
+    def world_to_grid(self,  world_coords: np.ndarray) -> np.ndarray:
+        if world_coords.ndim == 1:
+            world_coords = world_coords.reshape(1, -1)
+        relative_coords = world_coords - self.map_origin
+        grid_indices = (relative_coords / self.voxel_size).astype(int)
+        return grid_indices.squeeze()
+
+    def grid_to_world(self, grid_indices: np.ndarray, center: bool = True) -> np.ndarray:
+        if grid_indices.ndim == 1:
+            grid_indices = grid_indices.reshape(1, -1)
+        world_coords = (grid_indices * self.voxel_size) + self.map_origin
+        if center:
+            world_coords += (self.voxel_size / 2.0)
+        return world_coords.squeeze()
+
+    def update(self, sensor_origins: np.ndarray, point_clouds: list[np.ndarray]):
         """
         Updates the occupancy grid with a new point cloud measurement.
 
@@ -53,46 +184,129 @@ class OccupancyGridMapper:
             sensor_origins (np.ndarray): A (N, 3) array for the sensor's positions.
             point_cloud (np.ndarray): An (N, 3) array of point cloud data.
         """
-        if point_clouds.shape[1] == 0:
-            return
-        wp_map_dims = wp.ivec3(self.map_dims[0], self.map_dims[1], self.map_dims[2])
-        # Convert inputs to Warp arrays
-        for i in range(self.num_envs):
-            num_points = point_clouds[i].shape[0]
-            if num_points == 0:
-                continue
-            sensor_origin = sensor_origins[i].cpu().numpy()
-            wp_sensor_origin = wp.vec3(sensor_origin[0], sensor_origin[1], sensor_origin[2])
-            wp_point_cloud = wp.array(point_clouds[i], dtype=wp.vec3, device=self.device)
-            wp_map_dims = wp.ivec3(self.map_dims[0], self.map_dims[1], self.map_dims[2])
-            
-            # Launch the kernels
-            wp.launch(
-                kernel=update_occupancy_fast,
-                dim=num_points,
-                inputs=[
-                    wp_point_cloud,
-                    wp_sensor_origin,
-                    wp.vec3(self.map_origin),
-                    self.voxel_size,
-                    wp_map_dims,
-                    self.occupancy_map,
-                    self.log_odds_free,
-                    self.log_odds_occupied,
-                ],
-                device=self.device
-            )
-            
-            wp.launch(
-                kernel=clamp_map_values,
-                dim=self.occupancy_map.size,
-                inputs=[self.occupancy_map, self.clamp_min, self.clamp_max],
-                device=self.device
-            )
-            
-            wp.synchronize()
+        valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
 
-    def get_occupied_voxels(self, threshold: float = 0.7) -> np.ndarray:
+        if not valid_indices:
+            return
+        concatenated_pc = np.vstack([point_clouds[i] for i in valid_indices])
+        env_indices_list = [np.full(point_clouds[i].shape[0], i, dtype=np.int32) for i in valid_indices]
+        env_indices = np.concatenate(env_indices_list)
+        num_total_points = concatenated_pc.shape[0]
+
+        if num_total_points == 0:
+            return
+        static_map_origins = np.tile(self.map_origin, (self.num_envs, 1))
+
+        wp_point_cloud = wp.array(concatenated_pc, dtype=wp.vec3, device=self.device)
+        wp_sensor_origins = wp.array(sensor_origins, dtype=wp.vec3, device=self.device)
+        wp_map_origins = wp.array(static_map_origins, dtype=wp.vec3, device=self.device)
+        wp_env_indices = wp.array(env_indices, dtype=int, device=self.device)
+        wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
+
+        wp.launch(
+            kernel=update_occupancy_fast,
+            dim=num_total_points,
+            inputs=[
+                wp_point_cloud,
+                wp_sensor_origins,
+                wp_map_origins,
+                wp_env_indices,
+                self.voxel_size,
+                wp_map_dims,
+                self.occupancy_map,
+                self.log_odds_free,
+                self.log_odds_occupied,
+            ],
+            device=self.device
+        )
+            
+        wp.launch(
+            kernel=clamp_map_values,
+            dim=self.occupancy_map.size,
+            inputs=[self.occupancy_map, self.clamp_min, self.clamp_max],
+            device=self.device
+        )
+        
+        wp.synchronize()
+
+    def update_visibility(self, sensor_origins: np.ndarray, point_clouds: list[np.ndarray]):
+        valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
+        if not valid_indices:
+            return
+        
+        concatenated_pc = np.vstack([point_clouds[i] for i in valid_indices])
+        env_indices_list = [np.full(point_clouds[i].shape[0], i, dtype=np.int32) for i in valid_indices]
+        env_indices = np.concatenate(env_indices_list)
+        num_total_points = concatenated_pc.shape[0]
+        if num_total_points == 0:
+            return
+        static_map_origins = np.tile(self.map_origin, (self.num_envs, 1))
+        
+        wp_point_cloud = wp.array(concatenated_pc, dtype=wp.vec3, device=self.device)
+        wp_sensor_origins = wp.array(sensor_origins, dtype=wp.vec3, device=self.device)
+        wp_map_origins = wp.array(static_map_origins, dtype=wp.vec3, device=self.device)
+        wp_env_indices = wp.array(env_indices, dtype=int, device=self.device)
+        wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
+
+        wp.launch(
+            kernel=mark_visible_voxels,
+            dim=num_total_points,
+            inputs=[
+                wp_point_cloud,
+                wp_sensor_origins,
+                wp_map_origins,
+                wp_env_indices,
+                self.voxel_size,
+                wp_map_dims,
+                self.visibility_map, # Pass the visibility map here
+                self.log_odds_visible, # Pass the value to add
+            ],
+            device=self.device
+        )
+        
+        # Optionally clamp the visibility map to prevent values from growing infinitely
+        wp.launch(
+            kernel=clamp_map_values,
+            dim=self.visibility_map.size,
+            inputs=[self.visibility_map, 0.0, self.clamp_max], # Min is 0
+            device=self.device
+        )
+        
+        
+
+    def reset_map(self, env_ids: list[int] = None):
+        if not env_ids:
+            return  
+            
+        num_envs_to_reset = len(env_ids)
+        if num_envs_to_reset == 0:
+            return
+        
+        env_ids_to_reset_wp = wp.array(env_ids, dtype=int, device=self.device)
+        
+        # Total number of voxels to reset across all specified environments
+        total_voxels_to_reset = num_envs_to_reset * self.num_voxels_per_map
+        
+        wp.launch(
+            kernel=reset_maps_kernel,
+            dim=total_voxels_to_reset, # Launch one thread for each voxel
+            inputs=[
+                self.occupancy_map,
+                env_ids_to_reset_wp,
+                self.num_voxels_per_map,
+            ],
+            device=self.device
+        )
+        wp.launch(
+            kernel=reset_maps_kernel,
+            dim=total_voxels_to_reset,
+            inputs=[self.visibility_map, env_ids_to_reset_wp, self.num_voxels_per_map],
+            device=self.device
+        )
+
+        wp.synchronize()
+
+    def get_occupied_voxels(self, env_id: int, map_origin: np.ndarray, threshold: float = 0.7) -> np.ndarray:
         """
         Retrieves the world coordinates of occupied voxels.
 
@@ -107,9 +321,13 @@ class OccupancyGridMapper:
         
         # Copy map from GPU to CPU
         map_data_cpu = self.occupancy_map.numpy()
+        start_index = env_id * self.num_voxels_per_map
+        end_index = start_index + self.num_voxels_per_map
+        env_map_data = map_data_cpu[start_index:end_index]
         
         # Find indices of occupied voxels
-        occupied_indices_linear = np.where(map_data_cpu > log_odds_threshold)[0]
+        occupied_indices_linear = np.where(env_map_data > log_odds_threshold)[0]
+
         
         if occupied_indices_linear.size == 0:
             return np.empty((0, 3))
@@ -122,31 +340,62 @@ class OccupancyGridMapper:
         grid_indices = np.vstack((x_indices, y_indices, z_indices)).T
         
         # Convert grid indices to world coordinates (voxel centers)
-        occupied_centers = (grid_indices * self.voxel_size) + self.map_origin + (self.voxel_size / 2.0)
+        occupied_centers = self.grid_to_world(grid_indices, center=True)
         return occupied_centers
 
-    def visualize(self, point_cloud: np.ndarray, sensor_origin: np.ndarray):
+    def get_voxel_states_as_points(self, env_id: int):
         """
-        Visualizes the current occupancy grid, the point cloud, and sensor origin.
+        Retrieves the states of all voxels for a given environment as points and colors.
+        - Occupied: Black
+        - Free: White
+        - Unknown: Grey
+        Note: Displaying all 'unknown' voxels can be computationally intensive.
+              For large maps, consider visualizing only 'occupied' and 'free' states.
         """
-        occupied_centers = self.get_occupied_voxels()
-        
-        # Create an Open3D VoxelGrid from the occupied centers
-        voxel_grid = o3d.geometry.VoxelGrid.create_from_points(
-            o3d.utility.Vector3dVector(occupied_centers),
-            voxel_size=self.voxel_size
-        )
-        voxel_grid.paint_uniform_color([0.0, 0.5, 1.0]) # Blue color for voxels
+        map_size = self.num_voxels_per_map
+        map_offset = env_id * map_size
 
-        # Create a point cloud geometry for visualization
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(point_cloud)
-        pcd.paint_uniform_color([1.0, 0.0, 0.0]) # Red for point cloud
+        env_map_np = self.occupancy_map.numpy()[map_offset : map_offset + map_size]
 
-        # Create a sphere for the sensor origin
-        sensor_mesh = o3d.geometry.TriangleMesh.create_sphere(radius=self.voxel_size * 2)
-        sensor_mesh.translate(sensor_origin)
-        sensor_mesh.paint_uniform_color([0.0, 1.0, 0.0]) # Green for sensor origin
+        # Define masks for each state
+        occupied_mask = env_map_np > self.log_odds_occupied
+        free_mask = env_map_np < self.log_odds_free
+        unknown_mask = (~occupied_mask & ~free_mask)
 
-        print(f"Visualizing {len(voxel_grid.get_voxels())} occupied voxels...")
-        o3d.visualization.draw_geometries([voxel_grid, pcd, sensor_mesh])
+        # Get linear indices for each state
+        occupied_indices = np.where(occupied_mask)[0]
+        free_indices = np.where(free_mask)[0]
+        unknown_indices = np.where(unknown_mask)[0] # Only show non-neutral unknowns
+
+        # all_indices = np.concatenate([occupied_indices, free_indices, unknown_indices])
+        all_indices = occupied_indices
+
+        if all_indices.size == 0:
+            return np.array([]), np.array([])
+
+        # Assign colors based on state
+        colors = np.zeros((len(all_indices), 3))
+        colors[:len(occupied_indices)] = [0.0, 0.0, 0.0]      # Black
+        colors[len(occupied_indices):len(occupied_indices) + len(free_indices)] = [1.0, 1.0, 1.0] # White
+        colors[len(occupied_indices) + len(free_indices):] = [0.5, 0.5, 0.5] # Grey
+
+        # Convert linear indices to 3D grid coordinates
+        z = all_indices % self.map_dims[2]
+        y = (all_indices // self.map_dims[2]) % self.map_dims[1]
+        x = all_indices // (self.map_dims[1] * self.map_dims[2])
+
+        grid_indices = np.vstack([x, y, z]).T
+        world_points = self.grid_to_world(grid_indices, center=False) # Use voxel corners for viz
+
+        return world_points, colors
+
+    def update_visualization(self, robot_pos: np.ndarray, robot_quat: np.ndarray):
+        """Updates the interactive visualization for the configured environment."""
+        # This method is now called internally by update()
+        if self.visualizer is None:
+            return
+
+        points, colors = self.get_voxel_states_as_points(self.vis_env_id)
+        self.visualizer.update_grid(points, colors)
+
+        self.visualizer.update_robot_pose(robot_pos, robot_quat)

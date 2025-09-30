@@ -46,6 +46,7 @@ except ModuleNotFoundError:
 import omni.usd
 from pxr import UsdGeom, Gf
 
+visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
 debug = True
 use_wandb = not debug
 
@@ -74,13 +75,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             num_envs=self.num_envs,
             device=self.device
         )
+        if self.cfg.use_occupancy_map:
+            self.occupancy_mapper = OccupancyGridMapper(
+                num_envs=self.num_envs,
+                map_bounds=self.cfg.occupancy_map_bounds,
+                resolution=self.cfg.occupancy_map_resolution,
+                device=self.device,
+                # visualize_env_id= None
+                visualize_env_id=0 if debug else None
+            )
         self.rewardscaler = NormalizeReward(device=self.device)
-        # self.global_step_counter = 0
-        # Track the step of the last log to maintain the interval
         self.last_log_step = 0
+        self.visualization_timer = 0
+        self.visualization_interval = 10
 
     def close(self):
         """Cleanup for the environment."""
+        if self.cfg.use_occupancy_map and self.occupancy_mapper.visualizer:
+            self.occupancy_mapper.visualizer.close()
         super().close()
 
     def _setup_tensor_buffers(self):                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
@@ -99,8 +111,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
      
         self.success_rate = 0.0
         self.last_fork_lift_ids = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
-
-               
+     
     def _setup_scene(self):
         #Add robot, camera and terain to the scene
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -114,6 +125,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self._inspection_camera = Camera(self.cfg.inspection_camera)
         self.scene.sensors["inspection_camera"] = self._inspection_camera
+
+        #OOcclusion and Inspection Objects.
+        self.cube = RigidObject(self.cfg.cube_cfg)
+        self.scene.rigid_objects["cube"] = self.cube
+        
+        self.cone = RigidObject(self.cfg.cone_cfg)
+        self.scene.rigid_objects["cone"] = self.cone
 
         # self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.face_Camera_cfg)
         # self.scene.sensors["raycaster_camera"] = self._raycaster_camera
@@ -187,33 +205,115 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # print(f"[INFO] Wheel Commands: {self.wheel_commands.clone()}")
         self.robot.set_joint_velocity_target(target, joint_ids=self._wheel_joint_indices)
-
-    def update_map(self):
-        robot_pos = self.robot.data.root_pos_w[0, :]
-        robot_quat = self.robot.data.root_quat_w[0, :]  # (w, x, y, z)
+    
+    def _update_maps(self, visualise: bool = False):
+        
+        if not self.cfg.use_occupancy_map:
+            return
+        robot_pos_w = self.robot.data.root_pos_w
+        robot_quat_w = self.robot.data.root_quat_w # (w, x, y, z)
 
         camera_local_pos = torch.tensor(self.cfg.observation_camera.offset.pos, device=self.device)
         camera_local_quat = torch.tensor(self.cfg.observation_camera.offset.rot, device=self.device)
 
-        rotated_offset = quat_apply(robot_quat, camera_local_pos)
-        camera_world_pos = robot_pos + rotated_offset
+        ## Convert ROS (x, y, z, w) to math (w, x, y, z) for quat_mul
+        camera_local_quat = camera_local_quat[[3, 0, 1, 2]]
 
-        camera_world_quat = quat_mul(robot_quat, camera_local_quat)
+        rotated_offsets = quat_apply(robot_quat_w, camera_local_pos.expand_as(robot_pos_w))
+        camera_world_pos = robot_pos_w + rotated_offsets
+        camera_world_quat = quat_mul(robot_quat_w, camera_local_quat.expand_as(robot_quat_w))
+
+        point_clouds_list  = []
+        depth_data = self._obs_camera.data.output["distance_to_image_plane"]
+        intrinsic_matrices = self._obs_camera.data.intrinsic_matrices
+        for i in range(self.num_envs):
+
+            pointcloud = create_pointcloud_from_depth(
+                    intrinsic_matrix=intrinsic_matrices[i],
+                    depth=depth_data[i],
+                    position=camera_world_pos[i],
+                    orientation= camera_world_quat[i],
+                    device=self.device,
+            )
+            # To visualise the point cloud in my Scene
+            if i ==0 and visualise_point_cloud and visualise:
+                cfg = RAY_CASTER_MARKER_CFG.replace(prim_path="/Visuals/CameraPointCloud")
+                cfg.markers["hit"].radius = 0.002
+                pc_markers = VisualizationMarkers(cfg)
+                if pointcloud.size()[0] > 0:
+                    pc_markers.visualize(translations=pointcloud)
+            if pointcloud.shape[0] > 0:
+                # 1. Find the indices of all points that are not part of the floor
+                floor_mask = pointcloud[:, 2] > 0.05
+                valid_indices = torch.where(floor_mask)[0]
+
+                # 2. Check if we need to downsample these indices
+                if valid_indices.shape[0] > 1024:
+                    # Randomly shuffle the valid_indices
+                    perm = torch.randperm(valid_indices.shape[0], device=self.device)
+                    # Select the first 1024 shuffled indices
+                    final_indices = valid_indices[perm[:1024]]
+                else:
+                    # We have fewer than 1024 points, so keep all of them
+                    final_indices = valid_indices
+
+                # 3. Use the final list of indices to select points from the original pointcloud
+                pointcloud = pointcloud[final_indices]
+            else:
+                # Ensure pointcloud is an empty tensor if it was empty to begin with
+                pointcloud = torch.empty((0, 3), device=self.device)
+            point_clouds_list.append(pointcloud.cpu().numpy())
         
-        robot_quat_w = self.robot.data.root_state_w[0, 3:7]
-        camera_local_quat_ros = self._obs_camera.data.quat_w_ros[0]
-        camera_world_quat = quat_mul(robot_quat_w, camera_local_quat_ros)
-
-        pointcloud = create_pointcloud_from_depth(
-                intrinsic_matrix=self._obs_camera.data.intrinsic_matrices[0],
-                depth=self._obs_camera.data.output["distance_to_image_plane"][0],
-                position=camera_world_pos,
-                orientation= camera_world_quat,
-                device=self.device,
+        # -- 4. Call the Mapper Update --
+        self.occupancy_mapper.update(
+            sensor_origins=camera_world_pos.cpu().numpy(),
+            point_clouds=point_clouds_list,
         )
-        front_points_3d_world_np = pointcloud.cpu().numpy()
-        robot_pos_np = self.robot_pos[0, :3].cpu().numpy()
 
+        # Update Visibility Map
+        cam_data_insp = self._inspection_camera.data
+        camera_local_pos_insp = torch.tensor(self.cfg.inspection_camera.offset.pos, device=self.device)
+        camera_local_quat_insp = torch.tensor(self.cfg.inspection_camera.offset.rot, device=self.device)
+        
+        camera_local_quat_insp = camera_local_quat_insp[[3, 0, 1, 2]] # ROS to math convention
+
+        rotated_offsets_insp = quat_apply(robot_quat_w, camera_local_pos_insp.expand_as(robot_pos_w))
+        camera_world_pos_insp = robot_pos_w + rotated_offsets_insp
+        camera_world_quat_insp = quat_mul(robot_quat_w, camera_local_quat_insp.expand_as(robot_quat_w))
+        
+        point_clouds_list_insp = []
+        depth_data_insp = cam_data_insp.output["distance_to_image_plane"]
+        intrinsic_matrices_insp = cam_data_insp.intrinsic_matrices
+
+        for i in range(self.num_envs):
+
+            pointcloud_insp = create_pointcloud_from_depth(
+                    intrinsic_matrix=intrinsic_matrices_insp[i],
+                    depth=depth_data_insp[i],
+                    position=camera_world_pos_insp[i],
+                    orientation=camera_world_quat_insp[i],
+                    device=self.device,
+            )
+            if pointcloud_insp.shape[0] > 1024:
+                 perm = torch.randperm(pointcloud_insp.shape[0], device=self.device)
+                 pointcloud_insp = pointcloud_insp[perm[:1024]]
+            point_clouds_list_insp.append(pointcloud_insp.cpu().numpy())
+        self.occupancy_mapper.update_visibility(
+            sensor_origins=camera_world_pos_insp.cpu().numpy(),
+            point_clouds=point_clouds_list_insp,
+        )
+
+        # Update Visualizer
+        if self.occupancy_mapper.visualizer is not None:
+            vis_env_id = self.occupancy_mapper.vis_env_id
+
+            # Get the world pose for that specific robot
+            robot_pos_for_vis = self.robot.data.root_pos_w[vis_env_id].cpu().numpy()
+            robot_quat_for_vis = self.robot.data.root_quat_w[vis_env_id].cpu().numpy()
+            
+            # Call the updated visualization method with the pose data
+            self.occupancy_mapper.update_visualization(robot_pos_for_vis, robot_quat_for_vis)
+  
 
     def _compute_pose_observation(self) -> torch.Tensor:
         """Compute the robot's pose observation.
@@ -301,6 +401,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         return {"policy": obs}
 
     def step(self, action: torch.Tensor) -> tuple[dict, torch.Tensor, torch.Tensor, dict]:
+        self._update_maps(visualise=debug)
+
         if self.common_step_counter % self.cfg.logging_interval == 0:
             mean_coverage = np.mean(self.episode_log_buffer["coverage_percent"])
             mean_faces_discovered = np.mean(self.episode_log_buffer["faces_discovered"])
@@ -430,6 +532,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.episode_log_buffer["faces_discovered"].append(num_faces_inspected[i].item())
                 # self.discovered_faces_buffer[env_id].clear()
                 self.discovered_faces_buffer[env_id] = torch.tensor([], dtype=torch.float32, device=self.device)
+            if self.cfg.use_occupancy_map:
+                self.occupancy_mapper.reset_map(env_ids.cpu().tolist())
 
         if debug:
             pass
@@ -443,8 +547,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Sample random positions within specified range
         num_resets = len(env_ids)
         new_vel = torch.zeros((num_resets, 3), device=self.device)
-        new_pos, new_quat = self.curriculum.get_start_pos(num_resets)
-      
+        # new_pos, new_quat = self.curriculum.get_start_pos(num_resets)
+        new_pos = torch.zeros((num_resets, 3), device=self.device)
+        new_quat = torch.zeros((num_resets, 4), device=self.device)
+        new_quat[:, 0] = 1.0  # No rotation (w, x, y, z)
+
         # Combine into root state
         new_root_state = torch.cat([new_pos, new_quat, new_vel, torch.zeros((num_resets, 3), device=self.device)], dim=-1)
         
