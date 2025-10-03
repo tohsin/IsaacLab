@@ -69,14 +69,15 @@ Env_params = {
         "env_prim_path": "/World/envs/env_.*/warehouse"
     },
     'empty_room':{
-        "num_faces": 2_000,
+        "num_faces": 16,
         "semantics_type": "class",
-        "semantics_name": "wall",
+        "semantics_name": "inspection_goal",
         "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
         "env_prim_path": "/World/envs/env_.*/warehouse" ,
-        "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
+        "inspection_goal_prim_path": "/World/envs/env_.*/Cube",
     }
 }
+    #   "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/Cube",
 env_parameters = Env_params["empty_room"]
 
 @configclass
@@ -153,11 +154,24 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(),
             mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0))
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(3.0, 3.0, 0.02))
-    )
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
 
+            semantic_tags=[(env_parameters['semantics_type'], env_parameters['semantics_name'])]
+        ),
+        
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -3.0, 0.05))
+    )
+    sphere_cfg = RigidObjectCfg( 
+        prim_path="/World/envs/env_.*/Sphere",
+        spawn=sim_utils.SphereCfg(
+            radius=0.3,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(3.0, 5.0, 0.05))
+    )
     cone_cfg = RigidObjectCfg( 
         prim_path="/World/envs/env_.*/Cone",
         spawn=sim_utils.ConeCfg(
@@ -168,7 +182,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(-3.0, 15.0, 0.02))
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(-3.0, 15.0, 0.05))
     )
 
     
@@ -230,25 +244,25 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         colorize_semantic_segmentation=False,
         debug_vis=False  # Disable for performance
     )
-    # face_Camera_cfg = MultiMeshRayCasterCameraCfg(
-    #     prim_path="/World/envs/env_.*/Robot/base_link",
-    #     update_period=0.1,
-    #     data_types=["face_ids"],#face_ids
-    #     offset=RayCasterCameraCfg.OffsetCfg(
-    #         pos=(0.3, 0.0, 0.15),
-    #         rot = (0,  0, -0.7071068, 0.7071068),
-    #         convention="ros"
-    #     ),
-    #     pattern_cfg= patterns.PinholeCameraPatternCfg(
-    #         height=_height,
-    #         width=_width,
-    #         focal_length=24.0,
-    #         horizontal_aperture=20.955,
-    #     ),
-    #     mesh_prim_paths = [inspection_objective_prim_path],
-    #     update_mesh_ids=True,
-    #     debug_vis=True
-    # )
+    face_Camera_cfg = MultiMeshRayCasterCameraCfg(
+        prim_path="/World/envs/env_.*/Robot/base_link",
+        update_period=0.1,
+        data_types=["face_ids"],#face_ids
+        offset=RayCasterCameraCfg.OffsetCfg(
+            pos=(0.3, 0.0, 0.15),
+            rot = (0,  0, -0.7071068, 0.7071068),
+            convention="ros"
+        ),
+        pattern_cfg= patterns.PinholeCameraPatternCfg(
+            height=_height,
+            width=_width,
+            focal_length=24.0,
+            horizontal_aperture=20.955,
+        ),
+        mesh_prim_paths = [inspection_objective_prim_path],
+        update_mesh_ids=True,
+        debug_vis=True
+    )
       # -- Occupancy Mapping --
     use_occupancy_map: bool = True
     occupancy_map_resolution: float = 0.25  # Voxel size in meters (e.g., 25 cm)
@@ -258,7 +272,6 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "z_min": 0.0, "z_max": 2.5
     }
 
-    LOCAL_MAP_SIZE = 40
 
     observation_space = spaces.Dict({
 
@@ -272,6 +285,13 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             low=float("-inf"),
             high=float("inf"), 
             shape=(_height, _height, 6)
+        ),
+        "local-map": spaces.Box(
+            low=float("-inf"),
+            high=float("inf"), 
+            # Shape is (X, Y, Z, Channels). We have 2 channels: Occupancy and Visibility
+            shape=(21, 21, 11, 2), 
+            dtype=np.float32,
         )
     })
 
@@ -286,9 +306,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     #reward
 
-    mesh_coverage_reward_scale = 0.0001  # Scale for inspection coverage reward
-    ent_IG_reward_scale = 7e-4  # Scale for information gain reward via entropy reduction
-    visibility_IG_reward_scale = 1e-3  # Scale for visibility information gain reward
+    mesh_coverage_reward_scale = 3  # Scale for inspection coverage reward
+    information_gain_reward_scale = 7e-4  # Scale for information gain reward via entropy reduction
+    visibility_increase_reward_scale = 1e-3  # Scale for visibility information gain reward
     distance_reward_scale = 1.0  # Scale for distance-based rewards
     distance_reward_scale_beta = 2.0  # Beta parameter for distance-based rewards
     max_reward_distance = 3.0 #max distance for reward
@@ -311,7 +331,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     max_linear_velocity = 2.0
     max_angular_velocity = 4.0
     min_discovery_interval = 1.0
-    max_wheel_velocity = 20.41  # Max wheel velocity for the robot
+    max_wheel_velocity = 18.0 # Max wheel velocity for the robot
 
     # Logging
     logging_interval: int = 200

@@ -63,26 +63,28 @@ def main():
             with torch.inference_mode():
                 
                 def move_forward():
-                    return torch.tensor([[0.3, 0.0]], device=env.unwrapped.device)
+                    return torch.tensor([[0.5, 0.0]], device=env.unwrapped.device)
                 def turn_left():
                     return torch.tensor([[0.0, 1.0]], device=env.unwrapped.device)
                 def turn_right():
-                    return torch.tensor([[0.0, -0.5]], device=env.unwrapped.device)
+                    return torch.tensor([[0.0, -1.0]], device=env.unwrapped.device)
 
                 for i in range(3000):
                 
-                    if i < 40:
-                        actions = turn_left()
-                    elif i >= 40 and i < 130:
+                    if i < 60:
                         actions = move_forward()
-                    elif i >= 130 and i < 170:
-                        actions = turn_left()   
-                    # elif i >= 70 and i < 160:
-                    #     actions = turn_right()
-                    # elif i >= 160 and i < 300:
-                    #     actions = move_forward()
-                    # elif i >= 300 and i < 400:
-                    #     actions = turn_right()
+                    elif i >= 60 and i < 180:
+                        actions = turn_right()
+                    elif i >= 180 and i < 450:
+                        actions = move_forward()
+                    elif i >= 450 and i < 570:
+                        actions = turn_right()
+                    elif i >= 570 and i < 730:
+                        actions = move_forward()
+                    elif i >= 730 and i < 850:
+                        actions = turn_right()
+                    elif i >= 850 and i < 1000:
+                        actions = move_forward()
                     # elif i >= 400 and i < 500:
                     #     actions = move_forward()
                     # elif i >= 500 and i < 600:

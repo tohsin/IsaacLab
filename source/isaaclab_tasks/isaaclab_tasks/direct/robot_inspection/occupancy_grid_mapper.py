@@ -2,7 +2,13 @@ import numpy as np
 import warp as wp
 import open3d as o3d
 from scipy.spatial.transform import Rotation 
-from .warp_occupancy_fast import mark_visible_voxels, update_occupancy_fast, clamp_map_values, reset_maps_kernel
+from .warp_occupancy_fast import (
+    update_occupancy_fast, 
+    mark_visible_voxels, 
+    clamp_map_values, 
+    reset_maps_kernel, 
+    extract_local_maps_kernel
+)
 
 
 class InteractiveVoxelVisualizer:
@@ -271,8 +277,7 @@ class OccupancyGridMapper:
             inputs=[self.visibility_map, 0.0, self.clamp_max], # Min is 0
             device=self.device
         )
-        
-        
+          
 
     def reset_map(self, env_ids: list[int] = None):
         if not env_ids:
@@ -389,6 +394,51 @@ class OccupancyGridMapper:
 
         return world_points, colors
 
+    def get_local_maps(self, robot_positions_w: np.ndarray):
+        num_req_envs = robot_positions_w.shape[0]
+        if num_req_envs != self.num_envs:
+            raise ValueError(f"Provided robot_positions_w has {num_req_envs} envs, but mapper is configured for {self.num_envs}.")
+
+        local_dims = (21, 21, 11)
+        local_map_dims_wp = wp.vec3i(local_dims[0], local_dims[1], local_dims[2])
+        num_voxels_per_local_map = local_dims[0] * local_dims[1] * local_dims[2]
+        total_local_voxels = num_req_envs * num_voxels_per_local_map
+
+        # Prepare inputs for the kernel
+        wp_robot_pos = wp.array(robot_positions_w, dtype=wp.vec3, device=self.device)
+        wp_map_origin = wp.vec3(self.map_origin[0], self.map_origin[1], self.map_origin[2])
+        wp_global_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
+
+        # Create output arrays on the GPU
+        wp_local_occ_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
+        wp_local_vis_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
+
+        # Launch the extraction kernel
+        wp.launch(
+            kernel=extract_local_maps_kernel,
+            dim=total_local_voxels,
+            inputs=[
+                self.occupancy_map,
+                self.visibility_map,
+                wp_local_occ_map,
+                wp_local_vis_map,
+                wp_robot_pos,
+                wp_map_origin,
+                self.voxel_size,
+                wp_global_map_dims,
+                local_map_dims_wp,
+                self.num_voxels_per_map,
+                self.log_odds_neutral, # Value for out-of-bounds occupancy
+            ],
+            device=self.device
+        )
+        wp.synchronize()
+
+        # Convert to PyTorch tensors and reshape
+        local_occ_torch = wp.to_torch(wp_local_occ_map).view(num_req_envs, *local_dims)
+        local_vis_torch = wp.to_torch(wp_local_vis_map).view(num_req_envs, *local_dims)
+        
+        return local_occ_torch, local_vis_torch
     def update_visualization(self, robot_pos: np.ndarray, robot_quat: np.ndarray):
         """Updates the interactive visualization for the configured environment."""
         # This method is now called internally by update()
