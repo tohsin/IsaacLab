@@ -69,16 +69,28 @@ Env_params = {
         "env_prim_path": "/World/envs/env_.*/warehouse"
     },
     'empty_room':{
-        "num_faces": 16,
+        "num_faces": 4000,
         "semantics_type": "class",
         "semantics_name": "inspection_goal",
         "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
         "env_prim_path": "/World/envs/env_.*/warehouse" ,
-        "inspection_goal_prim_path": "/World/envs/env_.*/Cube",
+        "inspection_goal_prim_path": "/World/envs/env_.*/rubiks_cube",
     }
 }
-    #   "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/Cube",
 env_parameters = Env_params["empty_room"]
+
+# rubiks_cube_cfg = RigidObjectCfg(
+
+#     prim_path="/World/envs/env_.*/rubiks_cube",
+#     spawn=sim_utils.UsdFileCfg(
+#         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+#         semantic_tags=[("class", "inspection_goal")]
+#     ),
+#     init_state=RigidObjectCfg.InitialStateCfg(
+#         pos=(3.0, 3.0, 0.1), # Increased Z-pos slightly to ensure it's above the ground
+#         rot=(0.707, 0, 0, 0.707) # Example rotation to make it more interesting
+#     )
+# )
 
 @configclass
 class WarehouseSceneCfg(InteractiveSceneCfg):
@@ -111,12 +123,15 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         Action Space Discrete(5):
             - [v_high, ω_zero] (Go Straight Fast)
             - [v_mid, ω_zero] (Go Straight Slow)
+
             - [v_mid, ω_high_left] (Turn Left)
             - [v_mid, ω_high_right] (Turn Right)
-            - [v_zero, ω_high_left] (Rotate in Place)
+
+            - [v_zero, ω_high_left] (Rotate in Place left)
+            - [v_zero, ω_high_right] (Rotate in Place right)
     '''
-    # action_space = spaces.Discrete(5)
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+    action_space = spaces.Discrete(6)
+    # action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
     #behind the shelves
     # viewer = ViewerCfg( eye=(-24, 29, 8.4), lookat=(-13, 27.6, 0.0))
     # next to the Goal
@@ -141,26 +156,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             max_velocity_iteration_count=1
         ))
 
-    # robot
-    wheel_seperation = 	0.37558 # 0.37558
-    wheel_radius = 0.098
-    forward_vel = 5.5
-    turn_vel = 5.0
-    # Occlusion Objects, Cone, Cuboid and Sphere
-    cube_cfg = RigidObjectCfg( 
-        prim_path="/World/envs/env_.*/Cube",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.5, 0.5, 1.0),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+  
 
-            semantic_tags=[(env_parameters['semantics_type'], env_parameters['semantics_name'])]
-        ),
-        
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -3.0, 0.05))
-    )
+
     sphere_cfg = RigidObjectCfg( 
         prim_path="/World/envs/env_.*/Sphere",
         spawn=sim_utils.SphereCfg(
@@ -184,9 +182,6 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-3.0, 15.0, 0.05))
     )
-
-    
-
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
@@ -271,14 +266,17 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "y_min": -12.5, "y_max": 18.0,
         "z_min": 0.0, "z_max": 2.5
     }
-
-
+    action_dim = NotImplementedError
+    if isinstance(action_space, spaces.Discrete):
+        action_dim = action_space.n 
+    else:
+        action_dim = action_space.shape[0]
     observation_space = spaces.Dict({
 
         "robot-pose": spaces.Box(
             low=float("-inf"), 
             high=float("inf"),
-            shape=(13 + action_space.shape[0],),
+            shape=(13 + action_dim,),
             dtype=np.float32
         ),
         "cameras": spaces.Box(
@@ -306,9 +304,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     #reward
 
-    mesh_coverage_reward_scale = 3  # Scale for inspection coverage reward
-    information_gain_reward_scale = 7e-4  # Scale for information gain reward via entropy reduction
-    visibility_increase_reward_scale = 1e-3  # Scale for visibility information gain reward
+    mesh_coverage_reward_scale = 30  # Scale for inspection coverage reward
+    information_gain_reward_scale = 3e-4  # Scale for information gain reward via entropy reduction
+    visibility_increase_reward_scale = 6e-4  # Scale for visibility information gain reward
     distance_reward_scale = 1.0  # Scale for distance-based rewards
     distance_reward_scale_beta = 2.0  # Beta parameter for distance-based rewards
     max_reward_distance = 3.0 #max distance for reward
@@ -317,9 +315,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     movement_reward_scale = 0.05
 
     # inspection
-    init_inspection_threshold = 0.3 # Coverage % threshold to count as valid inspection
-    init_spatial_level = 0
-    max_inspection_threshold = 0.95
+    init_inspection_threshold = 0.2# Coverage % threshold to count as valid inspection
+    init_spatial_level = 4
+    max_inspection_threshold = 0.99
     curriculum_difficulty_increment = 0.05
     coverage_reward = 3.0
     # inspection_save_dir = "inspection_captures"
@@ -328,7 +326,12 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     min_episode_length = 2500
     max_faces_to_inspect = env_parameters["num_faces"]
 
-    max_linear_velocity = 2.0
+      # robot
+    wheel_separation = 	0.25 # 0.37558
+    wheel_radius = 0.098  #0.098 
+    forward_vel = 6.0
+    turn_vel = 9.0
+    max_linear_velocity = 1.3
     max_angular_velocity = 4.0
     min_discovery_interval = 1.0
     max_wheel_velocity = 18.0 # Max wheel velocity for the robot

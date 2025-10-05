@@ -32,9 +32,13 @@ class Curriculum:
 
         self.init_z = 0.06
         self.start_pos = [
-                    # [-10.0, 27.6, self.init_z, DEG_0], #Valid # at the back
-                    [-1.0, 5.0, self.init_z, DEG_90], #Valid
-                    [4.7, 7.4, self.init_z, DEG_NEG_90], # Valid
+                    [0, 0, self.init_z, DEG_0], #Valid # at the back
+                    [0, -5, self.init_z, DEG_NEG_180], 
+                    [-4.47, -5, self.init_z, DEG_90], 
+                    [1.15, -5.56, self.init_z, DEG_90], #Valid
+                    [1.15, 0, self.init_z, DEG_90], # Valid
+                    [-7.0, 1.74, self.init_z, DEG_0], # Navigation required here
+
                     [1.7818, 8.0840, 0.0635,  DEG_UNIQ], #Valid
                     [3.67, 3.87, self.init_z, DEG_NEG_180], #Valid
 
@@ -61,11 +65,11 @@ class Curriculum:
 
                     [-24.2, 11.41, self.init_z, DEG_NEG_90]]
         self.episode_length_schedule = [
-            1200, 1200,  # Levels 0, 1
-            1200, 1200,
+            1400, 1200,  # Levels 0, 1
+            1400, 1400,
 
-            1200, 1200,
-            1200, 1200,
+            1400, 1400,
+            2500, 2500,
 
             1200, 1200,
             1200, 1200,

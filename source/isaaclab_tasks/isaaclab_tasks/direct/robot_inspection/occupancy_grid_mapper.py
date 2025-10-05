@@ -274,7 +274,7 @@ class OccupancyGridMapper:
         wp.launch(
             kernel=clamp_map_values,
             dim=self.visibility_map.size,
-            inputs=[self.visibility_map, 0.0, self.clamp_max], # Min is 0
+            inputs=[self.visibility_map, 0.0, 1.0], # Min is 0
             device=self.device
         )
           

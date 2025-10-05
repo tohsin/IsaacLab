@@ -24,7 +24,7 @@ class NormalizeReward:
         if self.update_running_mean:
             self.return_rms.update(reward)
         if torch.isnan(self.return_rms.var).any():
-            print("NaN detected in reward variance!")
+            # print("NaN detected in reward variance!")
             # Handle NaN variance, e.g., by resetting it
             self.return_rms.var = torch.ones_like(self.return_rms.var)
         normalized_reward = reward/ (torch.sqrt(self.return_rms.var) + self.epsilon)

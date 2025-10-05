@@ -6,9 +6,6 @@
 from __future__ import annotations
 
 from collections import deque
-import math
-import os
-import cv2
 import gymnasium as gym
 import torch
 from collections.abc import Sequence
@@ -36,10 +33,11 @@ import wandb
 from .currilum_manager import Curriculum
 from .utils import  NormalizeReward, visualise_faces
 from .occupancy_grid_mapper import OccupancyGridMapper
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import time
 import torch.nn.functional as F
 visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
-debug = True
+debug = False
 use_wandb = not debug
 
 class Isaac3dinspectionEnv(DirectRLEnv):
@@ -63,7 +61,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             max_inspection_threshold=self.cfg.max_inspection_threshold,
             curriculum_difficulty_increment=self.cfg.curriculum_difficulty_increment,
             init_spatial_level=self.cfg.init_spatial_level,
-            num_steps=35,
+            num_steps=50,
             num_envs=self.num_envs,
             device=self.device
         )
@@ -91,9 +89,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
-        self.last_action = torch.zeros((self.num_envs, self.cfg.action_space.shape[0]), device=self.device)
-        # self.discovered_faces_buffer =  [set() for _ in range(self.num_envs)]
-        # Tensor version of the discovered faces buffer for fast computation but using empty lists
+
+        if isinstance(self.cfg.action_space, gym.spaces.Discrete):
+            action_shape = (self.num_envs, 1)
+        else:
+            action_shape = (self.num_envs, self.cfg.action_space.shape[0])
+
+        self.last_action = torch.zeros(action_shape, device=self.device)
         self.discovered_faces_buffer = [torch.tensor([], dtype=torch.float32, device=self.device) for _ in range(self.num_envs)]
 
         self.episode_log_buffer = {
@@ -109,6 +111,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         local_map_shape = self.cfg.observation_space["local-map"].shape
         self.prev_local_occ_map = torch.zeros((self.num_envs, *local_map_shape[:-1]), device=self.device)
         self.prev_local_vis_map = torch.zeros((self.num_envs, *local_map_shape[:-1]), device=self.device)
+        self.prev_coverage_ratio = torch.zeros(self.num_envs, device=self.device)
+
+        self.cached_rewards = {}
      
     def _setup_scene(self):
         #Add robot, camera and terain to the scene
@@ -123,8 +128,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.scene.sensors["inspection_camera"] = self._inspection_camera
 
         #OOcclusion and Inspection Objects.
-        self.cube = RigidObject(self.cfg.cube_cfg)
-        self.scene.rigid_objects["cube"] = self.cube
+        # self.cube = RigidObject(self.cfg.cube_cfg)
+        # self.scene.rigid_objects["cube"] = self.cub
+        cfg = sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+            scale=(5.0, 5.0, 5.0),
+            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            semantic_tags=[("class", "inspection_goal")]
+            )
+        cfg.func(
+            "/World/envs/env_.*/rubiks_cube", cfg, 
+            translation=(0, -3.0, 0.2), 
+            orientation=(0.70711, 0.0, 0.0, 0.70711)
+        )
         
         self.cone = RigidObject(self.cfg.cone_cfg)
         self.scene.rigid_objects["cone"] = self.cone
@@ -157,8 +174,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             angular_velocity = self.actions[:, 1] * self.cfg.max_angular_velocity  # Left/Right turn command
 
 
-            left_wheel_velocity = (linear_velocity - (angular_velocity * self.cfg.wheel_seperation / 2)) / self.cfg.wheel_radius
-            right_wheel_velocity = (linear_velocity + (angular_velocity * self.cfg.wheel_seperation / 2)) / self.cfg.wheel_radius
+            left_wheel_velocity = (linear_velocity - (angular_velocity * self.cfg.wheel_separation / 2)) / self.cfg.wheel_radius
+            right_wheel_velocity = (linear_velocity + (angular_velocity * self.cfg.wheel_separation / 2)) / self.cfg.wheel_radius
 
 
 
@@ -175,7 +192,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # x = target
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
-            action_scale = 1.0  # [N]
             '''
                 Action Space Discrete(5):
                     - [v_high, ω_zero] (Go Straight Fast)
@@ -184,21 +200,35 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     - [v_mid, ω_high_right] (Turn Right)
                     - [v_zero, ω_high_left] (Rotate in Place)
             '''
-            left_wheel_velocity = torch.zeros_like(self.actions, dtype=torch.float32, device=self.device)
-            right_wheel_velocity = torch.zeros_like(self.actions, dtype=torch.float32, device=self.device)
-            # Action 0: Forward Fast
-            left_wheel_velocity[self.actions == 0] = self.cfg.forward_vel
-            right_wheel_velocity[self.actions == 0] = self.cfg.forward_vel
-           
-            # Action 2: Turn Left
-            left_wheel_velocity[self.actions == 1] = -self.cfg.turn_vel
-            right_wheel_velocity[self.actions == 1] = self.cfg.turn_vel
+            actions = self.actions.squeeze(-1)
+            linear_velocity = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+            angular_velocity = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+            # Move Forward fast
+            linear_velocity[actions == 0] = self.cfg.max_linear_velocity
+            angular_velocity[actions == 0] = 0.0
+
+            # Move Forward slow
+            linear_velocity[actions == 1] = self.cfg.max_linear_velocity * 0.5
+            angular_velocity[actions == 1] = 0.0
+
+            # Action 2: Turn Left , while moving forward
+            linear_velocity[actions == 2] = self.cfg.max_linear_velocity * 0.5
+            angular_velocity[actions == 2] = self.cfg.max_angular_velocity
+
             # Action 3: Turn Right
+            linear_velocity[actions == 3] = self.cfg.max_linear_velocity * 0.5
+            angular_velocity[actions == 3] = -self.cfg.max_angular_velocity
 
-            left_wheel_velocity[self.actions == 2] = self.cfg.turn_vel
-            right_wheel_velocity[self.actions == 2] = -self.cfg.turn_vel
+            # Action 4: Rotate in Place (Left)
+            linear_velocity[actions == 4] = 0.0
+            angular_velocity[actions == 4] = self.cfg.max_angular_velocity
 
-            
+             # Action 4: Rotate in Place (Right)
+            linear_velocity[actions == 5] = 0.0
+            angular_velocity[actions == 5] = -self.cfg.max_angular_velocity
+
+            left_wheel_velocity = (linear_velocity - angular_velocity * self.cfg.wheel_separation / 2.0) / self.cfg.wheel_radius
+            right_wheel_velocity = (linear_velocity + angular_velocity * self.cfg.wheel_separation / 2.0) / self.cfg.wheel_radius
 
             self.wheel_commands = torch.stack([left_wheel_velocity, right_wheel_velocity,
                                        left_wheel_velocity, right_wheel_velocity], dim=1)
@@ -325,22 +355,28 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             - Angular Velocity
             - Last Action
         """
-        # initalise a list tensor to hold the observations
-        action_dim = self.last_action.shape[1]
-        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim), device=self.device)
-        #generate noise for each component
         pose_world = self.robot.data.root_state_w.clone()
 
         position = pose_world[...,    :3]
         orientation = pose_world[..., 3:7]
         lin_vel = pose_world[..., 7:10]
         ang_vel = pose_world[..., 10:13]
+        action_dim = None
+        if isinstance(self.cfg.action_space, gym.spaces.Discrete):
+            action_dim = self.cfg.action_space.n
+            # One-hot encode the discrete action, ensuring it's long type
+            last_action_obs = F.one_hot(self.last_action.squeeze(-1).long(), num_classes=action_dim).float()
+        else:
+            action_dim = self.last_action.shape[1]
+            last_action_obs = self.last_action
+            
+        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim), device=self.device)
 
         pos_noise = (torch.rand_like(position) - 0.5) * 0.2
         orientation_noise = (torch.rand_like(orientation) - 0.5) * 0.2
         vel_noise = (torch.randn_like(lin_vel)- 0.5) * 0.2
         ang_vel_noise = (torch.randn_like(ang_vel)-0.5) * 0.2
-        action_noise = (torch.randn_like(self.actions)-0.5) * 0.2
+        action_noise = (torch.randn_like(last_action_obs)-0.5) * 0.2
 
 
         obs_buffer[..., :3] = quat_apply_inverse(self.init_quats,  position - self.init_position) + pos_noise
@@ -348,7 +384,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         obs_buffer[..., 7:10] = quat_apply_inverse(orientation, lin_vel) + vel_noise
         obs_buffer[..., 10:13] = quat_apply_inverse(orientation, ang_vel) + ang_vel_noise
 
-        obs_buffer[..., 13:13 + action_dim] = self.last_action + action_noise
+        obs_buffer[..., 13:13 + action_dim] = last_action_obs+ action_noise
         return obs_buffer
     
     def _compute_local_map_observation(self) -> torch.Tensor:
@@ -415,7 +451,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         return {"policy": obs}
 
     def step(self, action: torch.Tensor) -> tuple[dict, torch.Tensor, torch.Tensor, dict]:
-        # self._update_maps(visualise=debug)
+        self._update_maps(visualise=debug)
 
         if self.common_step_counter % self.cfg.logging_interval == 0:
             mean_coverage = np.mean(self.episode_log_buffer["coverage_percent"])
@@ -433,6 +469,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
                 # Add step-wise rewards (from the cache)
             }
+            if self.cached_rewards:
+                log_data.update(self.cached_rewards)
             if use_wandb:
                 wandb.log(log_data, step=self.common_step_counter)
         return super().step(action)
@@ -526,13 +564,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             Visibility Rewards
         """
         # return torch.ones(self.num_envs, device=self.device)
-        face_discovery_reward_fast, num_faces_inspected_fast = self._compute_face_discovery_reward_fast()
+        face_discovery_raw, num_faces_inspected = self._compute_face_discovery_reward_fast()
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
 
-        coverage_ratio = num_faces_inspected_fast / self.cfg.max_faces_to_inspect
-        success_bonus = torch.where(coverage_ratio >= self.curriculum.get_inspection_level(), self.cfg.coverage_reward, 0.0)
+        current_coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
+        coverage_increase_reward = torch.relu(current_coverage_ratio - self.prev_coverage_ratio)
 
-        total_reward = (self.cfg.mesh_coverage_reward_scale * face_discovery_reward_fast
+        self.prev_coverage_ratio = current_coverage_ratio.clone()
+
+        success_bonus = torch.where(current_coverage_ratio >= self.curriculum.get_inspection_level(), self.cfg.coverage_reward, 0.0)
+
+        total_reward = (self.cfg.mesh_coverage_reward_scale * coverage_increase_reward
                         + self.cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.visibility_increase_reward_scale * visibility_increase_reward
                         + success_bonus
@@ -540,18 +582,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         #Make total reward a tensor with float32 dtype
+        self.cached_rewards = {
+            "reward_components/coverage_increase": coverage_increase_reward.mean().item(),
+            "reward_components/info_gain": information_gain_reward.mean().item(),
+            "reward_components/visibility_increase": visibility_increase_reward.mean().item(),
+            "reward_components/success_bonus": success_bonus.mean().item(),
+            "reward_components/total_unscaled": total_reward.mean().item(),
+        }
         total_reward = total_reward.to(torch.float32)
-        # if torch.isnan(total_reward).any() or torch.isinf(total_reward).any():
-        #     import ipdb; ipdb.set_trace()
-        #     print("NaN or Inf detected in total reward calculation!")
+        if torch.isnan(total_reward).any() or torch.isinf(total_reward).any():
+            import ipdb; ipdb.set_trace()
+            print("NaN or Inf detected in total reward calculation!")
 
-        # normalized_reward = self.rewardscaler(total_reward)
-
-        # if torch.isnan(normalized_reward).any() or torch.isinf(normalized_reward).any():
-        #     import ipdb; ipdb.set_trace()
-        #     print("Warning: NaN or inf detected in rewards!")
-        # print(f"[DEBUG] Total Reward after scaling: {total_reward}")
-        return total_reward
+        normalized_reward = self.rewardscaler(total_reward)
+        return normalized_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Check for timeout
@@ -571,6 +615,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
 
         if len(env_ids)> 0:
+            self.prev_coverage_ratio[env_ids] = 0.0 
             num_faces_inspected = torch.tensor([len(self.discovered_faces_buffer[i]) for i in env_ids], device=self.device)
             coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
             episode_success = coverage_ratio >= self.curriculum.get_inspection_level()
@@ -601,10 +646,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Sample random positions within specified range
         num_resets = len(env_ids)
         new_vel = torch.zeros((num_resets, 3), device=self.device)
-        # new_pos, new_quat = self.curriculum.get_start_pos(num_resets)
-        new_pos = torch.zeros((num_resets, 3), device=self.device)
-        new_quat = torch.zeros((num_resets, 4), device=self.device)
-        new_quat[:, 0] = 1.0  # No rotation (w, x, y, z)
+        new_pos, new_quat = self.curriculum.get_start_pos(num_resets)
+        # new_pos = torch.zeros((num_resets, 3), device=self.device)
+        # new_quat = torch.zeros((num_resets, 4), device=self.device)
+        # new_quat[:, 0] = 1.0  # No rotation (w, x, y, z)
 
         # Combine into root state
         new_root_state = torch.cat([new_pos, new_quat, new_vel, torch.zeros((num_resets, 3), device=self.device)], dim=-1)
