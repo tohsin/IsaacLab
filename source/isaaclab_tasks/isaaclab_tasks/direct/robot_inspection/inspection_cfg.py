@@ -130,8 +130,8 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             - [v_zero, ω_high_left] (Rotate in Place left)
             - [v_zero, ω_high_right] (Rotate in Place right)
     '''
-    action_space = spaces.Discrete(6)
-    # action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+    # action_space = spaces.Discrete(6)
+    action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
     #behind the shelves
     # viewer = ViewerCfg( eye=(-24, 29, 8.4), lookat=(-13, 27.6, 0.0))
     # next to the Goal
@@ -304,22 +304,27 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     #reward
 
-    mesh_coverage_reward_scale = 30  # Scale for inspection coverage reward
-    information_gain_reward_scale = 3e-4  # Scale for information gain reward via entropy reduction
-    visibility_increase_reward_scale = 6e-4  # Scale for visibility information gain reward
+    mesh_coverage_reward_scale = 0.01  # Scale for inspection coverage reward
+    information_gain_reward_scale = 0.1  # Scale for information gain reward via entropy reduction  3e-4  
+    visibility_increase_reward_scale = 0.5  # Scale for visibility information gain reward  6e-4
     distance_reward_scale = 1.0  # Scale for distance-based rewards
     distance_reward_scale_beta = 2.0  # Beta parameter for distance-based rewards
     max_reward_distance = 3.0 #max distance for reward
     time_penalty = -0.001
     spin_penalty_scale = 0.05
     movement_reward_scale = 0.05
+    # Visitation stuff
+
+    visitation_alpha = 0.1  # Max reward for first visit
+    visitation_beta = 0.1  
 
     # inspection
-    init_inspection_threshold = 0.2# Coverage % threshold to count as valid inspection
-    init_spatial_level = 4
+    init_inspection_threshold = 0.25# Coverage % threshold to count as valid inspection
+    init_spatial_level = 2
     max_inspection_threshold = 0.99
     curriculum_difficulty_increment = 0.05
     coverage_reward = 3.0
+
     # inspection_save_dir = "inspection_captures"
 
     terminate_on_all_inspected = True

@@ -1,4 +1,3 @@
-#  /home/tosin/miniconda3/envs/env_isaaclab3/lib/python3.11/site-packages/skrl
 from typing import Any, Mapping, Optional, Tuple, Union
 
 import copy
@@ -31,6 +30,9 @@ PPO_DEFAULT_CONFIG = {
     "learning_rate_scheduler": None,        # learning rate scheduler class (see torch.optim.lr_scheduler)
     "learning_rate_scheduler_kwargs": {},   # learning rate scheduler's kwargs (e.g. {"step_size": 1e-3})
 
+    "optimizer_class": torch.optim.Adam,    # optimizer class
+    "optimizer_kwargs": {}, 
+    
     "state_preprocessor": None,             # state preprocessor class (see skrl.resources.preprocessors)
     "state_preprocessor_kwargs": {},        # state preprocessor's kwargs (e.g. {"size": env.observation_space})
     "value_preprocessor": None,             # value preprocessor class (see skrl.resources.preprocessors)
@@ -172,11 +174,17 @@ class PPO_RNN(Agent):
         # set up optimizer and learning rate scheduler
         if self.policy is not None and self.value is not None:
             if self.policy is self.value:
-                self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self._learning_rate)
+                parameters = self.policy.parameters()
+                # self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self._learning_rate)
             else:
-                self.optimizer = torch.optim.Adam(
-                    itertools.chain(self.policy.parameters(), self.value.parameters()), lr=self._learning_rate
-                )
+                parameters = itertools.chain(self.policy.parameters(), self.value.parameters())
+                # self.optimizer = torch.optim.Adam(
+                #     itertools.chain(self.policy.parameters(), self.value.parameters()), lr=self._learning_rate
+                # )
+            optimizer_kwargs = self.cfg["optimizer_kwargs"].copy()
+            optimizer_kwargs["lr"] = self._learning_rate
+            self.optimizer = self.cfg["optimizer_class"](parameters, **optimizer_kwargs)
+
             if self._learning_rate_scheduler is not None:
                 self.scheduler = self._learning_rate_scheduler(
                     self.optimizer, **self.cfg["learning_rate_scheduler_kwargs"]

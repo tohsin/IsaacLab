@@ -36,6 +36,7 @@ from .occupancy_grid_mapper import OccupancyGridMapper
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import time
 import torch.nn.functional as F
+import warp as wp
 visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
 debug = False
 use_wandb = not debug
@@ -61,7 +62,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             max_inspection_threshold=self.cfg.max_inspection_threshold,
             curriculum_difficulty_increment=self.cfg.curriculum_difficulty_increment,
             init_spatial_level=self.cfg.init_spatial_level,
-            num_steps=50,
+            num_steps=30,
             num_envs=self.num_envs,
             device=self.device
         )
@@ -85,7 +86,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.occupancy_mapper.visualizer.close()
         super().close()
 
-    def _setup_tensor_buffers(self):                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+    def _setup_tensor_buffers(self):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
@@ -101,6 +102,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.episode_log_buffer = {
             "coverage_percent": deque(maxlen=self.cfg.scene.num_envs * 4),
             "faces_discovered": deque(maxlen=self.cfg.scene.num_envs * 4),
+            "final_map_entropy": deque(maxlen=self.cfg.scene.num_envs * 4), 
         }
      
         self.success_rate = 0.0
@@ -114,7 +116,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.prev_coverage_ratio = torch.zeros(self.num_envs, device=self.device)
 
         self.cached_rewards = {}
-     
+
+
+        # Visitation mapping and marking
+        self.visitation_map_resolution = 0.5
+        map_bounds = self.cfg.occupancy_map_bounds
+        self.visitation_map_width = int((map_bounds['x_max'] - map_bounds['x_min']) / self.visitation_map_resolution)
+        self.visitation_map_height = int((map_bounds['y_max'] - map_bounds['y_min']) / self.visitation_map_resolution)
+        self.visitation_map_origin = torch.tensor([map_bounds['x_min'], map_bounds['y_min']], device=self.device)
+
+        self.visitation_maps = torch.zeros(
+            (self.num_envs, self.visitation_map_width, self.visitation_map_height),
+            dtype=torch.float32, # Use float to store counts for the reward calculation
+            device=self.device
+        )
     def _setup_scene(self):
         #Add robot, camera and terain to the scene
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -456,6 +471,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if self.common_step_counter % self.cfg.logging_interval == 0:
             mean_coverage = np.mean(self.episode_log_buffer["coverage_percent"])
             mean_faces_discovered = np.mean(self.episode_log_buffer["faces_discovered"])
+            mean_final_map_entropy = np.mean(self.episode_log_buffer["final_map_entropy"])
 
             log_data = {
                 # Curriculum Status
@@ -466,6 +482,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 # Episode Performance Summary
                 "episode_summary/mean_coverage_percent": mean_coverage,
                 "episode_summary/mean_faces_discovered": mean_faces_discovered,
+                "episode_summary/mean_final_map_entropy": mean_final_map_entropy,
 
                 # Add step-wise rewards (from the cache)
             }
@@ -547,7 +564,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         entropy_prev = self._calculate_entropy(self.prev_local_occ_map).sum(dim=(1, 2, 3))
         entropy_new = self._calculate_entropy(local_occ_map).sum(dim=(1, 2, 3))
-        information_gain_reward = entropy_new - entropy_prev
+        information_gain_reward = entropy_prev - entropy_new
 
         vis_sum_prev = self.prev_local_vis_map.sum(dim=(1, 2, 3))
         vis_sum_new = local_vis_map.sum(dim=(1, 2, 3))
@@ -556,7 +573,23 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.prev_local_occ_map = local_occ_map.clone()
         self.prev_local_vis_map = local_vis_map.clone()
         return information_gain_reward, visibility_increase_reward
-    
+
+    def _compute_visitation_reward(self) -> torch.Tensor:
+        robot_pos_xy = self.robot.data.root_pos_w[:, :2]  # (num_envs, 2)
+        relative_pos = robot_pos_xy - self.visitation_map_origin
+        grid_indices = (relative_pos / self.visitation_map_resolution).long()
+
+        grid_x = torch.clamp(grid_indices[:, 0], 0, self.visitation_map_width - 1)
+        grid_y = torch.clamp(grid_indices[:, 1], 0, self.visitation_map_height - 1)
+
+        env_indices = torch.arange(self.num_envs, device=self.device)
+        visit_counts = self.visitation_maps[env_indices, grid_x, grid_y]
+
+        beta = self.cfg.visitation_beta
+        reward =torch.exp(-beta * visit_counts)
+        self.visitation_maps[env_indices, grid_x, grid_y] += 1.0
+        # Diminishing reward for revisits
+        return reward
     def _get_rewards(self) -> torch.Tensor:
         """
             Face Coverage Rewards,
@@ -571,12 +604,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         coverage_increase_reward = torch.relu(current_coverage_ratio - self.prev_coverage_ratio)
 
         self.prev_coverage_ratio = current_coverage_ratio.clone()
-
+        visitation_reward = self._compute_visitation_reward()
         success_bonus = torch.where(current_coverage_ratio >= self.curriculum.get_inspection_level(), self.cfg.coverage_reward, 0.0)
 
-        total_reward = (self.cfg.mesh_coverage_reward_scale * coverage_increase_reward
+        total_reward = (self.cfg.mesh_coverage_reward_scale * face_discovery_raw
                         + self.cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.visibility_increase_reward_scale * visibility_increase_reward
+                        + visitation_reward
                         + success_bonus
                         + self.cfg.time_penalty
                         )
@@ -588,6 +622,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "reward_components/visibility_increase": visibility_increase_reward.mean().item(),
             "reward_components/success_bonus": success_bonus.mean().item(),
             "reward_components/total_unscaled": total_reward.mean().item(),
+            "reward_components/visitation": visitation_reward.mean().item(),
         }
         total_reward = total_reward.to(torch.float32)
         if torch.isnan(total_reward).any() or torch.isinf(total_reward).any():
@@ -616,6 +651,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if len(env_ids)> 0:
             self.prev_coverage_ratio[env_ids] = 0.0 
+            self.visitation_maps[env_ids] = 0.0 
             num_faces_inspected = torch.tensor([len(self.discovered_faces_buffer[i]) for i in env_ids], device=self.device)
             coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
             episode_success = coverage_ratio >= self.curriculum.get_inspection_level()
@@ -629,7 +665,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.episode_log_buffer["faces_discovered"].append(num_faces_inspected[i].item())
                 # self.discovered_faces_buffer[env_id].clear()
                 self.discovered_faces_buffer[env_id] = torch.tensor([], dtype=torch.float32, device=self.device)
+
             if self.cfg.use_occupancy_map:
+                for env_id in env_ids.cpu().tolist():
+                    # Define the slice for the current environment's map
+                    start_idx = env_id * self.occupancy_mapper.num_voxels_per_map
+                    end_idx = start_idx + self.occupancy_mapper.num_voxels_per_map
+                    
+                    # Get the log-odds values from the Warp array and convert to a PyTorch tensor
+                    env_map_log_odds = wp.to_torch(self.occupancy_mapper.occupancy_map[start_idx:end_idx])
+                    
+                    # Calculate the total entropy for the map and record it
+                    total_entropy = self._calculate_entropy(env_map_log_odds).sum().item()
+                    self.episode_log_buffer["final_map_entropy"].append(total_entropy)
+        # --- END: New code for entropy logging ---
                 self.occupancy_mapper.reset_map(env_ids.cpu().tolist())
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0

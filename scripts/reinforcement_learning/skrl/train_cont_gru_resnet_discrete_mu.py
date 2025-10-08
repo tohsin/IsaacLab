@@ -40,7 +40,7 @@ from skrl.agents.torch.ppo import PPO_RNN as PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
-from skrl.models.torch import DeterministicMixin, CategoricalMixin, Model
+from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from skrl.resources.schedulers.torch import KLAdaptiveRL
 from skrl.trainers.torch import SequentialTrainer
@@ -57,18 +57,20 @@ sys.argv.append("--enable_cameras")
 
 set_seed(42)
 # for some reason changing the clip actionsvarialbe to true in thr training script causes this error
-class Shared(CategoricalMixin, DeterministicMixin, Model):
+class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self,
                 observation_space,
                 action_space,
                 device,
                 cfg,
+                clip_actions=True,
+                clip_log_std=True, min_log_std=-20, max_log_std=2,
                 num_envs=1,
                 sequence_length=128,
                 _hidden_size=128,
                 _hidden_size_gru=256):
         Model.__init__(self, observation_space, action_space, device)
-        CategoricalMixin.__init__(self, unnormalized_log_prob=True)
+        GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         DeterministicMixin.__init__(self, False)
         self.cfg = cfg
         self.num_envs = num_envs
@@ -129,6 +131,8 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
             nn.Linear(256, 1)
         )
         # Action Head, MU and STD
+        self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
+
 
     def get_specification(self) -> dict:
         return {
@@ -179,7 +183,7 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
 
     def act(self, inputs, role):
         if role == "policy":
-            return CategoricalMixin.act(self, inputs, role)
+            return GaussianMixin.act(self, inputs, role)
         elif role == "value":
             return DeterministicMixin.act(self, inputs, role)
 
@@ -232,8 +236,8 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
         rnn_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)
 
         if role == "policy":
-            logits = self.policy_head(rnn_output)
-            return logits, {"rnn": [hidden_states]}
+            mean_actions = self.policy_head(rnn_output)
+            return mean_actions, self.log_std_parameter, {"rnn": [hidden_states]}
         elif role == "value":
             value_estimate = self.value_head(rnn_output)
             return value_estimate, {"rnn": [hidden_states]}
