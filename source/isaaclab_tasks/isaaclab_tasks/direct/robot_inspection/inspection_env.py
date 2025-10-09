@@ -39,7 +39,7 @@ import torch.nn.functional as F
 import warp as wp
 visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
 debug = False
-use_wandb = not debug
+use_wandb =  True #not debug
 
 class Isaac3dinspectionEnv(DirectRLEnv):
     cfg: Isaac3dinspectionEnvCfg
@@ -102,7 +102,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.episode_log_buffer = {
             "coverage_percent": deque(maxlen=self.cfg.scene.num_envs * 4),
             "faces_discovered": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_map_entropy": deque(maxlen=self.cfg.scene.num_envs * 4), 
+            "final_map_entropy": deque(maxlen=self.cfg.scene.num_envs * 10), 
         }
      
         self.success_rate = 0.0
@@ -114,6 +114,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.prev_local_occ_map = torch.zeros((self.num_envs, *local_map_shape[:-1]), device=self.device)
         self.prev_local_vis_map = torch.zeros((self.num_envs, *local_map_shape[:-1]), device=self.device)
         self.prev_coverage_ratio = torch.zeros(self.num_envs, device=self.device)
+
+        if hasattr(self.cfg, 'compute_global_map_entropy') and self.cfg.compute_global_map_entropy:
+            self.prev_global_map_entropy = torch.zeros(self.num_envs, device=self.device)
 
         self.cached_rewards = {}
 
@@ -556,23 +559,31 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         return entropy
     
     
-    def _compute_exploration_rewards(self):
-        information_gain_reward = torch.zeros(self.num_envs, device=self.device)
-        visibility_increase_reward = torch.zeros(self.num_envs, device=self.device)
-        robot_pos_w = self.robot.data.root_pos_w
-        local_occ_map, local_vis_map = self.occupancy_mapper.get_local_maps(robot_pos_w.cpu().numpy())
+
+        # information_gain_reward = torch.zeros(self.num_envs, device=self.device)
+        # visibility_increase_reward = torch.zeros(self.num_envs, device=self.device)
+        # robot_pos_w = self.robot.data.root_pos_w
+        # local_occ_map, local_vis_map = self.occupancy_mapper.get_local_maps(robot_pos_w.cpu().numpy())
         
-        entropy_prev = self._calculate_entropy(self.prev_local_occ_map).sum(dim=(1, 2, 3))
-        entropy_new = self._calculate_entropy(local_occ_map).sum(dim=(1, 2, 3))
-        information_gain_reward = entropy_prev - entropy_new
+        # entropy_prev = self._calculate_entropy(self.prev_local_occ_map).sum(dim=(1, 2, 3))
+        # entropy_new = self._calculate_entropy(local_occ_map).sum(dim=(1, 2, 3))
+        # information_gain_reward = entropy_prev - entropy_new
 
-        vis_sum_prev = self.prev_local_vis_map.sum(dim=(1, 2, 3))
-        vis_sum_new = local_vis_map.sum(dim=(1, 2, 3))
-        visibility_increase_reward = torch.relu(vis_sum_new - vis_sum_prev)
+        # vis_sum_prev = self.prev_local_vis_map.sum(dim=(1, 2, 3))
+        # vis_sum_new = local_vis_map.sum(dim=(1, 2, 3))
+        # visibility_increase_reward = torch.relu(vis_sum_new - vis_sum_prev)
 
-        self.prev_local_occ_map = local_occ_map.clone()
-        self.prev_local_vis_map = local_vis_map.clone()
-        return information_gain_reward, visibility_increase_reward
+        # self.prev_local_occ_map = local_occ_map.clone()
+        # self.prev_local_vis_map = local_vis_map.clone()
+        # return information_gain_reward, visibility_increase_reward
+    def _compute_exploration_rewards(self):
+        all_maps_log_odds = wp.to_torch(self.occupancy_mapper.occupancy_map)
+        all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
+        current_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
+        information_gain = torch.relu(self.prev_global_map_entropy - current_entropy)
+        self.prev_global_map_entropy = current_entropy.clone()
+        return information_gain, None
+
 
     def _compute_visitation_reward(self) -> torch.Tensor:
         robot_pos_xy = self.robot.data.root_pos_w[:, :2]  # (num_envs, 2)
@@ -590,6 +601,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.visitation_maps[env_indices, grid_x, grid_y] += 1.0
         # Diminishing reward for revisits
         return reward
+    
     def _get_rewards(self) -> torch.Tensor:
         """
             Face Coverage Rewards,
@@ -597,32 +609,32 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             Visibility Rewards
         """
         # return torch.ones(self.num_envs, device=self.device)
-        face_discovery_raw, num_faces_inspected = self._compute_face_discovery_reward_fast()
-        information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
+        # face_discovery_raw, num_faces_inspected = self._compute_face_discovery_reward_fast()
+        information_gain_reward, _ = self._compute_exploration_rewards()
 
-        current_coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
-        coverage_increase_reward = torch.relu(current_coverage_ratio - self.prev_coverage_ratio)
+        # current_coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
+        # coverage_increase_reward = torch.relu(current_coverage_ratio - self.prev_coverage_ratio)
 
-        self.prev_coverage_ratio = current_coverage_ratio.clone()
-        visitation_reward = self._compute_visitation_reward()
-        success_bonus = torch.where(current_coverage_ratio >= self.curriculum.get_inspection_level(), self.cfg.coverage_reward, 0.0)
+        # self.prev_coverage_ratio = current_coverage_ratio.clone()
+        # visitation_reward = self._compute_visitation_reward()
+        # success_bonus = torch.where(current_coverage_ratio >= self.curriculum.get_inspection_level(), self.cfg.coverage_reward, 0.0)
 
-        total_reward = (self.cfg.mesh_coverage_reward_scale * face_discovery_raw
-                        + self.cfg.information_gain_reward_scale * information_gain_reward
-                        + self.cfg.visibility_increase_reward_scale * visibility_increase_reward
-                        + visitation_reward
-                        + success_bonus
-                        + self.cfg.time_penalty
+        total_reward = (#self.cfg.mesh_coverage_reward_scale * face_discovery_raw
+                        self.cfg.information_gain_reward_scale * information_gain_reward
+                        # + self.cfg.visibility_increase_reward_scale * visibility_increase_reward
+                        # + visitation_reward
+                        # + success_bonus
+                        # + self.cfg.time_penalty
                         )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         #Make total reward a tensor with float32 dtype
         self.cached_rewards = {
-            "reward_components/coverage_increase": coverage_increase_reward.mean().item(),
+            # "reward_components/coverage_increase": coverage_increase_reward.mean().item(),
             "reward_components/info_gain": information_gain_reward.mean().item(),
-            "reward_components/visibility_increase": visibility_increase_reward.mean().item(),
-            "reward_components/success_bonus": success_bonus.mean().item(),
+            # "reward_components/visibility_increase": visibility_increase_reward.mean().item(),
+            # "reward_components/success_bonus": success_bonus.mean().item(),
             "reward_components/total_unscaled": total_reward.mean().item(),
-            "reward_components/visitation": visitation_reward.mean().item(),
+            # "reward_components/visitation": visitation_reward.mean().item(),
         }
         total_reward = total_reward.to(torch.float32)
         if torch.isnan(total_reward).any() or torch.isinf(total_reward).any():
@@ -635,8 +647,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Check for timeout
         max_length = self.curriculum.get_current_episode_length()
-        time_out = self.episode_length_buf >= max_length - 1
-        # time_out = self.episode_length_buf >= self.cfg.min_episode_length - 1
+        # time_out = self.episode_length_buf >= max_length - 1
+        time_out = self.episode_length_buf >= self.cfg.min_episode_length - 1
 
         num_faces_inspected = torch.tensor([len(s) for s in self.discovered_faces_buffer], device=self.device)
         coverage_condition = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_inspection_level()
@@ -680,6 +692,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     self.episode_log_buffer["final_map_entropy"].append(total_entropy)
         # --- END: New code for entropy logging ---
                 self.occupancy_mapper.reset_map(env_ids.cpu().tolist())
+                all_maps_log_odds = wp.to_torch(self.occupancy_mapper.occupancy_map)
+                all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
+                initial_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
+                self.prev_global_map_entropy[env_ids] = initial_entropy[env_ids]
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0
 

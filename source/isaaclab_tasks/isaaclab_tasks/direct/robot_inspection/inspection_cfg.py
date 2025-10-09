@@ -305,7 +305,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     #reward
 
     mesh_coverage_reward_scale = 0.01  # Scale for inspection coverage reward
-    information_gain_reward_scale = 0.1  # Scale for information gain reward via entropy reduction  3e-4  
+    information_gain_reward_scale = 0.01 # Scale for information gain reward via entropy reduction  3e-4
+    compute_global_map_entropy = True
+    entire_map_entropy_reward_scale = 0.2
     visibility_increase_reward_scale = 0.5  # Scale for visibility information gain reward  6e-4
     distance_reward_scale = 1.0  # Scale for distance-based rewards
     distance_reward_scale_beta = 2.0  # Beta parameter for distance-based rewards
@@ -319,7 +321,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     visitation_beta = 0.1  
 
     # inspection
-    init_inspection_threshold = 0.25# Coverage % threshold to count as valid inspection
+    init_inspection_threshold = 0.98# Coverage % threshold to count as valid inspection
     init_spatial_level = 2
     max_inspection_threshold = 0.99
     curriculum_difficulty_increment = 0.05
@@ -328,7 +330,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # inspection_save_dir = "inspection_captures"
 
     terminate_on_all_inspected = True
-    min_episode_length = 2500
+    min_episode_length = 800
     max_faces_to_inspect = env_parameters["num_faces"]
 
       # robot
@@ -336,10 +338,10 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     wheel_radius = 0.098  #0.098 
     forward_vel = 6.0
     turn_vel = 9.0
-    max_linear_velocity = 1.3
+    max_linear_velocity = 2.0 # 1.3 discrete
     max_angular_velocity = 4.0
     min_discovery_interval = 1.0
     max_wheel_velocity = 18.0 # Max wheel velocity for the robot
 
     # Logging
-    logging_interval: int = 200
+    logging_interval: int = 1000

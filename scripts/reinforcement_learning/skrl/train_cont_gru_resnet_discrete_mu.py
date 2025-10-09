@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environ
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=32, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -27,6 +27,7 @@ parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-
 
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
+_use_wandb = True
 _headless = True
 args_cli = parser.parse_args()
 args_cli.enable_cameras =  True
@@ -63,7 +64,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 action_space,
                 device,
                 cfg,
-                clip_actions=True,
+                clip_actions=False,
                 clip_log_std=True, min_log_std=-20, max_log_std=2,
                 num_envs=1,
                 sequence_length=128,
@@ -131,7 +132,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Linear(256, 1)
         )
         # Action Head, MU and STD
-        self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
+        self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
 
 
     def get_specification(self) -> dict:
@@ -237,7 +238,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
         if role == "policy":
             mean_actions = self.policy_head(rnn_output)
-            return mean_actions, self.log_std_parameter, {"rnn": [hidden_states]}
+            log_std = self.log_std_parameter.expand_as(mean_actions)
+            return mean_actions, log_std, {"rnn": [hidden_states]}
         elif role == "value":
             value_estimate = self.value_head(rnn_output)
             return value_estimate, {"rnn": [hidden_states]}
@@ -254,7 +256,7 @@ env = wrap_env(env)
 
 device = env.device
 # assume num env is 16
-TOTAL_BATCH_SIZE = 2048
+TOTAL_BATCH_SIZE = 2048 # 2048
 sequence_length = 32
 rollout_length = TOTAL_BATCH_SIZE // env.num_envs
 
@@ -274,13 +276,13 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 5_000_000
+total_timesteps = 500_000
 num_updates = total_timesteps // (TOTAL_BATCH_SIZE)
 cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 8
+cfg["learning_epochs"] = 2 #8
 cfg["mini_batches"] = 64  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
@@ -301,7 +303,7 @@ cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = 0.05
 cfg["value_loss_scale"] = 1.0
 # cfg["kl_threshold"] = 0.0
-cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
+# cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
 cfg["rewards_shaper"] =  None
 cfg["time_limit_bootstrap"] = True
 
@@ -327,12 +329,12 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 500
+cfg["experiment"]["write_interval"] = 2000
 cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
 cfg["experiment"]["checkpoint_interval"] = 10_000
 cfg["experiment"]["directory"] = log_root_path
 cfg["experiment"]["experiment_name"] = experiment_name
-cfg["experiment"]["wandb"] = True  # Disable wandb in evaluation mode
+cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
 
 agent = PPO(models=models, 
             memory=memory,
