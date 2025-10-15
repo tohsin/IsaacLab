@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import numpy as np
 
-
 from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.envs.utils import spaces
-from isaaclab.sensors.camera import tiled_camera
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import DirectRLEnvCfg, ViewerCfg
@@ -19,78 +17,17 @@ from isaaclab.sim import SimulationCfg, PhysxCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.terrains import TerrainImporterCfg
 from gymnasium.spaces.discrete import Discrete
-from isaaclab.sensors import TiledCameraCfg, CameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg
 from gymnasium import spaces
 
+from .configs.sensors_cfg import SensorsCfg
+from .configs.mapping_cfg import MappingCfg
+from .configs.rewards_cfg import RewardsCfg
+from  .configs.robot_cfg import RobotPhysicsCfg
 # from semantic_manager import SemanticManager
-ROBOT_CONFIGS = {
-    "jackal": {
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal_basic.usd",
-        "wheel_joint_expr": ".*wheel.*",
-        "action_space": 4  # 4 wheels
-    },
-    "jetbot": {
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Jetbot/jetbot.usd", 
-        "wheel_joint_expr": ".*wheel.*",
-        "action_space": 2  # 2 wheels
-    },
-}
-Env_params = {
-    "Brick":{
-        "num_faces": 12_000,
-        "semantics_name": "Brick",
-        "file_name": "/home/tosin/Desktop/IsaacLab/environments/ware_house_semantic.usd",
-        "prim_path": "/World/ground/terrain/ware_house_brick/_61_foam_brick"
-    },
-
-    'Brick_default':{
-        "num_faces": 12_000,
-        "semantics_type": "class",
-        "semantics_name": "brick",
-        "file_name": "/home/tosin/IsaacLab_inspection/environments/ware_house_brick.usd",
-        "prim_path": "/World/ground/terrain/_61_foam_brick",
-
-    },
-    'complex_forklift':{
-        "num_faces": 21_000,
-        "semantics_type": "class",
-        "semantics_name": "forklift",
-        "file_name": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
-        "prim_path": "/World/ground/terrain/forklift"
-    },
-    'complex_forklift_2':{
-        "num_faces": 21_000,
-        "semantics_type": "class",
-        "semantics_name": "forklift",
-        "env_file_path": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
-        "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
-        "env_prim_path": "/World/envs/env_.*/warehouse"
-    },
-    'empty_room':{
-        "num_faces": 4000,
-        "semantics_type": "class",
-        "semantics_name": "inspection_goal",
-        "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
-        "env_prim_path": "/World/envs/env_.*/warehouse" ,
-        "inspection_goal_prim_path": "/World/envs/env_.*/rubiks_cube",
-    }
-}
+from .configs.config_ import ROBOT_CONFIGS, Env_params
 env_parameters = Env_params["empty_room"]
 
-# rubiks_cube_cfg = RigidObjectCfg(
-
-#     prim_path="/World/envs/env_.*/rubiks_cube",
-#     spawn=sim_utils.UsdFileCfg(
-#         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-#         semantic_tags=[("class", "inspection_goal")]
-#     ),
-#     init_state=RigidObjectCfg.InitialStateCfg(
-#         pos=(3.0, 3.0, 0.1), # Increased Z-pos slightly to ensure it's above the ground
-#         rot=(0.707, 0, 0, 0.707) # Example rotation to make it more interesting
-#     )
-# )
 
 @configclass
 class WarehouseSceneCfg(InteractiveSceneCfg):
@@ -132,11 +69,6 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     '''
     # action_space = spaces.Discrete(6)
     action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
-    #behind the shelves
-    # viewer = ViewerCfg( eye=(-24, 29, 8.4), lookat=(-13, 27.6, 0.0))
-    # next to the Goal
-    # viewer = ViewerCfg( eye=(-24, 5, 8.4), lookat=(0, 0, 0.0))
-    # next to the Goal CLOSER
     viewer = ViewerCfg( eye=(-10, 5, 8.4), lookat=(0, 0, 0.0))
     
     # outside wall
@@ -155,8 +87,6 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             min_velocity_iteration_count=1,
             max_velocity_iteration_count=1
         ))
-
-  
 
 
     sphere_cfg = RigidObjectCfg( 
@@ -197,80 +127,17 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         debug_vis=True
     
     )
-    #SENSOR (Raycaster + Tiled Camera)
-    #Front Camera for Navigation
-    observation_camera = CameraCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link/front_camera",
-        update_period=0.1,
-        height=_height,
-        width=_width,
-        data_types=["rgb", "distance_to_image_plane"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0,
-            focus_distance=400.0,
-            horizontal_aperture=20.955,
-            clipping_range=(0.1, 1.0e5)
-        ),
-        offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.0, 0.3, 0.15),
-            rot=(-0.5, 0.5, -0.5, 0.5),
-            convention="ros"
-        ),
-        debug_vis=False  # Disable for performance
-    )
-    # Side Camera for 3D Inspection
-    inspection_camera = CameraCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link/inspection_camera",
-        update_period=0.1,
-        height=_height,
-        width=_width,
-        data_types=["rgb", "semantic_segmentation", "distance_to_image_plane"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0,
-            focus_distance=400.0,
-            horizontal_aperture=20.955,
-            clipping_range=(0.1, 1.0e5)
-        ),
-        offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.3, 0.0, 0.15),
-            rot = (0,  0, -0.7071068, 0.7071068),
-            convention="ros"
-        ),
-        colorize_semantic_segmentation=False,
-        debug_vis=False  # Disable for performance
-    )
-    face_Camera_cfg = MultiMeshRayCasterCameraCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
-        update_period=0.1,
-        data_types=["face_ids"],#face_ids
-        offset=RayCasterCameraCfg.OffsetCfg(
-            pos=(0.3, 0.0, 0.15),
-            rot = (0,  0, -0.7071068, 0.7071068),
-            convention="ros"
-        ),
-        pattern_cfg= patterns.PinholeCameraPatternCfg(
-            height=_height,
-            width=_width,
-            focal_length=24.0,
-            horizontal_aperture=20.955,
-        ),
-        mesh_prim_paths = [inspection_objective_prim_path],
-        update_mesh_ids=True,
-        debug_vis=True
-    )
-      # -- Occupancy Mapping --
-    use_occupancy_map: bool = True
-    occupancy_map_resolution: float = 0.25  # Voxel size in meters (e.g., 25 cm)
-    occupancy_map_bounds: dict = {
-        "x_min": -10.5, "x_max": 9.5,
-        "y_min": -12.5, "y_max": 18.0,
-        "z_min": 0.0, "z_max": 2.5
-    }
+    reward_cfg : RewardsCfg = RewardsCfg()
+    sensor_cfg : SensorsCfg = SensorsCfg()
+    robot_phys_cfg: RobotPhysicsCfg = RobotPhysicsCfg()
+    mapping_cfg: MappingCfg = MappingCfg()
+    
     action_dim = NotImplementedError
     if isinstance(action_space, spaces.Discrete):
         action_dim = action_space.n 
     else:
         action_dim = action_space.shape[0]
+
     observation_space = spaces.Dict({
 
         "robot-pose": spaces.Box(
@@ -287,8 +154,8 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "local-map": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
-            # Shape is (X, Y, Z, Channels). We have 2 channels: Occupancy and Visibility
-            shape=(21, 21, 11, 2), 
+            # Shape is (X, Y, Z, Channels). We have 2 channels: Occupancy, Visibility, Visitation
+            shape=(21, 21, 11, 3), 
             dtype=np.float32,
         )
     })
@@ -302,46 +169,19 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     max_robot_distance = 2000
 
-    #reward
-
-    mesh_coverage_reward_scale = 0.01  # Scale for inspection coverage reward
-    information_gain_reward_scale = 0.01 # Scale for information gain reward via entropy reduction  3e-4
-    compute_global_map_entropy = True
-    entire_map_entropy_reward_scale = 0.2
-    visibility_increase_reward_scale = 0.5  # Scale for visibility information gain reward  6e-4
-    distance_reward_scale = 1.0  # Scale for distance-based rewards
-    distance_reward_scale_beta = 2.0  # Beta parameter for distance-based rewards
-    max_reward_distance = 3.0 #max distance for reward
-    time_penalty = -0.001
-    spin_penalty_scale = 0.05
-    movement_reward_scale = 0.05
-    # Visitation stuff
-
-    visitation_alpha = 0.1  # Max reward for first visit
-    visitation_beta = 0.1  
-
+   
+ 
     # inspection
-    init_inspection_threshold = 0.98# Coverage % threshold to count as valid inspection
-    init_spatial_level = 2
+    init_inspection_threshold = 0.5# Coverage % threshold to count as valid inspection
+    init_spatial_level = 4
     max_inspection_threshold = 0.99
     curriculum_difficulty_increment = 0.05
-    coverage_reward = 3.0
 
-    # inspection_save_dir = "inspection_captures"
 
     terminate_on_all_inspected = True
-    min_episode_length = 800
+    min_episode_length = 2000
     max_faces_to_inspect = env_parameters["num_faces"]
-
-      # robot
-    wheel_separation = 	0.25 # 0.37558
-    wheel_radius = 0.098  #0.098 
-    forward_vel = 6.0
-    turn_vel = 9.0
-    max_linear_velocity = 2.0 # 1.3 discrete
-    max_angular_velocity = 4.0
-    min_discovery_interval = 1.0
-    max_wheel_velocity = 18.0 # Max wheel velocity for the robot
 
     # Logging
     logging_interval: int = 1000
+

@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environ
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=32, help="Number of environments to simulate.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -118,14 +118,18 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         #output heads
 
         self.policy_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, 512),
+            nn.Linear(self.gru_hidden_size, 1024),
+            nn.ELU(),
+            nn.Linear(1024, 512),
             nn.ELU(),
             nn.Linear(512, 256),
             nn.ELU(),
-            nn.Linear(256, self.    num_actions )
+            nn.Linear(256, self.num_actions )
         )
         self.value_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, 512),
+            nn.Linear(self.gru_hidden_size, 1024),
+            nn.ELU(),
+            nn.Linear(1024, 512),
             nn.ELU(),
             nn.Linear(512, 256),
             nn.ELU(),
@@ -276,14 +280,14 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 500_000
+total_timesteps = 5_000_000
 num_updates = total_timesteps // (TOTAL_BATCH_SIZE)
 cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
 cfg["learning_epochs"] = 2 #8
-cfg["mini_batches"] = 64  # horizon_length * num_actors / minibatch_size  : 4096 * 16
+cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
 cfg["learning_rate"] = 3e-4  # 0.0003     0.0006

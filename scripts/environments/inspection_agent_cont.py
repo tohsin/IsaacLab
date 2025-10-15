@@ -44,6 +44,7 @@ def main():
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
+    env_cfg.seed = 42
     # create environment
     env = gym.make(args_cli.task, cfg=env_cfg)
     try:
@@ -70,7 +71,6 @@ def main():
                     return torch.tensor([[0.0, -1.0]], device=env.unwrapped.device)
 
                 for i in range(3000):
-                
                     if i < 50:
                         actions = move_forward()
                     elif i >= 50 and i < 170:
@@ -89,6 +89,8 @@ def main():
                         actions = turn_right()
                     elif i >= 1150 and i < 1300:
                         actions = move_forward()
+
+
                     # elif i >= 400 and i < 500:
                     #     actions = move_forward()
                     # elif i >= 500 and i < 600:

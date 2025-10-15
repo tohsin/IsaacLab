@@ -1,0 +1,55 @@
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+ROBOT_CONFIGS = {
+    "jackal": {
+        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal_basic.usd",
+        "wheel_joint_expr": ".*wheel.*",
+        "action_space": 4  # 4 wheels
+    },
+    "jetbot": {
+        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Jetbot/jetbot.usd", 
+        "wheel_joint_expr": ".*wheel.*",
+        "action_space": 2  # 2 wheels
+    },
+}
+Env_params = {
+    "Brick":{
+        "num_faces": 12_000,
+        "semantics_name": "Brick",
+        "file_name": "/home/tosin/Desktop/IsaacLab/environments/ware_house_semantic.usd",
+        "prim_path": "/World/ground/terrain/ware_house_brick/_61_foam_brick"
+    },
+
+    'Brick_default':{
+        "num_faces": 12_000,
+        "semantics_type": "class",
+        "semantics_name": "brick",
+        "file_name": "/home/tosin/IsaacLab_inspection/environments/ware_house_brick.usd",
+        "prim_path": "/World/ground/terrain/_61_foam_brick",
+
+    },
+    'complex_forklift':{
+        "num_faces": 21_000,
+        "semantics_type": "class",
+        "semantics_name": "forklift",
+        "file_name": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
+        "prim_path": "/World/ground/terrain/forklift"
+    },
+    'complex_forklift_2':{
+        "num_faces": 21_000,
+        "semantics_type": "class",
+        "semantics_name": "forklift",
+        "env_file_path": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
+        "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
+        "env_prim_path": "/World/envs/env_.*/warehouse"
+    },
+    'empty_room':{
+        "num_faces": 4000,
+        "semantics_type": "class",
+        "semantics_name": "inspection_goal",
+        "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
+        "env_prim_path": "/World/envs/env_.*/warehouse" ,
+        "inspection_goal_prim_path": "/World/envs/env_.*/rubiks_cube",
+    }
+}
+
+env_parameters = Env_params['empty_room']

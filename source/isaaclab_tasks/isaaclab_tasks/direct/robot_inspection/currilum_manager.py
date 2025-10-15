@@ -134,7 +134,7 @@ class Curriculum:
 
         #check if we need to advance spatial level
         if self.inspection_curriculum_level>=current_milestone and self.spatial_level < len(self.start_pos) - 1:
-            self.spatial_level += 1
+            self.spatial_level += 1 # Add one back here
             self.success_buffer.clear()
             self.inspection_curriculum_level = max(self.init_inspection_threshold, self.inspection_curriculum_level - 0.1)
             return
