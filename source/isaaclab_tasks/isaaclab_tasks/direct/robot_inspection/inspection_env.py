@@ -38,8 +38,8 @@ import time
 import torch.nn.functional as F
 import warp as wp
 visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
-debug = True
-use_wandb =  False #not debug
+debug = False
+use_wandb =  True #not debug
 
 class Isaac3dinspectionEnv(DirectRLEnv):
     cfg: Isaac3dinspectionEnvCfg
@@ -70,16 +70,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._setup_tensor_buffers()
 
         self.curriculum = Curriculum(
-            init_inspection_threshold=self.cfg.init_inspection_threshold,
-            max_inspection_threshold=self.cfg.max_inspection_threshold,
-            curriculum_difficulty_increment=self.cfg.curriculum_difficulty_increment,
-            init_spatial_level=self.cfg.init_spatial_level,
-            num_steps=30,
             num_envs=self.num_envs,
             device=self.device
         )
       
         self.rewardscaler = NormalizeReward(device=self.device)
+        self.info_gain_scaler = NormalizeReward(device=self.device)
+        self.visibility_scaler = NormalizeReward(device=self.device)
+        self.visitation_scaler = NormalizeReward(device=self.device)
         self.last_log_step = 0
         self.visualization_timer = 0
         self.visualization_interval = 10
@@ -95,6 +93,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
 
+        self.episode_goal_achieved = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+
         if isinstance(self.cfg.action_space, gym.spaces.Discrete):
             action_shape = (self.num_envs, 1)
         else:
@@ -107,9 +107,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "coverage_percent": deque(maxlen=self.cfg.scene.num_envs * 4),
             "faces_discovered": deque(maxlen=self.cfg.scene.num_envs * 4),
             "final_map_entropy": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_visibility_sum": deque(maxlen=self.cfg.scene.num_envs * 4),
+            "final_unique_visible_cell_count": deque(maxlen=self.cfg.scene.num_envs * 4),
             "final_visited_cells_count":deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_visited_cells_count": deque(maxlen=self.cfg.scene.num_envs * 4),
+            "curriculum/current_threshold": deque(maxlen=self.cfg.scene.num_envs * 4),
+            "curriculum/current_episode_length": deque(maxlen=self.cfg.scene.num_envs * 4),
 
         }
      
@@ -164,8 +165,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.sphere = RigidObject(self.cfg.sphere_cfg)
         self.scene.rigid_objects["sphere"] = self.sphere
 
-        self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.face_raycaster)
-        self.scene.sensors["raycaster_camera"] = self._raycaster_camera
+        # self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.face_raycaster)
+        # self.scene.sensors["raycaster_camera"] = self._raycaster_camera
 
 
         self.scene.clone_environments(copy_from_source=False)
@@ -472,19 +473,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             mean_faces_discovered = np.mean(self.episode_log_buffer["faces_discovered"])
             mean_final_map_entropy = np.mean(self.episode_log_buffer["final_map_entropy"])
             mean_final_visited_cells_count = np.mean(self.episode_log_buffer["final_visited_cells_count"])
-            mean_final_visibility_sum = np.mean(self.episode_log_buffer["final_visibility_sum"])
-
+            mean_final_unique_visible_cell_count = np.mean(self.episode_log_buffer["final_unique_visible_cell_count"])
+            mean_final_unique_visible_cell_count = np.mean(self.episode_log_buffer["final_unique_visible_cell_count"])
+            mean_current_threshold = np.mean(self.episode_log_buffer["curriculum/current_threshold"])
+            mean_current_episode_length = np.mean(self.episode_log_buffer["curriculum/current_episode_length"])
             log_data = {
                 # Curriculum Status
-                "curriculum/inspection_level": self.curriculum.get_inspection_level(),
-                "curriculum/spatial_level": self.curriculum.spatial_level,
+                "curriculum/exploration_threshold_goal": mean_current_threshold,
+                "curriculum/episode_length_limit": mean_current_episode_length,
                 "curriculum/success_rate": self.curriculum.success_rate,
                 
                 # Episode Performance Summary
                 "episode_summary/mean_coverage_percent": mean_coverage,
                 "episode_summary/mean_faces_discovered": mean_faces_discovered,
                 "episode_summary/mean_final_map_entropy": mean_final_map_entropy,
-                "episode_summary/mean_final_visibility_sum": mean_final_visibility_sum,
+                "episode_summary/mean_final_unique_visible_cell_count": mean_final_unique_visible_cell_count,
                 "episode_summary/mean_final_visited_cells_count": mean_final_visited_cells_count,
 
                 # Add step-wise rewards (from the cache)
@@ -619,7 +622,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Calculate reward: R = exp(-beta * N), where N is the visit count
         # Note: We subtract 1.0 because the map was already updated this step.
         # We want to reward based on the state *before* the current visit.
-        reward[valid_mask] = torch.exp(-self.cfg.reward_cfg.visibility_decay_factor * (current_counts - 1.0))
+        reward[valid_mask] = torch.exp(-self.cfg.reward_cfg.visitation_decay_factor * (current_counts - 1.0))
         
         return reward
     
@@ -633,6 +636,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # face_discovery_raw, num_faces_inspected = self._compute_face_discovery_reward_fast()
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
         visitation_reward = self._compute_visitation_reward()
+
+        # Compute Bonus
+        all_vis_maps_torch = wp.to_torch(self.occupancy_mapper.visibility_map).view(self.num_envs, -1)
+        current_unique_visible_cells = (all_vis_maps_torch > 0).sum(dim=1)
+        current_threshold = self.curriculum.get_exploration_threshold()
+
+        currently_met = current_unique_visible_cells >= current_threshold
+        newly_achieved_goal = (currently_met) & (~self.episode_goal_achieved)
+        exploration_success_bonus = torch.where(newly_achieved_goal, self.cfg.reward_cfg.exploration_success_bonus, 0.0)
+        
+        self.episode_goal_achieved |= newly_achieved_goal
+
+
+
+        # norm_info_gain = self.info_gain_scaler(information_gain_reward)
+        # norm_visibility = self.visibility_scaler(visibility_increase_reward)
+        # norm_visitation = self.visitation_scaler(visitation_reward)
+        
         # current_coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
         # coverage_increase_reward = torch.relu(current_coverage_ratio - self.prev_coverage_ratio)
 
@@ -643,6 +664,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visibility_increase_reward_scale * visibility_increase_reward
                         + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
+                        + exploration_success_bonus
                         # + success_bonus
                         # + self.cfg.time_penalty
                         )
@@ -672,12 +694,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # time_out = self.episode_length_buf >= max_length - 1
         time_out = self.episode_length_buf >= self.cfg.min_episode_length - 1
 
-        num_faces_inspected = torch.tensor([len(s) for s in self.discovered_faces_buffer], device=self.device)
-        coverage_condition = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_inspection_level()
+        # num_faces_inspected = torch.tensor([len(s) for s in self.discovered_faces_buffer], device=self.device)
+        # coverage_condition = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_inspection_level()
+        # coverage_condition = torch.zeros_like(time_out)
+        exploration_goal_met = self.episode_goal_achieved.clone()
         # if coverage_condition.any() and debug:
         #     print(f"Coverage Condition Met: {coverage_condition.nonzero(as_tuple=False).squeeze(-1)}")
 
-        return coverage_condition, time_out
+        return exploration_goal_met, time_out
     
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
@@ -685,11 +709,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if len(env_ids)> 0:
             self.prev_coverage_ratio[env_ids] = 0.0
+            self.episode_goal_achieved[env_ids] = False
             # self.prev_visibility_sum[env_ids] = 0.0
             num_faces_inspected = torch.tensor([len(self.discovered_faces_buffer[i]) for i in env_ids], device=self.device)
             coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
-            episode_success = coverage_ratio >= self.curriculum.get_inspection_level()
-            self.curriculum.update_inspection_level(episode_success)
 
             for i, env_id in enumerate(env_ids):
                 if debug and env_id == 0:
@@ -707,13 +730,26 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
                 final_vis_sums = all_vis_maps_torch.sum(dim=1)
                 final_entropies = self._calculate_entropy(all_occ_maps_torch).sum(dim=1)
-                final_visited_cells = (all_visit_maps_torch > 0).sum(dim=1)
+                final_robot_path_cells = (all_visit_maps_torch > 0).sum(dim=1)
+                final_unique_visible_cells = (all_vis_maps_torch > 0).sum(dim=1)
+
+                current_scores = final_unique_visible_cells[env_ids]
+                current_threshold = self.curriculum.get_exploration_threshold()
+                current_episode_length = self.curriculum.get_current_episode_length()
+                episode_success = current_scores >= current_threshold
+                self.curriculum.update_exploration_level(episode_success)
+                # Log curriculum details
+
                 for env_id in env_ids.cpu().tolist():
-                    self.episode_log_buffer["final_visibility_sum"].append(final_vis_sums[env_id].item())
+                    # Covergae for Trajectory
+                    self.episode_log_buffer["final_visited_cells_count"].append(final_robot_path_cells[env_id].item())
+                    #Surface Coverage Metric
+                    self.episode_log_buffer["final_unique_visible_cell_count"].append(final_unique_visible_cells[env_id].item())
+                    # Map Entropy
                     self.episode_log_buffer["final_map_entropy"].append(final_entropies[env_id].item())
-                    self.episode_log_buffer["final_visited_cells_count"].append(final_visited_cells[env_id].item())
 
-
+                    self.episode_log_buffer["curriculum/current_threshold"].append(current_threshold)
+                    self.episode_log_buffer["curriculum/current_episode_length"].append(current_episode_length)
 
         # --- END: New code for entropy logging ---
                 self.occupancy_mapper.reset_map(env_ids.cpu().tolist())
@@ -729,10 +765,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0
 
-        if debug:
-            pass
-            # for idx in range(len(num_faces_inspected)):
-            #    print(f"Number of Faces Discovered: {num_faces_inspected[idx]}")
 
         super()._reset_idx(env_ids)
             #number of steps taken in the episode
@@ -741,10 +773,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Sample random positions within specified range
         num_resets = len(env_ids)
         new_vel = torch.zeros((num_resets, 3), device=self.device)
-        # new_pos, new_quat = self.curriculum.get_start_pos(num_resets)
-        new_pos = torch.zeros((num_resets, 3), device=self.device)
-        new_quat = torch.zeros((num_resets, 4), device=self.device)
-        new_quat[:, 0] = 1.0  # No rotation (w, x, y, z)
+        new_pos, new_quat = self.curriculum.get_start_pos(num_resets)
+        # new_pos = torch.zeros((num_resets, 3), device=self.device)
+        # new_quat = torch.zeros((num_resets, 4), device=self.device)
+        # new_quat[:, 0] = 1.0  # No rotation (w, x, y, z)
 
         # Combine into root state
         new_root_state = torch.cat([new_pos, new_quat, new_vel, torch.zeros((num_resets, 3), device=self.device)], dim=-1)

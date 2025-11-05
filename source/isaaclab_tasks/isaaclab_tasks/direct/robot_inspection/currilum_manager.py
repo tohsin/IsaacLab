@@ -11,25 +11,50 @@ import torch
 from collections import deque
 
 class Curriculum:
-    def __init__(self,
-                 init_inspection_threshold = 0.5,
-                 max_inspection_threshold = 0.9,
-                 curriculum_difficulty_increment = 0.05,
-                 default_spatial_milestone: float = 0.8,
-                 final_spatial_milestone: float = 0.9,
-                 init_spatial_level = 0,
-                num_steps: int = 100,
+    def __init__(
+                self,
+                total_map_cells = 60_000,
+                assumed_surface_cell_ratio: float = 0.1,
+                start_exploration_ratio: float = 0.2,
+                max_exploration_ratio: float = 0.80,
+                exploration_increment_ratio: float = 0.05,
                 num_envs: int = 2,
                 device: str = None):
-        self.num_steps = num_steps
-        self.num_envs = num_envs
-        self.current_level = 0
-        self.init_inspection_threshold = init_inspection_threshold
-        self.max_inspection_threshold = max_inspection_threshold
-        self.curriculum_difficulty_increment = curriculum_difficulty_increment
-        self.device = device
         
 
+        total_surface_cells = total_map_cells * assumed_surface_cell_ratio
+        self.init_exploration_threshold = total_surface_cells * start_exploration_ratio
+        self.max_exploration_threshold = total_surface_cells * max_exploration_ratio
+        self.exploration_increment = total_surface_cells * exploration_increment_ratio
+
+        self.exploration_threshold = self.init_exploration_threshold
+        self.temporal_level = 0
+
+        self.num_envs = num_envs
+        self.current_level = 0
+        
+        self.device = device
+        self.success_buffer = deque(maxlen=20 * self.num_envs) # Buffer ~20 resets per env
+        self.min_episodes_for_update = 10 * self.num_envs
+        self.success_rate_threshold_for_increment = 0.70  # If >70% success, increase count threshold
+        self.success_rate_threshold_for_temporal = 0.85 # If >85% success, increase episode time
+        self.success_rate_threshold = 0.70
+        self.success_rate = 0.0
+       
+        self.episode_length_schedule = [1100, 1400, 1800, 2000, 2400]
+        milestone_ratios = [0.20, 0.35, 0.50, 0.65, 0.81]
+        self.exploration_milestones = [total_surface_cells * r for r in milestone_ratios]
+
+        self._setup_spawn_points()
+        print("--- Simplified Exploration Curriculum Initialized ---")
+        print(f"  Target Surface Cells: {total_surface_cells:.0f}")
+        print(f"  Initial Cell Count Threshold: {self.init_exploration_threshold:.0f}")
+        print(f"  Maximum Cell Count Threshold: {self.max_exploration_threshold:.0f}")
+        print(f"  Cell Count Increment: {self.exploration_increment:.0f}")
+        print(f"  Exploration Milestones: {[int(m) for m in self.exploration_milestones]}")
+        print("--------------------------------------------------")
+
+    def _setup_spawn_points(self):
         self.init_z = 0.06
         self.start_pos = [
                     [0, 0, self.init_z, DEG_0], #Valid # at the back
@@ -37,116 +62,59 @@ class Curriculum:
                     [-4.47, -5, self.init_z, DEG_90], 
                     [1.15, -5.56, self.init_z, DEG_90], #Valid
                     [1.15, 0, self.init_z, DEG_90], # Valid
-                    [-7.0, 1.74, self.init_z, DEG_0], # Navigation required here
+                    [-7.0, 1.74, self.init_z, DEG_0], # Navigation required Starts here
 
-                    [1.7818, 8.0840, 0.0635,  DEG_UNIQ], #Valid
-                    [3.67, 3.87, self.init_z, DEG_NEG_180], #Valid
-
-                    [1.46, 4.18, self.init_z, DEG_NEG_205], #Valid
-                    [4.56, 5.2789, self.init_z, DEG_NEG_105], #Valid
-
-                    [-1.0, 7.0, self.init_z, DEG_75], #valid
-                    [1.7818, 8.0840, 0.0635,  DEG_UNIQ], #Valid
-
-                    
-                    [0, 0, self.init_z, DEG_90],
-
-                    [2.2, 9.4, self.init_z, DEG_0],
-                    [2.2, 12.7, self.init_z, DEG_NEG_90],
-
-                    [-1.19, 0.18, self.init_z, DEG_90],
-                    [-2.41, 7.47, self.init_z, DEG_0],
-                    
-                    [-6.93, 4.59, self.init_z, DEG_0],
-                    [-10.41, 7.47, self.init_z, DEG_NEG_90],
-
-                    [-20.466, 4.53, self.init_z, DEG_90],
-                    [-22, 7.78, self.init_z, DEG_NEG_90],
-
-                    [-24.2, 11.41, self.init_z, DEG_NEG_90]]
-        self.episode_length_schedule = [
-            1400, 1200,  # Levels 0, 1
-            1400, 1400,
-
-            1400, 1400,
-            2500, 2500,
-
-            1200, 1200,
-            1200, 1200,
-
-            1200, 2200, # Levels 12, 13
-            2200, 2200, # Levels 2, 3
-
-            2500, 2500, # Levels 4, 5
-            2500, 2500, # Levels 6, 7
-
-            2500, 2500, # Levels 8, 9
-            2500, 2500 , # Levels 10, 11 (full length)
-
-            2500, 2500,
-            2500, 2500,
-
-            2500, 2500,
-            2500, 2500,
-            2500
-
-
-        ]
-        self.spatial_level = init_spatial_level
-        
-        positions = torch.tensor([[item[0], item[1], item[2]] for item in self.start_pos], device=device)
-        orientations = torch.tensor([item[3] for item in self.start_pos], device=device)
+                    [-7.0, -8.81,self.init_z, DEG_90 ],
+                    [6.7, -8.81, self.init_z, DEG_NEG_90 ],
+                    [3.63, 6.32, self.init_z, DEG_NEG_90 ],
+                    [-1.08, 6.32, self.init_z, DEG_NEG_90 ],
+                    [-6.73, 15.10, self.init_z, DEG_0 ],
+                    [0.83, 15.10, self.init_z, DEG_90 ],
+                    ]
+        positions = torch.tensor([[item[0], item[1], item[2]] for item in self.start_pos], device=self.device)
+        orientations = torch.tensor([item[3] for item in self.start_pos], device=self.device)
         self.start_positions_tensor = positions
         self.start_orientations_tensor = orientations
-        self.default_spatial_milestone = default_spatial_milestone
-        self.final_spatial_milestone = final_spatial_milestone
-        self.initialise_task_curriculum()
+
     #Task curriculum
-    def initialise_task_curriculum(self):
-        self.inspection_curriculum_level = self.init_inspection_threshold
-        self.success_buffer = deque(maxlen=self.num_steps * self.num_envs)
-        self.curriculum_threshold = 0.75  # steps
-        self.min_episodes_for_curriculum = (self.num_steps - 10) * self.num_envs
-        self.success_rate = 0.0
+    def get_exploration_threshold(self) -> float:
+            return self.exploration_threshold
 
-    def get_inspection_level(self):
-        return self.inspection_curriculum_level
-
-    def get_current_episode_length(self):
-        """Returns the max episode length for the current spatial level."""
-        # Ensure we don't go out of bounds if spatial_level exceeds schedule length
-        level_index = min(self.spatial_level, len(self.episode_length_schedule) - 1)
+    def get_current_episode_length(self) -> int:
+        """Returns the max episode length for the current temporal level."""
+        level_index = min(self.temporal_level, len(self.episode_length_schedule) - 1)
         return self.episode_length_schedule[level_index]
 
-    def update_inspection_level(self, episode_successes: torch.Tensor):
+    def update_exploration_level(self, episode_successes: torch.Tensor):
+        """Updates the curriculum based on the success of completed episodes."""
         for success in episode_successes:
             self.success_buffer.append(1 if success.item() else 0)
 
-        if len(self.success_buffer) < self.min_episodes_for_curriculum:
-            return 
+        if len(self.success_buffer) < self.min_episodes_for_update:
+            return
 
         self.success_rate = sum(self.success_buffer) / len(self.success_buffer)
 
-        if self.spatial_level >= len(self.start_pos) - 4:
-            current_milestone = self.final_spatial_milestone
-        else:
-            current_milestone = self.default_spatial_milestone
+        # --- Curriculum Advancement Logic ---
+        if self.success_rate >= self.success_rate_threshold:
+                # 1. Increase the exploration goal
+                new_threshold = self.exploration_threshold + self.exploration_increment
+                self.exploration_threshold = min(new_threshold, self.max_exploration_threshold)
+                self.success_buffer.clear() # Reset success buffer after an update
+                print(f"--- SUCCESS: INCREASING EXPLORATION THRESHOLD TO {self.exploration_threshold:.0f} ---")
 
-        #check if we need to advance spatial level
-        if self.inspection_curriculum_level>=current_milestone and self.spatial_level < len(self.start_pos) - 1:
-            self.spatial_level += 1 # Add one back here
-            self.success_buffer.clear()
-            self.inspection_curriculum_level = max(self.init_inspection_threshold, self.inspection_curriculum_level - 0.1)
-            return
+                # 2. Check if the new goal crosses a milestone, and increase time if it does
+                if self.temporal_level < len(self.episode_length_schedule) - 1:
+                    next_milestone = self.exploration_milestones[self.temporal_level + 1]
+                    if self.exploration_threshold >= next_milestone:
+                        self.temporal_level += 1
+                        print(f"--- MILESTONE REACHED! ADVANCING TEMPORAL LEVEL TO {self.temporal_level} ---")
+                        print(f"    New Episode Length: {self.get_current_episode_length()}")
 
-        if self.success_rate >= self.curriculum_threshold and self.inspection_curriculum_level < self.max_inspection_threshold:
-            new_threshold = self.inspection_curriculum_level + self.curriculum_difficulty_increment
-            self.inspection_curriculum_level = min(new_threshold, self.max_inspection_threshold)
-            self.success_buffer.clear()
-
-    def get_start_pos(self, num_resets: int):
-        pool_size = self.spatial_level + 1
+    def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gets random start positions from the ENTIRE pool of spawn points."""
+        pool_size = len(self.start_positions_tensor)
         random_indices = torch.randint(0, pool_size, (num_resets,), device=self.device)
-        new_pos = self.start_positions_tensor[random_indices].to(self.device)
-        new_quat = self.start_orientations_tensor[random_indices].to(self.device)
+        new_pos = self.start_positions_tensor[random_indices]
+        new_quat = self.start_orientations_tensor[random_indices]
         return new_pos, new_quat

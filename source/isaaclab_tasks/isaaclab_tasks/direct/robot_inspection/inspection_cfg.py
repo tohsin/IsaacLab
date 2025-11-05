@@ -166,20 +166,12 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         env_spacing= 60.0, 
         replicate_physics=True
     )
-
-    max_robot_distance = 2000
-
-   
  
     # inspection
     init_inspection_threshold = 0.5# Coverage % threshold to count as valid inspection
-    init_spatial_level = 4
-    max_inspection_threshold = 0.99
-    curriculum_difficulty_increment = 0.05
-
 
     terminate_on_all_inspected = True
-    min_episode_length = 2000
+    min_episode_length = 2400
     max_faces_to_inspect = env_parameters["num_faces"]
 
     # Logging

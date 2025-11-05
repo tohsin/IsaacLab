@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+#./isaaclab.sh -p scripts/reinforcement_learning/rl_games/train.py --task Isaac-Quadcopter-Direct-v0 --num_envs 4096 --headless --video
+
 from __future__ import annotations
 
 import gymnasium as gym

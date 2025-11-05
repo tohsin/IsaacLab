@@ -124,7 +124,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.ELU(),
             nn.Linear(512, 256),
             nn.ELU(),
-            nn.Linear(256, self.num_actions )
+            nn.Linear(256, self.num_actions ),
+            nn.Tanh()  
         )
         self.value_head = nn.Sequential(
             nn.Linear(self.gru_hidden_size, 1024),
@@ -136,7 +137,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Linear(256, 1)
         )
         # Action Head, MU and STD
-        self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
+        self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
 
     def get_specification(self) -> dict:
@@ -280,13 +281,13 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 5_000_000
+total_timesteps = 3_000_000
 num_updates = total_timesteps // (TOTAL_BATCH_SIZE)
 cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 2 #8
+cfg["learning_epochs"] = 4 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
@@ -294,7 +295,7 @@ cfg["learning_rate"] = 3e-4  # 0.0003     0.0006
 # cfg["learning_rate_scheduler"] = KLAdaptiveRL
 # cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008} # 0.008
 cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.CosineAnnealingLR
-cfg["learning_rate_scheduler_kwargs"] = {"T_max": num_updates}
+cfg["learning_rate_scheduler_kwargs"] = {"T_max": num_updates, "eta_min": 3e-5}
 
 cfg["optimizer_class"] = ForeachMuon
 cfg["optimizer_kwargs"] = {"betas": (0.9, 0.999), "eps": 1e-8} 
@@ -304,7 +305,7 @@ cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 1.0
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 0.05
+cfg["entropy_loss_scale"] = 0.01
 cfg["value_loss_scale"] = 1.0
 # cfg["kl_threshold"] = 0.0
 # cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
@@ -333,7 +334,7 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 2000
+cfg["experiment"]["write_interval"] = 1000
 cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
 cfg["experiment"]["checkpoint_interval"] = 10_000
 cfg["experiment"]["directory"] = log_root_path
