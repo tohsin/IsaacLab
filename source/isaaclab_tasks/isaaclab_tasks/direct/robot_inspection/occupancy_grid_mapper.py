@@ -36,7 +36,7 @@ class InteractiveVoxelVisualizer:
         try:
             temp_pcd.points = o3d.utility.Vector3dVector(points)
             temp_pcd.colors = o3d.utility.Vector3dVector(colors)
-            new_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(temp_pcd, voxel_size=self.voxel_size)
+            new_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(temp_pcd, voxel_size = self.voxel_size)
         except Exception as e:
             print(f"Error creating voxel grid: {e}")
             return
