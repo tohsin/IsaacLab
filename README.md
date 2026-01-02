@@ -9,6 +9,10 @@ All the environment source code and configurations are located in the [Robot Ins
 
 ```bash
 python3 scripts/environments/inspection_agent_discrete.py
+rm -rf ~/.local/share/ov/data/Kit/Isaac-Sim/5.0
+rm -rf ~/.cache/ov/Kit/Isaac-Sim/5.0
+rm -rf ~/.nvidia-omniverse/logs/Kit/Isaac-Sim/5.0
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
 ```
 
 ## Note 

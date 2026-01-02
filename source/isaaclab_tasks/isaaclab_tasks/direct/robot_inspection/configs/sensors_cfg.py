@@ -31,7 +31,8 @@ class SensorsCfg:
     )
     # Side-facing camera for the inspection task.
     inspection_camera: CameraCfg = CameraCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link/inspection_camera",
+        # prim_path="/World/envs/env_.*/Robot/base_link/inspection_camera",
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link/inspection_camera",
         update_period=0.1,
         height=_height,
         width=_width,
@@ -44,12 +45,15 @@ class SensorsCfg:
         ),
         offset=CameraCfg.OffsetCfg(
             pos=(0.3, 0.0, 0.15),
-            rot=(0, 0, -0.7071068, 0.7071068),
+            #pos=(0.1, 0.0, 0.0), 
+            # rot=(0, 0, -0.7071068, 0.7071068),
+            rot=(0.7071068, 0, 0, -0.7071068),
             convention="ros"
         ),
         colorize_semantic_segmentation=False,
         semantic_filter=f'class:{env_parameters["semantics_name"]}',
-        debug_vis=False
+        update_latest_camera_pose=True,
+        debug_vis=True
     )
     
     # Ray-caster for accurately identifying mesh faces.

@@ -5,6 +5,14 @@ ROBOT_CONFIGS = {
         "wheel_joint_expr": ".*wheel.*",
         "action_space": 4  # 4 wheels
     },
+    "jackal_ptz": {
+        "usd_path": "assets/jackal_basic_ptz_o.usd",
+        # "usd_path": "assets/jackal_basic_ptz.usd",
+        # "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal_basic.usd",
+        "wheel_joint_expr": ".*wheel.*",
+        "ptz_joint_expr":  ".*ptz.*",
+        "action_space": 6  # 4 +2 wheels and ptz
+    },
     "jetbot": {
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Jetbot/jetbot.usd", 
         "wheel_joint_expr": ".*wheel.*",

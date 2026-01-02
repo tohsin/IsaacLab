@@ -71,6 +71,7 @@ class Curriculum:
                     [-6.73, 15.10, self.init_z, DEG_0 ],
                     [0.83, 15.10, self.init_z, DEG_90 ],
                     ]
+        self.start_pos = self.start_pos[:1]
         positions = torch.tensor([[item[0], item[1], item[2]] for item in self.start_pos], device=self.device)
         orientations = torch.tensor([item[3] for item in self.start_pos], device=self.device)
         self.start_positions_tensor = positions

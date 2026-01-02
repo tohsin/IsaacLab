@@ -38,8 +38,8 @@ import time
 import torch.nn.functional as F
 import warp as wp
 visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
-debug = False
-use_wandb =  True #not debug
+debug = True
+use_wandb =  False #not debug
 
 class Isaac3dinspectionEnv(DirectRLEnv):
     cfg: Isaac3dinspectionEnvCfg
@@ -47,8 +47,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     def __init__(self, cfg: Isaac3dinspectionEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         print("Multi env inspection env")
-
+    
         self._wheel_joint_indices, self._wheel_joint_names = self.robot.find_joints(".*wheel.*")
+        self._ptz_joint_indices, _ = self.robot.find_joints(".*ptz.*")
+
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
 
 
@@ -138,9 +140,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self.robot
 
-
-        self._obs_camera = Camera(self.cfg.sensor_cfg.navigation_camera)
-        self.scene.sensors["camera"] = self._obs_camera
+        # self._obs_camera = Camera(self.cfg.sensor_cfg.navigation_camera)
+        # self.scene.sensors["camera"] = self._obs_camera
 
         self._inspection_camera = Camera(self.cfg.sensor_cfg.inspection_camera)
         self.scene.sensors["inspection_camera"] = self._inspection_camera
@@ -202,9 +203,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             self.wheel_commands = torch.stack([left_wheel_velocity, right_wheel_velocity,
                                         left_wheel_velocity, right_wheel_velocity], dim=1)
-           
+            pan_cmd = self.actions[:, 2] * 1.57
+            # 45 degees pi/4 = 0.785
+            tilt_cmd = self.actions[:, 3] * 0.785
+
+            ptz_targets = torch.stack([pan_cmd, tilt_cmd], dim=1)
+
             # Scale the wheel commands
-            target = self.wheel_commands * self.cfg.action_scale
+            wheel_targets = self.wheel_commands * self.cfg.action_scale
             # x = target
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
@@ -248,43 +254,45 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             self.wheel_commands = torch.stack([left_wheel_velocity, right_wheel_velocity,
                                        left_wheel_velocity, right_wheel_velocity], dim=1)
-            target = self.wheel_commands.clone()
-            target = target.view(self.num_envs, -1)
+            wheel_targets = self.wheel_commands.clone()
+            wheel_targets = wheel_targets.view(self.num_envs, -1)
 
         # print(f"[INFO] Wheel Commands: {self.wheel_commands.clone()}")
-        self.robot.set_joint_velocity_target(target, joint_ids=self._wheel_joint_indices)
+        self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wheel_joint_indices)
+        self.robot.set_joint_position_target(ptz_targets, joint_ids=self._ptz_joint_indices)
+
     
     def _update_maps(self, visualise: bool = False):
         
         if not self.cfg.mapping_cfg.use_occupancy_map:
             return
+        
+
+        # Update Visitation Map
         self.occupancy_mapper.update_visitation(self.robot.data.root_pos_w.cpu().numpy())
-        robot_pos_w = self.robot.data.root_pos_w
-        robot_quat_w = self.robot.data.root_quat_w # (w, x, y, z)
 
-        camera_local_pos = torch.tensor(self.cfg.sensor_cfg.navigation_camera.offset.pos, device=self.device)
-        camera_local_quat = torch.tensor(self.cfg.sensor_cfg.navigation_camera.offset.rot, device=self.device)
+        # Update Occupancy Map
+        # ---------------------------------------------------------
+        # NAVIGATION CAMERA (Occupancy Map)
+        # ---------------------------------------------------------
 
-        ## Convert ROS (x, y, z, w) to math (w, x, y, z) for quat_mul
-        camera_local_quat = camera_local_quat[[3, 0, 1, 2]]
+        nav_cam_pos = self._obs_camera.data.pos_w
+        nav_cam_quat = self._obs_camera.data.quat_w_ros
 
-        rotated_offsets = quat_apply(robot_quat_w, camera_local_pos.expand_as(robot_pos_w))
-        camera_world_pos = robot_pos_w + rotated_offsets
-        camera_world_quat = quat_mul(robot_quat_w, camera_local_quat.expand_as(robot_quat_w))
-
-        point_clouds_list  = []
-        depth_data = self._obs_camera.data.output["distance_to_image_plane"]
+        nav_depth_data = self._obs_camera.data.output["distance_to_image_plane"]
         intrinsic_matrices = self._obs_camera.data.intrinsic_matrices
 
-        for i in range(self.num_envs):
+        point_clouds_list  = []
 
+        for i in range(self.num_envs):
             pointcloud = create_pointcloud_from_depth(
                     intrinsic_matrix=intrinsic_matrices[i],
-                    depth=depth_data[i],
-                    position=camera_world_pos[i],
-                    orientation= camera_world_quat[i],
+                    depth=nav_depth_data[i],
+                    position=nav_cam_pos[i],
+                    orientation= nav_cam_quat[i],
                     device=self.device,
             )
+            
             # To visualise the point cloud in my Scene
             if i ==0 and visualise_point_cloud and visualise:
                 cfg = RAY_CASTER_MARKER_CFG.replace(prim_path="/Visuals/CameraPointCloud")
@@ -315,34 +323,29 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 pointcloud = torch.empty((0, 3), device=self.device)
             point_clouds_list.append(pointcloud.cpu().numpy())
         
-        # -- 4. Call the Mapper Update --
         self.occupancy_mapper.update_occupancy(
-            sensor_origins= camera_world_pos.cpu().numpy(),
+            sensor_origins= nav_cam_pos.cpu().numpy(),
             point_clouds=point_clouds_list,
         )
 
-        # Update Visibility Map
-        cam_data_insp = self._inspection_camera.data
-        camera_local_pos_insp = torch.tensor(self.cfg.sensor_cfg.inspection_camera.offset.pos, device=self.device)
-        camera_local_quat_insp = torch.tensor(self.cfg.sensor_cfg.inspection_camera.offset.rot, device=self.device)
-        
-        camera_local_quat_insp = camera_local_quat_insp[[3, 0, 1, 2]] # ROS to math convention
+        # ---------------------------------------------------------
+        # INSPECTION CAMERA (Visibility Map)
+        # ---------------------------------------------------------
+        insp_cam_pos = self._inspection_camera.data.pos_w
+        insp_cam_quat = self._inspection_camera.data.quat_w_ros
 
-        rotated_offsets_insp = quat_apply(robot_quat_w, camera_local_pos_insp.expand_as(robot_pos_w))
-        camera_world_pos_insp = robot_pos_w + rotated_offsets_insp
-        camera_world_quat_insp = quat_mul(robot_quat_w, camera_local_quat_insp.expand_as(robot_quat_w))
-        
-        point_clouds_list_insp = []
-        depth_data_insp = cam_data_insp.output["distance_to_image_plane"]
-        intrinsic_matrices_insp = cam_data_insp.intrinsic_matrices
+        depth_data_insp = self._inspection_camera.data.output["distance_to_image_plane"]
+        intrinsic_matrices_insp = self._inspection_camera.data.intrinsic_matrices
+
+        point_clouds_list_insp = []        
+        intrinsic_matrices_insp = self._inspection_camera.data.intrinsic_matrices
 
         for i in range(self.num_envs):
-
             pointcloud_insp = create_pointcloud_from_depth(
                     intrinsic_matrix=intrinsic_matrices_insp[i],
                     depth=depth_data_insp[i],
-                    position=camera_world_pos_insp[i],
-                    orientation=camera_world_quat_insp[i],
+                    position=insp_cam_pos[i],
+                    orientation=insp_cam_quat[i],
                     device=self.device,
             )
             if pointcloud_insp.shape[0] > 1024:
@@ -350,7 +353,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                  pointcloud_insp = pointcloud_insp[perm[:1024]]
             point_clouds_list_insp.append(pointcloud_insp.cpu().numpy())
         self.occupancy_mapper.update_visibility(
-            sensor_origins=camera_world_pos_insp.cpu().numpy(),
+            sensor_origins=insp_cam_pos.cpu().numpy(),
             point_clouds=point_clouds_list_insp,
         )
 
@@ -414,6 +417,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         return torch.stack([local_occ_map, local_vis_map, local_visit], dim=-1).to(self.device)
 
     def _get_observations(self) -> dict:
+        return {'policy': None}
         EPSILON = 1e-8
         
         # # Use pure rgb or depth information
@@ -466,9 +470,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         return {"policy": obs}
 
     def step(self, action: torch.Tensor) -> tuple[dict, torch.Tensor, torch.Tensor, dict]:
-        self._update_maps(visualise=debug)
+        
+        #self._update_maps(visualise=debug)
 
-        if self.common_step_counter % self.cfg.logging_interval == 0:
+        if False or self.common_step_counter % self.cfg.logging_interval == 0:
             mean_coverage = np.mean(self.episode_log_buffer["coverage_percent"])
             mean_faces_discovered = np.mean(self.episode_log_buffer["faces_discovered"])
             mean_final_map_entropy = np.mean(self.episode_log_buffer["final_map_entropy"])
@@ -632,7 +637,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             Exploration Rewards,
             Visibility Rewards
         """
-        # return torch.ones(self.num_envs, device=self.device)
+        return torch.ones(self.num_envs, device=self.device)
         # face_discovery_raw, num_faces_inspected = self._compute_face_discovery_reward_fast()
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
         visitation_reward = self._compute_visitation_reward()
@@ -693,7 +698,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         max_length = self.curriculum.get_current_episode_length()
         # time_out = self.episode_length_buf >= max_length - 1
         time_out = self.episode_length_buf >= self.cfg.min_episode_length - 1
-
         # num_faces_inspected = torch.tensor([len(s) for s in self.discovered_faces_buffer], device=self.device)
         # coverage_condition = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_inspection_level()
         # coverage_condition = torch.zeros_like(time_out)

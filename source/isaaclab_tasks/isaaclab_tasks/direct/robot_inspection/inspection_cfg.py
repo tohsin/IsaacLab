@@ -68,7 +68,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             - [v_zero, ω_high_right] (Rotate in Place right)
     '''
     # action_space = spaces.Discrete(6)
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+    action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
     viewer = ViewerCfg( eye=(-10, 5, 8.4), lookat=(0, 0, 0.0))
     
     # outside wall
@@ -115,13 +115,18 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=ROBOT_CONFIGS["jackal"]["usd_path"],
+            usd_path=ROBOT_CONFIGS["jackal_ptz"]["usd_path"],
         ),
         actuators={
             "wheel_acts": ImplicitActuatorCfg(
-                joint_names_expr=ROBOT_CONFIGS["jackal"]["wheel_joint_expr"],
-                damping=None,
+                joint_names_expr=ROBOT_CONFIGS["jackal_ptz"]["wheel_joint_expr"],
+                damping=10_000, #10000.0,
                 stiffness=None
+            ),
+            "ptz_acts": ImplicitActuatorCfg(
+                joint_names_expr=ROBOT_CONFIGS["jackal_ptz"]["ptz_joint_expr"], 
+                stiffness=400.0, # High stiffness drives the joint to a specific angle
+                damping=40.0     # Moderate damping prevents oscillation
             )
         },
         debug_vis=True

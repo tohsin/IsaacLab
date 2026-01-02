@@ -30,7 +30,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 """Rest everything follows."""
-
+import math
 import gymnasium as gym
 import torch
 
@@ -63,52 +63,15 @@ def main():
             # run everything in inference mode
             with torch.inference_mode():
                 
-                def move_forward():
-                    return torch.tensor([[0.7, 0.0]], device=env.unwrapped.device)
-                def turn_left():
-                    return torch.tensor([[0.0, 1.0]], device=env.unwrapped.device)
-                def turn_right():
-                    return torch.tensor([[0.0, -1.0]], device=env.unwrapped.device)
+               
 
                 for i in range(3000):
-                    if i < 50:
-                        actions = move_forward()
-                    elif i >= 50 and i < 170:
-                        actions = turn_right()
-                    elif i >= 170 and i < 440:
-                        actions = move_forward()
-                    elif i >= 440 and i < 570:
-                        actions = turn_right()
-                    elif i >= 570 and i < 730:
-                        actions = move_forward()
-                    elif i >= 730 and i < 850:
-                        actions = turn_right()
-                    elif i >= 850 and i < 1000:
-                        actions = move_forward()
-                    elif i >= 1000 and i < 1150:
-                        actions = turn_right()
-                    elif i >= 1150 and i < 1300:
-                        actions = move_forward()
+                    if i < 100:
+                        actions = torch.tensor([[0.7, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
 
-
-                    # elif i >= 400 and i < 500:
-                    #     actions = move_forward()
-                    # elif i >= 500 and i < 600:
-                    #     actions = turn_right()
-                    # elif i >= 600 and i < 700:
-                    #     actions = move_forward()
-                    # elif i >= 700 and i < 800:
-                    #     actions = turn_right()
-                    # else: actions = move_forward()
-
-
-
-                    # actions = torch.tensor([[0.3, -1.0]], device=env.unwrapped.device)
-                    # actions = torch.from_numpy(actions).to(env.unwrapped.device)
-                    # print(f"Actions: {actions}")
-                    # actions = 2 * torch.rand(env.action_space.shape, device=env.unwrapped.device) - 1
-                    # apply actions
-                    # action = move_forward()
+                    else:
+                        tilt_signal = math.sin(i * 0.05)
+                        actions = torch.tensor([[0.0, 0.0, -0.5, tilt_signal]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

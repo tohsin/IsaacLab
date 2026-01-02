@@ -615,7 +615,8 @@ class Camera(SensorBase):
             raise RuntimeError("Camera prim is None. Please call 'sim.play()' first.")
 
         # get the poses from the view
-        poses, quat = self._view.get_world_poses(env_ids)
+        env_ids = env_ids.to(torch.int32)
+        poses, quat = self._view.get_world_poses(env_ids, usd = False)
         self._data.pos_w[env_ids] = poses
         self._data.quat_w_world[env_ids] = convert_camera_frame_orientation_convention(
             quat, origin="opengl", target="world"
