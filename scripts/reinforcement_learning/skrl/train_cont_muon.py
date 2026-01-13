@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environ
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=32, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=128, help="Number of environments to simulate.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -261,7 +261,7 @@ env = wrap_env(env)
 
 device = env.device
 # assume num env is 16
-TOTAL_BATCH_SIZE = 2048 # 2048
+TOTAL_BATCH_SIZE = 8192 #8192# 2048
 sequence_length = 32
 rollout_length = TOTAL_BATCH_SIZE // env.num_envs
 
@@ -281,24 +281,28 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 3_000_000
-num_updates = total_timesteps // (TOTAL_BATCH_SIZE)
+total_timesteps = 300_000
+
 cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 4 #8
+cfg["learning_epochs"] = 8 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 3e-4  # 0.0003     0.0006
+cfg["learning_rate"] = 3e-3  # 0.0003     0.0006
 # cfg["learning_rate_scheduler"] = KLAdaptiveRL
 # cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008} # 0.008
+scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
 cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.CosineAnnealingLR
-cfg["learning_rate_scheduler_kwargs"] = {"T_max": num_updates, "eta_min": 3e-5}
+cfg["learning_rate_scheduler_kwargs"] = {
+    "T_max": scheduler_max_steps,
+    "eta_min": 3e-5
+}
 
-cfg["optimizer_class"] = ForeachMuon
-cfg["optimizer_kwargs"] = {"betas": (0.9, 0.999), "eps": 1e-8} 
+# cfg["optimizer_class"] = ForeachMuon
+# cfg["optimizer_kwargs"] = {"betas": (0.9, 0.999), "eps": 1e-8} 
 
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
@@ -334,7 +338,7 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 1000
+cfg["experiment"]["write_interval"] = 2000
 cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
 cfg["experiment"]["checkpoint_interval"] = 10_000
 cfg["experiment"]["directory"] = log_root_path

@@ -64,14 +64,33 @@ def main():
             with torch.inference_mode():
                 
 
-                for i in range(3000):
-                    if i < 100:
-                        actions = torch.tensor([[0.7, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
-
+                for i in range(1000):
+                    if i < 40:
+                        #forward
+                        actions = torch.tensor([[0.3, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=40 and i < 140:
+                        #print Turn
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=140 and i <180:
+                        #print Forward
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=180 and i < 280:
+                        # turn
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=280 and i <320:
+                        # forward
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=320 and i < 430:
+                        # turn
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=430 and i <470:
+                        # forward
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=470 and i <570:
+                        # turn
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
                     else:
-                        tilt_signal = math.sin(i * 0.05)
-                        #print(tilt_signal)
-                        actions = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0,  0.0, -1.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

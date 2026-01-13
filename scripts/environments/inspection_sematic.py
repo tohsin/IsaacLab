@@ -64,14 +64,9 @@ def main():
             with torch.inference_mode():
                 
 
-                for i in range(3000):
-                    if i < 100:
-                        actions = torch.tensor([[0.7, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                for i in range(1000):
 
-                    else:
-                        tilt_signal = math.sin(i * 0.05)
-                        #print(tilt_signal)
-                        actions = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    actions = torch.tensor([[0.0,  0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

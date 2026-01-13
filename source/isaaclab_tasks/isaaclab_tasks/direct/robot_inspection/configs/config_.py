@@ -6,8 +6,8 @@ ROBOT_CONFIGS = {
         "action_space": 4  # 4 wheels
     },
     "jackal_ptz": {
-        "usd_path": "assets/jackal_basic_ptz_o.usd",
-        # "usd_path": "assets/jackal_basic_ptz.usd",
+        #"usd_path": "assets/jackal_basic_ptz_o.usd",
+        "usd_path": "/home/tosin/Documents/GitHub/IsaacLab/assets/jackal_basic_ptz_o.usd",
         # "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal_basic.usd",
         "wheel_joint_expr": ".*wheel.*",
         "ptz_joint_expr":  ".*ptz.*",
@@ -51,7 +51,7 @@ Env_params = {
         "env_prim_path": "/World/envs/env_.*/warehouse"
     },
     'empty_room':{
-        "num_faces": 4000,
+        "num_faces": 1400,
         "semantics_type": "class",
         "semantics_name": "inspection_goal",
         "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",

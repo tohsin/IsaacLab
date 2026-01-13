@@ -1,20 +1,20 @@
 import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from .config_ import env_parameters
-from isaaclab.sensors import CameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg
-
+from isaaclab.sensors import TiledCameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg
+_debug_vis = False
 @configclass
 class SensorsCfg:
     """Configuration for all robot-mounted sensors."""
-    _width: int = 128
-    _height: int = 128
+    camera_height: int = 64
+    camera_width: int = 64
 
     # Front-facing camera for navigation.
-    navigation_camera: CameraCfg = CameraCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link/front_camera",
-        update_period=0.1,
-        height=_height,
-        width=_width,
+    navigation_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/base_link/nav_camera",
+        update_period=0.24,
+        height=camera_height,
+        width=camera_width,
         data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
@@ -22,56 +22,55 @@ class SensorsCfg:
             horizontal_aperture=20.955,
             clipping_range=(0.1, 1.0e5)
         ),
-        offset=CameraCfg.OffsetCfg(
+        offset=TiledCameraCfg.OffsetCfg(
             pos=(0.0, 0.3, 0.15),
             rot=(-0.5, 0.5, -0.5, 0.5),
             convention="ros"
         ),
-        debug_vis=False 
+        debug_vis=_debug_vis
     )
-    # Side-facing camera for the inspection task.
-    inspection_camera: CameraCfg = CameraCfg(
-        # prim_path="/World/envs/env_.*/Robot/base_link/inspection_camera",
-        prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link/inspection_camera",
-        update_period=0.1,
-        height=_height,
-        width=_width,
-        data_types=["rgb", "semantic_segmentation", "distance_to_image_plane"],
+    ptz_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link/ptz_camera",
+        update_period=0.24,
+        height=camera_height,
+        width=camera_width,
+        data_types=["rgb", "distance_to_image_plane", "semantic_segmentation" ],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,
             horizontal_aperture=20.955,
             clipping_range=(0.1, 1.0e5)
         ),
-        offset=CameraCfg.OffsetCfg(
+        offset=TiledCameraCfg.OffsetCfg(
             pos=(0.3, 0.0, 0.15),
-            #pos=(0.1, 0.0, 0.0), 
-            # rot=(0, 0, -0.7071068, 0.7071068),
             rot=(0.7071068, 0, 0, -0.7071068),
             convention="ros"
         ),
         colorize_semantic_segmentation=False,
         semantic_filter=f'class:{env_parameters["semantics_name"]}',
         update_latest_camera_pose=True,
-        debug_vis=True
+        debug_vis=_debug_vis
     )
-    
-    # Ray-caster for accurately identifying mesh faces.
+
+    #Ray-caster for accurately identifying mesh faces.
     face_raycaster: MultiMeshRayCasterCameraCfg = MultiMeshRayCasterCameraCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
-        update_period=0.1,
+        # prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link",
+        update_period=0.24,
         data_types=["face_ids"],
         offset=RayCasterCameraCfg.OffsetCfg(
             pos=(0.3, 0.0, 0.15),
-            rot=(0, 0, -0.7071068, 0.7071068), 
-            convention="ros"),
+            #rot=(0, 0, -0.7071068, 0.7071068),
+            rot=(0.7071068, 0, 0, -0.7071068),
+            convention="ros"
+        ),
         pattern_cfg=patterns.PinholeCameraPatternCfg(
-            height=_height,
-            width=_width, 
+            height=camera_height,
+            width=camera_width, 
             focal_length=24.0,
             horizontal_aperture=20.955,
         ),
         mesh_prim_paths=[env_parameters["inspection_goal_prim_path"]],
         update_mesh_ids=True,
-        debug_vis=False
+        debug_vis=_debug_vis
     )

@@ -11,3 +11,4 @@ class MappingCfg:
         "y_min": -12.5, "y_max": 18.0,
         "z_min": 0.0, "z_max": 2.5
     }
+    map_update_interval: float = 4 # steps between map updates

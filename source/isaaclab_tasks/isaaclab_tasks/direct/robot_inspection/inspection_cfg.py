@@ -48,11 +48,10 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # env
     env_parameters = env_parameters
     use_camera_obs: bool = True
-    _width, _height = 128, 128
     inspection_objective_prim_path = env_parameters["inspection_goal_prim_path"]
 
 
-    decimation = 2
+    decimation = 6
     # semantic_config_path = "source/isaaclab_tasks/isaaclab_tasks/direct/robot_inspection/semantic_config_warehouse.json"
     episode_length_s = 42
     action_scale = 1.0  # [N]
@@ -154,7 +153,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "cameras": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
-            shape=(_height, _height, 6)
+            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, 6)
         ),
         "local-map": spaces.Box(
             low=float("-inf"),
@@ -168,7 +167,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # scene
     scene: WarehouseSceneCfg = WarehouseSceneCfg(
         num_envs=16, 
-        env_spacing= 60.0, 
+        env_spacing= 35.0, 
         replicate_physics=True
     )
  
@@ -176,7 +175,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     init_inspection_threshold = 0.5# Coverage % threshold to count as valid inspection
 
     terminate_on_all_inspected = True
-    min_episode_length = 2400
+    min_episode_length = 1200
     max_faces_to_inspect = env_parameters["num_faces"]
 
     # Logging

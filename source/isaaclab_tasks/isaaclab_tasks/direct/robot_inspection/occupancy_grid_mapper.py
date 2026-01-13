@@ -3,11 +3,11 @@ import warp as wp
 import open3d as o3d
 from scipy.spatial.transform import Rotation
 
-from .warp_occupancy_fast import (
-    update_occupancy_fast, 
-    mark_visible_voxels, 
+from .kernels.reset_kernel import reset_maps_kernel
+from .kernels.occ_map_kernel import update_occupancy_fast
+from .kernels.surface_visiliblity_kernel import mark_visible_voxels
+from .kernels.warp_occupancy_fast import (
     update_visitation_kernel,
-    reset_maps_kernel, 
     extract_local_maps_kernel,
     clamp_map_values, 
 )
@@ -107,6 +107,7 @@ class OccupancyGridMapper:
                 env_origins : np.array,
                 visibility_surface_hits_only : bool = False,
                 visualize_env_id: int | None = None,
+                visualization_mode: str = "occupancy",
                 device="cuda"):
         """
         Initializes the occupancy grid mapper.
@@ -124,6 +125,7 @@ class OccupancyGridMapper:
         self.map_bounds = map_bounds
         self.resolution = resolution
         self.visibility_surface_hits_only = visibility_surface_hits_only
+        self.visualization_mode = visualization_mode
 
         self.map_origin = np.array([
             self.map_bounds['x_min'],
@@ -395,29 +397,37 @@ class OccupancyGridMapper:
         map_size = self.num_voxels_per_map
         map_offset = env_id * map_size
 
-        env_map_np = self.occupancy_map.numpy()[map_offset : map_offset + map_size]
+        all_indices = np.array([], dtype=int)
+        colors = np.array([])
 
-        # Define masks for each state
-        occupied_mask = env_map_np > self.log_odds_occupied
-        free_mask = env_map_np < self.log_odds_free
-        unknown_mask = (~occupied_mask & ~free_mask)
+        if self.visualization_mode == "occupancy":
+            env_map_np = self.occupancy_map.numpy()[map_offset : map_offset + map_size]
 
-        # Get linear indices for each state
-        occupied_indices = np.where(occupied_mask)[0]
-        free_indices = np.where(free_mask)[0]
-        unknown_indices = np.where(unknown_mask)[0] # Only show non-neutral unknowns
+            # Define masks for each state
+            occupied_mask = env_map_np > self.log_odds_occupied
+            # Get linear indices for each state
+            occupied_indices = np.where(occupied_mask)[0]
+            # all_indices = np.concatenate([occupied_indices, free_indices, unknown_indices])
+            all_indices = occupied_indices
 
-        # all_indices = np.concatenate([occupied_indices, free_indices, unknown_indices])
-        all_indices = occupied_indices
+            if all_indices.size > 0:
+                colors = np.zeros((len(all_indices), 3))
+                colors[:] = [0.0, 0.0, 0.0]
+
+        elif self.visualization_mode == "visibility":
+            env_map_np = self.visibility_map.numpy()[map_offset : map_offset + map_size]
+            visible_mask = env_map_np >= 0.4
+            visible_indices = np.where(visible_mask)[0]
+            all_indices = visible_indices
+
+            if all_indices.size > 0:
+                intensities = env_map_np[visible_indices]
+                colors = np.zeros((len(all_indices), 3))
+                colors[:, 1] = intensities
+                colors[:, 2] = 0.2
 
         if all_indices.size == 0:
             return np.array([]), np.array([])
-
-        # Assign colors based on state
-        colors = np.zeros((len(all_indices), 3))
-        colors[:len(occupied_indices)] = [0.0, 0.0, 0.0]      # Black
-        colors[len(occupied_indices):len(occupied_indices) + len(free_indices)] = [1.0, 1.0, 1.0] # White
-        colors[len(occupied_indices) + len(free_indices):] = [0.5, 0.5, 0.5] # Grey
 
         # Convert linear indices to 3D grid coordinates
         z = all_indices % self.map_dims[2]
@@ -490,7 +500,7 @@ class OccupancyGridMapper:
     def update_visualization(self, robot_pos: np.ndarray, robot_quat: np.ndarray):
         """Updates the interactive visualization for the configured environment."""
         # This method is now called internally by update()
-        if self.visualizer is None:
+        if self.visualizer is None or self.visualization_mode == None:
             return
 
         points, colors = self.get_voxel_states_as_points(self.vis_env_id)
