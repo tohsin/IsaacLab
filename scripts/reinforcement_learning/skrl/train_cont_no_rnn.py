@@ -37,7 +37,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 
-from skrl.agents.torch.ppo import PPO_RNN as PPO, PPO_DEFAULT_CONFIG
+from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
@@ -67,17 +67,14 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 clip_actions=False,
                 clip_log_std=True, min_log_std=-20, max_log_std=2,
                 num_envs=1,
-                sequence_length=128,
-                _hidden_size=128,
-                _hidden_size_gru=256):
+                _hidden_size=128):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         DeterministicMixin.__init__(self, False)
         self.cfg = cfg
         self.num_envs = num_envs
-        self.sequence_length = sequence_length
         self._hidden_size = _hidden_size
-        self._hidden_size_gru = _hidden_size_gru
+        self.shared_hidden_size = 512
 
         camera_space = observation_space.spaces["cameras"]
         self.camera_shape = camera_space.shape
@@ -106,33 +103,25 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         #self.gru_input_size = camera_cnn_output_dim + self.robot_pose_dim + map_cnn_output_dim
         camera_features_size = self.camera_encoder.get_out_size()
         map_features_size = self.map_encoder.get_out_size()
-        self.gru_input_size = camera_features_size + self.robot_pose_dim + map_features_size
-        self.gru_hidden_size = 512 #H output size of GRU
-        self.gru_num_layers = 1
-        # print(f"DEBUG: gru_input_size: {self.gru_input_size}")
+        self.features_input_size = camera_features_size + self.robot_pose_dim + map_features_size
 
-        self.gru = nn.GRU(input_size=self.gru_input_size,
-                          hidden_size=self.gru_hidden_size,
-                          num_layers=self.gru_num_layers,
-                          batch_first=True)  # batch_first -> (batch, sequence, features)
-        #output heads
-
-        self.policy_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, 1024),
+        self.net = nn.Sequential(
+            nn.Linear(self.features_input_size, 1024),
             nn.ELU(),
             nn.Linear(1024, 512),
             nn.ELU(),
-            nn.Linear(512, 256),
+            nn.Linear(512, self.shared_hidden_size),
             nn.ELU(),
+        )
+
+
+        self.policy_head = nn.Sequential(
+            nn.Linear(self.shared_hidden_size, 256),
             nn.Linear(256, self.num_actions ),
             nn.Tanh()  
         )
         self.value_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, 1024),
-            nn.ELU(),
-            nn.Linear(1024, 512),
-            nn.ELU(),
-            nn.Linear(512, 256),
+            nn.Linear(self.shared_hidden_size, 256),
             nn.ELU(),
             nn.Linear(256, 1)
         )
@@ -141,12 +130,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
 
     def get_specification(self) -> dict:
-        return {
-                "rnn": {
-                        "sequence_length": self.sequence_length,
-                        "sizes": [(self.gru_num_layers, self.num_envs, self.gru_hidden_size)],
-                    }
-                }
+        return {}
             
     def unflatten_observations(self, flat_obs):
         """
@@ -195,59 +179,23 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        terminated = inputs.get("terminated", None)
-        hidden_states = inputs["rnn"][0]
         camera_obs, local_map, robot_pose,  = self.unflatten_observations(states)
 
         camera_obs_permuted = camera_obs.permute(0, 3, 1, 2)
         local_map_permuted = local_map.permute(0, 4, 1, 2, 3)
-        # camera_obs = states["cameras"].permute(0, 3, 1, 2)  # (batch, channels, height, width)
-
         camera_features = self.camera_encoder(camera_obs_permuted)
         map_features = self.map_encoder(local_map_permuted)
         
         combined_features = torch.cat((camera_features, map_features, robot_pose), dim=1)
-
-        if self.training:
-            # just return dummy action to debug sim
-            # return torch.zeros((self.num_envs, self.num_actions), device=self.device), {"rnn": [hidden_states]}
-            rnn_input = combined_features.view(-1, self.sequence_length, combined_features.shape[-1])
-            hidden_states = hidden_states.view(self.gru_num_layers, -1, self.sequence_length, self.gru_hidden_size)
-            # get the hidden states corresponding to the initial sequence
-            hidden_states = hidden_states[:, :, 0, :].contiguous()
-
-            if terminated is not None and torch.any(terminated):
-                rnn_outputs = []
-                terminated = terminated.view(-1, self.sequence_length)
-
-                indexes = [0] + (terminated[:, :-1].any(dim=0).nonzero(as_tuple=True)[0] + 1).tolist() + [self.sequence_length]
-
-                for i in range(len(indexes) - 1):
-                    i0, i1 = indexes[i], indexes[i+1]
-                    rnn_output, hidden_states = self.gru(
-                        rnn_input[:, i0:i1, :], hidden_states
-                    )
-                    hidden_states[:, terminated[:, i1 - 1], :] = 0
-                    rnn_outputs.append(rnn_output)
-                rnn_output = torch.cat(rnn_outputs, dim=1)
-            else:
-                rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
-        else:
-            rnn_input = combined_features.unsqueeze(1)
-            rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
-
-
-        #flatten  rnn output
-        # flat_gru_output = gru_output.reshape(-1, self.gru_hidden_size)
-        rnn_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)
+        x = self.net(combined_features)
 
         if role == "policy":
-            mean_actions = self.policy_head(rnn_output)
+            mean_actions = self.policy_head(x)
             log_std = self.log_std_parameter.expand_as(mean_actions)
-            return mean_actions, log_std, {"rnn": [hidden_states]}
+            return mean_actions, log_std, {}
         elif role == "value":
-            value_estimate = self.value_head(rnn_output)
-            return value_estimate, {"rnn": [hidden_states]}
+            value_estimate = self.value_head(x)
+            return value_estimate, {}
 
 
 
@@ -261,8 +209,7 @@ env = wrap_env(env)
 
 device = env.device
 # assume num env is 16
-TOTAL_BATCH_SIZE = 8192 #8192# 2048
-sequence_length = 32
+TOTAL_BATCH_SIZE = 8192 #8192 # 2048
 rollout_length = TOTAL_BATCH_SIZE // env.num_envs
 
 memory = RandomMemory(memory_size=rollout_length, num_envs=env.num_envs, device=device)
@@ -278,14 +225,13 @@ models['policy'] = Shared(env.observation_space,
                             env.action_space,
                             env.device,
                             cfg=model_config,
-                            num_envs=env.num_envs,
-                            sequence_length=sequence_length)
+                            num_envs=env.num_envs,)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 500_000
+total_timesteps = 1_000_000
 
 cfg = PPO_DEFAULT_CONFIG.copy()
-warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
-heavyball.utils.compile_mode = None
+# warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
+# heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
 cfg["learning_epochs"] = 8 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
@@ -326,7 +272,7 @@ cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 log_root_path = os.path.join("logs", "skrl", "3DInspection_direct")
 log_root_path = os.path.abspath(log_root_path)
 
-experiment_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_ppo_gru_128"
+experiment_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_ppo_mlp"
 
 print(f"[INFO] Logging experiment in directory: {log_root_path}")
 
@@ -338,13 +284,18 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 2000
+cfg["experiment"]["write_interval"] = 2400
 cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
-cfg["experiment"]["checkpoint_interval"] = 10_000
+cfg["experiment"]["checkpoint_interval"] = 5_000
 cfg["experiment"]["directory"] = log_root_path
 cfg["experiment"]["experiment_name"] = experiment_name
 cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
-
+if _use_wandb:
+    cfg["experiment"]["wandb_kwargs"] = {
+        "project": "3DInspection_NoRNN",  # Name of the project in WandB dashboard
+        "name": experiment_name,           # Name of this specific run
+        "tags": ["PPO", "IsaacLab", args_cli.task]
+    }
 agent = PPO(models=models, 
             memory=memory,
             cfg=cfg,

@@ -159,3 +159,5 @@ def visualise_faces(self, face_ids_to_show):
         # Redraw the canvas to show the updates
         self.fig_face.canvas.draw()
         self.fig_face.canvas.flush_events()
+
+

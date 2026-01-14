@@ -389,12 +389,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             - Last Action
         """
         pose_world = self.robot.data.root_state_w.clone()
-
-        position = pose_world[...,    :3]
+        position = pose_world[..., :3]
         orientation = pose_world[..., 3:7]
         lin_vel = pose_world[..., 7:10]
         ang_vel = pose_world[..., 10:13]
-        action_dim = None
+
         if isinstance(self.cfg.action_space, gym.spaces.Discrete):
             action_dim = self.cfg.action_space.n
             # One-hot encode the discrete action, ensuring it's long type
@@ -405,19 +404,26 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         obs_buffer = torch.zeros((self.num_envs, 13 + action_dim), device=self.device)
 
-        pos_noise = (torch.rand_like(position) - 0.5) * 0.2
-        orientation_noise = (torch.rand_like(orientation) - 0.5) * 0.2
-        vel_noise = (torch.randn_like(lin_vel)- 0.5) * 0.2
-        ang_vel_noise = (torch.randn_like(ang_vel)-0.5) * 0.2
-        action_noise = (torch.randn_like(last_action_obs)-0.5) * 0.2
+        # pos_noise = (torch.rand_like(position) - 0.5) * 0.2
+        # orientation_noise = (torch.rand_like(orientation) - 0.5) * 0.2
+        # vel_noise = (torch.randn_like(lin_vel)- 0.5) * 0.2
+        # ang_vel_noise = (torch.randn_like(ang_vel)-0.5) * 0.2
+        # action_noise = (torch.randn_like(last_action_obs)-0.5) * 0.2
 
+        pos_noise = torch.randn_like(position) * 0.05
+        vel_noise = torch.randn_like(lin_vel) * 0.1
+        ang_vel_noise = torch.randn_like(ang_vel) * 0.1
+        quat_noise = torch.randn_like(orientation) * 0.02
 
         obs_buffer[..., :3] = quat_apply_inverse(self.init_quats,  position - self.init_position) + pos_noise
-        obs_buffer[..., 3:7] = quat_mul(quat_conjugate(self.init_quats), orientation) + orientation_noise
+        rel_quat = quat_mul(quat_conjugate(self.init_quats), orientation) + quat_noise
+        obs_buffer[..., 3:7] = F.normalize(rel_quat, p=2, dim=-1)
+
+        # obs_buffer[..., 3:7] = quat_mul(quat_conjugate(self.init_quats), orientation) + orientation_noise
         obs_buffer[..., 7:10] = quat_apply_inverse(orientation, lin_vel) + vel_noise
         obs_buffer[..., 10:13] = quat_apply_inverse(orientation, ang_vel) + ang_vel_noise
 
-        obs_buffer[..., 13:13 + action_dim] = last_action_obs + action_noise
+        obs_buffer[..., 13:13 + action_dim] = last_action_obs
         return obs_buffer
     
     def _compute_local_map_observation(self) -> torch.Tensor:
@@ -428,39 +434,26 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         return torch.stack([local_occ_map, local_vis_map, local_visit], dim=-1).to(self.device)
 
     def _get_observations(self) -> dict:
-        EPSILON = 1e-8
-        # return nothing here
-
         # return  {"policy": None}
-        # # Use pure rgb or depth information
         if  "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types:
-
             front_camera_data = self._nav_camera.data.output[ "rgb"] / 255.0
-            if torch.isnan(front_camera_data).any() or torch.isinf(front_camera_data).any():
-                print("\n!!! WARNING: Invalid raw data in front camera! Replacing with zeros. !!!\n")
-                front_camera_data = torch.zeros_like(front_camera_data)
 
         if  "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types:
-
             ptz_camera_data = self._ptz_camera.data.output["rgb"] / 255.0
-            if torch.isnan(ptz_camera_data).any() or torch.isinf(ptz_camera_data).any():
-                print("\n!!! WARNING: Invalid raw data in side camera! Replacing with zeros. !!!\n")
-                ptz_camera_data = torch.zeros_like(ptz_camera_data)
-            # side_mean = torch.mean(side_camera_data, dim=(1, 2), keepdim=True)
-            # side_camera_data -= side_mean
-            if torch.isnan(ptz_camera_data).any():
-                raise ValueError("NaN detected in RAW side camera data!")
-    
-        combined_camera_data = torch.cat([front_camera_data, ptz_camera_data], dim=-1)
-        if torch.isnan(combined_camera_data).any():
-            print("\n!!! WARNING: NaN detected in combined camera buffer!!!\n")
-            # Uncomment the next line to stop training when a NaN is found
-            raise ValueError("NaN detected in combined camera buffer")
-
-        if torch.isinf(combined_camera_data).any():
-            print("\n!!! WARNING: Inf detected in combined camera buffer!!!\n")
-            # Uncomment the next line to stop training when an Inf is found
-            raise ValueError("Inf detected in combined camera buffer")
+        
+        semantic_channel = torch.zeros(
+            (self.num_envs, self.cfg.sensor_cfg.ptz_camera.height, self.cfg.sensor_cfg.ptz_camera.width, 1),
+            device=self.device
+        )
+        if  "semantic_segmentation" in self.cfg.sensor_cfg.ptz_camera.data_types:
+            target_mask = self._get_semantic_mask(self._ptz_camera)
+            
+            if target_mask is not None:
+                semantic_channel = target_mask.float()
+            
+        combined_camera_data = torch.cat([
+            front_camera_data, ptz_camera_data, semantic_channel], dim=-1)
+       
 
         if isinstance(self.single_observation_space["policy"], gym.spaces.Box):
             obs = combined_camera_data.clone()
@@ -477,9 +470,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             #     'cameras': torch.ones_like(combined_camera_data.clone()) * 1.0,
             #     'local-map':  torch.ones_like(self._compute_local_map_observation()) * 2.0
             # }
-        elif isinstance(self.single_observation_space["policy"], gym.spaces.Tuple):
-            
-            obs = (combined_camera_data.clone(), self.robot.data.root_state_w.clone())
 
         return {"policy": obs}
 
@@ -532,38 +522,45 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     cv2.waitKey(1)
         return super().step(action)
       
+    def _get_semantic_mask(self, camera) -> torch.Tensor | None:
+        """
+        Utility to extract the binary mask for the target object from a given camera.
+        Returns a boolean tensor (N, H, W, 1) or None if target not found.
+        """
+        # Ensure data exists
+        seg_data = camera.data.output["semantic_segmentation"]
+        
+        # Retrieve label mapping
+        info = camera.data.info.get("semantic_segmentation", {})
+        id_to_labels = info.get("idToLabels", {})
+        target_class_name = self.cfg.env_parameters["semantics_name"]
 
+        # Find the ID associated with the class name
+        target_id = None
+        for k, v in id_to_labels.items():
+            if v.get("class") == target_class_name:
+                target_id = int(k)
+                break
+        
+        if target_id is not None:
+            # Return boolean mask (N, H, W, 1)
+            return seg_data == target_id
+        
+        return None
+    
     def _compute_face_discovery_reward_fast(self):
         """
         Compute the reward for discovering new faces.
         """
 
-        segmentation_data = self._ptz_camera.data.output.get("semantic_segmentation")
+
         face_ids = self._raycaster_camera.data.output.get("face_ids")
+        target_mask = self._get_semantic_mask(self._ptz_camera)
 
          # Exit if either camera data is missing
-        if segmentation_data is None or face_ids is None:
+        if target_mask is None or face_ids is None:
             return (torch.zeros(self.num_envs, device=self.device), 
                     torch.zeros(self.num_envs, dtype=torch.long, device=self.device))
-
-        info = self._ptz_camera.data.info.get("semantic_segmentation", {})
-        id_to_labels = info.get("idToLabels", {})
-
-        target_class = self.cfg.env_parameters["semantics_name"]
-
-        target_key = None
-        for k, v in id_to_labels.items():
-            if v.get("class") == target_class:
-                target_key = int(k)
-                break
-        if target_key is None:
-            return (torch.zeros(self.num_envs, device=self.device),
-                torch.zeros(self.num_envs, dtype=torch.long, device=self.device))
-        
-        segmentation_ids = segmentation_data
-        seg_ids = segmentation_ids[..., 0]
-        target_id = int(target_key)
-        target_mask = (seg_ids == target_id)
     
     
         occlusion_filtered_face_ids = torch.full_like(face_ids, -1)
@@ -686,9 +683,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Camera Penalty pan and tilt
         camera_delta = torch.sum(torch.square(self.actions[:, 2:4] - self.last_action[:, 2:4]), dim=1)
 
-        action_penalty = self.cfg.reward_cfg.action_penalty_scale * action_delta + \
-                                self.cfg.reward_cfg.ptz_penalty_scale * camera_delta
-
         # Inpsection Coverage Ratio and Success Bonus
         current_coverage_ratio = total_num_faces_inspected / self.cfg.max_faces_to_inspect
         self.prev_coverage_ratio = current_coverage_ratio.clone()
@@ -703,14 +697,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visibility_increase_reward_scale * visibility_increase_reward
                         #+ self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
-                        # + action_penalty
+                        + self.cfg.reward_cfg.action_penalty_scale * action_delta
+                        + self.cfg.reward_cfg.ptz_penalty_scale * camera_delta
                         + success_bonus
                         + self.cfg.reward_cfg.time_penalty
                         )
         self._cache_rewards(face_discovery_raw,
                              information_gain_reward, 
                              visibility_increase_reward, 
-                             action_penalty,
+                             action_delta,
+                             camera_delta,
                                total_reward)
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         # Logging
@@ -723,18 +719,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         normalized_reward = self.rewardscaler(total_reward)
         return normalized_reward
     
-    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_penalty, total_unscaled):
+    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, total_unscaled):
         step_face_discovery = face_discovery.mean().item()
         step_info_gain = info_gain.mean().item()
         step_vis_increase = visibility_increase.mean().item()
-        step_action_penalty = action_penalty.mean().item()
+        step_action_delta = action_delta.mean().item()
+        step_camera_delta = camera_delta.mean().item()
         step_total_raw = total_unscaled.mean().item()
 
         self.reward_logging_buffer["reward_components/face_discovery"].append(step_face_discovery)
         self.reward_logging_buffer["reward_components/info_gain"].append(step_info_gain)
         self.reward_logging_buffer["reward_components/visibility_increase"].append(step_vis_increase)
         self.reward_logging_buffer["reward_components/total_unscaled"].append(step_total_raw)
-        self.reward_logging_buffer["reward_components/action_penalty"].append(step_action_penalty)
+        self.reward_logging_buffer["reward_components/action_penalty"].append(step_action_delta)
+        self.reward_logging_buffer["reward_components/camera_penalty"].append(step_camera_delta)
         
         # Scaled versioons
         self.reward_logging_buffer["reward_components/face_discovery_scaled"].append(   
@@ -747,11 +745,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.cfg.reward_cfg.visibility_increase_reward_scale * step_vis_increase
         )
         self.reward_logging_buffer["reward_components/action_penalty_scaled"].append(
-            step_action_penalty
+            self.cfg.reward_cfg.action_penalty_scale * step_action_delta
         )
-
-        
-       
+        self.reward_logging_buffer["reward_components/camera_penalty_scaled"].append(
+            self.cfg.reward_cfg.ptz_penalty_scale * step_camera_delta
+        )
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Check for timeout

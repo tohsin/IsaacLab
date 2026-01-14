@@ -153,7 +153,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "cameras": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
-            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, 6)
+            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, 7)
         ),
         "local-map": spaces.Box(
             low=float("-inf"),

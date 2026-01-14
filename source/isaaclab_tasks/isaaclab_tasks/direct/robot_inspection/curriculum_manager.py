@@ -13,7 +13,7 @@ from collections import deque
 class Curriculum:
     def __init__(
                 self,
-                start_coverage_ratio: float = 0.3,
+                start_coverage_ratio: float = 0.1,
                 max_coverage_ratio: float = 0.95,
                 coverage_increment: float = 0.05,
                 num_envs: int = 2,
