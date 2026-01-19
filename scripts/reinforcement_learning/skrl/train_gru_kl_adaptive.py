@@ -67,7 +67,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 clip_actions=False,
                 clip_log_std=True, min_log_std=-20, max_log_std=2,
                 num_envs=1,
-                sequence_length=128,
+                sequence_length=32,
                 _hidden_size=128,
                 _hidden_size_gru=256):
         Model.__init__(self, observation_space, action_space, device)
@@ -127,6 +127,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Linear(256, self.num_actions ),
             nn.Tanh()  
         )
+
         self.value_head = nn.Sequential(
             nn.Linear(self.gru_hidden_size, 1024),
             nn.ELU(),
@@ -197,6 +198,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         states = inputs["states"]
         terminated = inputs.get("terminated", None)
         hidden_states = inputs["rnn"][0]
+
         camera_obs, local_map, robot_pose,  = self.unflatten_observations(states)
 
         camera_obs_permuted = camera_obs.permute(0, 3, 1, 2)
@@ -287,32 +289,23 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 8 #8
+cfg["learning_epochs"] = 4 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 3e-3  # 0.0003     0.0006
-# cfg["learning_rate_scheduler"] = KLAdaptiveRL
-# cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008} # 0.008
+cfg["learning_rate"] = 3e-5  # 0.0003     0.0006
+cfg["learning_rate_scheduler"] = KLAdaptiveRL
+cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.016} # 0.008
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
-cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.CosineAnnealingLR
-cfg["learning_rate_scheduler_kwargs"] = {
-    "T_max": scheduler_max_steps,
-    "eta_min": 3e-5
-}
-
-# cfg["optimizer_class"] = ForeachMuon
-# cfg["optimizer_kwargs"] = {"betas": (0.9, 0.999), "eps": 1e-8} 
-
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
-cfg["grad_norm_clip"] = 1.0
+cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = 3e-4
 cfg["value_loss_scale"] = 1.0
 # cfg["kl_threshold"] = 0.0
-# cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
+cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
 cfg["rewards_shaper"] =  None
 cfg["time_limit_bootstrap"] = True
 
@@ -338,13 +331,18 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 2000
+cfg["experiment"]["write_interval"] = 2400
 cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
-cfg["experiment"]["checkpoint_interval"] = 10_000
+cfg["experiment"]["checkpoint_interval"] = 5_000
 cfg["experiment"]["directory"] = log_root_path
 cfg["experiment"]["experiment_name"] = experiment_name
 cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
-
+if _use_wandb:
+    cfg["experiment"]["wandb_kwargs"] = {
+        "project": "3DInspection_NoRNN",  # Name of the project in WandB dashboard
+        "name": experiment_name,           # Name of this specific run
+        "tags": ["PPO", "IsaacLab", args_cli.task]
+    }
 agent = PPO(models=models, 
             memory=memory,
             cfg=cfg,

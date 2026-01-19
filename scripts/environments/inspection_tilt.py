@@ -65,13 +65,23 @@ def main():
                 
 
                 for i in range(3000):
-                    if i < 100:
-                        actions = torch.tensor([[0.7, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
-
+                    if i <200: 
+                         actions = torch.tensor([[1.0,1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    # elif i>= 200 and i <400:
+                    #     # print("going in other direction")
+                    #     actions = torch.tensor([[0.0, 0.0, 1.0, 0.0]], device=env.unwrapped.device)
+                    # elif i>=400 and i <600:
+                    #     actions = torch.tensor([[0.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
                     else:
-                        tilt_signal = math.sin(i * 0.05)
-                        #print(tilt_signal)
-                        actions = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[-1.0, 1.0, 0.0, 0.5]], device=env.unwrapped.device)
+                  
+                    # if i < 100:
+                        #     actions = torch.tensor([[0.7, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+
+                    # else:
+                    #     tilt_signal = math.sin(i * 0.05)
+                    #     #print(tilt_signal)
+                    #     actions = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

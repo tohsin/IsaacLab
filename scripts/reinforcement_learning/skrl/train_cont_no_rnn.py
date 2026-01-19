@@ -12,6 +12,7 @@ torch.autograd.set_detect_anomaly(True)
 
 # conda install -c conda-forge gcc=12 -y
 from isaaclab.app import AppLauncher
+
 is_eval = False
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environments.")
@@ -227,41 +228,45 @@ models['policy'] = Shared(env.observation_space,
                             cfg=model_config,
                             num_envs=env.num_envs,)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 1_000_000
+total_timesteps = 500_000
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 8 #8
+cfg["learning_epochs"] = 4 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 3e-3  # 0.0003     0.0006
-# cfg["learning_rate_scheduler"] = KLAdaptiveRL
-# cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008} # 0.008
+cfg["learning_rate"] = 3e-4  # 0.0003     0.0006
+cfg["learning_rate_scheduler"] = KLAdaptiveRL
+cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.016} # 0.008
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
-cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.CosineAnnealingLR
-cfg["learning_rate_scheduler_kwargs"] = {
-    "T_max": scheduler_max_steps,
-    "eta_min": 3e-5
-}
+# cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.LinearLR
+# cfg["learning_rate_scheduler_kwargs"] = {
+#     "start_factor": 1.0,     # Start at the full learning_rate
+#     "end_factor": 0.01,      
+#     "total_iters": scheduler_max_steps,
+# }
+# cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.CosineAnnealingLR
+# cfg["learning_rate_scheduler_kwargs"] = {
+#     "T_max": scheduler_max_steps,
+#     "eta_min":cfg["learning_rate"] *0.01
+# }
 
 # cfg["optimizer_class"] = ForeachMuon
 # cfg["optimizer_kwargs"] = {"betas": (0.9, 0.999), "eps": 1e-8} 
 
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
-cfg["grad_norm_clip"] = 1.0
+cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 3e-2
+cfg["entropy_loss_scale"] = 2.5e-2
 cfg["value_loss_scale"] = 1.0
 # cfg["kl_threshold"] = 0.0
-# cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
-cfg["rewards_shaper"] =  None
+cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
 cfg["time_limit_bootstrap"] = True
-
 cfg["state_preprocessor"] = RunningStandardScaler
 cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
 cfg["value_preprocessor"] = RunningStandardScaler

@@ -18,7 +18,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.utils import configclass
 from isaacsim.core.utils.semantics import add_labels
 
-from isaaclab.sensors import RayCasterCamera, Camera, TiledCamera,  MultiMeshRayCasterCamera
+from isaaclab.sensors import RayCasterCamera, TiledCamera,  MultiMeshRayCasterCamera
 from isaaclab.utils.math import transform_points, unproject_depth
 from isaaclab.sensors.camera.utils import create_pointcloud_from_depth
 import isaacsim.core.utils.stage as stage_utils
@@ -39,25 +39,16 @@ import warp as wp
 from collections import defaultdict
 # opencv-python-headless-4.11.0.86
 import cv2
-Visulaisation_Modes = {
-    "Occupancy Map": "occupancy",
-    "Surface Visibility Map": "visibility",
-    "": None
-}
-_visulaisation_mode = ""
-visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
-debug = False
-display_cameras = False
-use_wandb =  True #not debug
+from .run_config import cfg_mode
 
-
+# congfig_mode = run_Config
+run_cfg = cfg_mode
 
 class Isaac3dinspectionEnv(DirectRLEnv):
     cfg: Isaac3dinspectionEnvCfg
 
     def __init__(self, cfg: Isaac3dinspectionEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-        print("Multi env inspection env")
     
         self._wheel_joint_indices, self._wheel_joint_names = self.robot.find_joints(".*wheel.*")
         self._ptz_joint_indices, _ = self.robot.find_joints(".*ptz.*")
@@ -74,11 +65,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 map_bounds=self.cfg.mapping_cfg.bounds,
                 resolution=self.cfg.mapping_cfg.resolution,
                 visibility_surface_hits_only=self.cfg.mapping_cfg.visibility_surface_hits_only,
-                visualization_mode = _visulaisation_mode,
+                visualization_mode = run_cfg.visualisation_mode,
                 env_origins= self.scene.env_origins.cpu().numpy(),
                 device=self.device,
                 # visualize_env_id= None
-                visualize_env_id=0 if debug else None
+                visualize_env_id=0 if run_cfg.debug else None
             )
          
         self._setup_tensor_buffers()
@@ -112,6 +103,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             action_shape = (self.num_envs, self.cfg.action_space.shape[0])
 
         self.last_action = torch.zeros(action_shape, device=self.device)
+        self.previous_action_for_rewards = torch.zeros(action_shape, device=self.device)
         self.discovered_faces_buffer = [torch.tensor([], dtype=torch.float32, device=self.device) for _ in range(self.num_envs)]
 
         self.episode_log_buffer = {
@@ -187,8 +179,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        self.previous_action_for_rewards.copy_(self.last_action)
+        actions = torch.clamp(actions, -1.0, 1.0)
+        self.last_action.copy_(actions)
         self.actions = actions.clone()
-        # self.last_action = self.actions.clone()
+        
     
     def _apply_action(self) -> None:
         
@@ -201,7 +196,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             right_wheel_velocity = (linear_velocity + (angular_velocity * self.cfg.robot_phys_cfg.wheel_separation / 2)) / self.cfg.robot_phys_cfg.wheel_radius
 
 
-
             # Clamp wheel velocities to avoid exceeding max limits
             left_wheel_velocity = torch.clamp(left_wheel_velocity, -self.cfg.robot_phys_cfg.max_wheel_velocity, self.cfg.robot_phys_cfg.max_wheel_velocity)
             right_wheel_velocity = torch.clamp(right_wheel_velocity, -self.cfg.robot_phys_cfg.max_wheel_velocity, self.cfg.robot_phys_cfg.max_wheel_velocity)
@@ -209,12 +203,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             self.wheel_commands = torch.stack([left_wheel_velocity, right_wheel_velocity,
                                         left_wheel_velocity, right_wheel_velocity], dim=1)
+            # Position Control for PTZ Camera
             # 90 degrees pi/2 = 1.57, 100 degrees = 1.74533
-            pan_cmd = self.actions[:, 2] * 1.74533
+            #pan_cmd = self.actions[:, 2] * 1.74533
             # 45 degees pi/4 = 0.785
-            tilt_cmd = self.actions[:, 3] * 0.698132
+            #tilt_cmd = self.actions[:, 3] * 0.698132
+            #ptz_targets = torch.stack([pan_cmd, tilt_cmd], dim=1)
 
-            ptz_targets = torch.stack([pan_cmd, tilt_cmd], dim=1)
+            # Velocity Control for PTZ Camera
+            pan_vel_cmd = self.actions[:, 2] * self.cfg.robot_phys_cfg.pan_speed
+            tilt_vel_cmd = self.actions[:, 3] * self.cfg.robot_phys_cfg.tilt_speed
+            ptz_targets = torch.stack([pan_vel_cmd, tilt_vel_cmd], dim=1)
 
             # Scale the wheel commands
             wheel_targets = self.wheel_commands * self.cfg.action_scale
@@ -266,7 +265,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # print(f"[INFO] Wheel Commands: {self.wheel_commands.clone()}")
         self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wheel_joint_indices)
-        self.robot.set_joint_position_target(ptz_targets, joint_ids=self._ptz_joint_indices)
+        self.robot.set_joint_velocity_target(ptz_targets, joint_ids=self._ptz_joint_indices)
 
     
     def _update_maps(self, visualise: bool = False):
@@ -300,7 +299,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             )
             
             # To visualise the point cloud in my Scene
-            if i ==0 and visualise_point_cloud and visualise:
+            if i ==0 and run_cfg.visualise_point_cloud and visualise:
                 cfg = RAY_CASTER_MARKER_CFG.replace(prim_path="/Visuals/CameraPointCloud")
                 cfg.markers["hit"].radius = 0.002
                 pc_markers = VisualizationMarkers(cfg)
@@ -402,7 +401,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             action_dim = self.last_action.shape[1]
             last_action_obs = self.last_action
             
-        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim), device=self.device)
+        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim+2), device=self.device)
 
         # pos_noise = (torch.rand_like(position) - 0.5) * 0.2
         # orientation_noise = (torch.rand_like(orientation) - 0.5) * 0.2
@@ -424,6 +423,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         obs_buffer[..., 10:13] = quat_apply_inverse(orientation, ang_vel) + ang_vel_noise
 
         obs_buffer[..., 13:13 + action_dim] = last_action_obs
+
+        ptz_joint_pos = self.robot.data.joint_pos[:, self._ptz_joint_indices]
+        # print(f"PTZ Joint Positions: {ptz_joint_pos}")
+        obs_buffer[..., 13 + action_dim : 13 + action_dim + 2] = ptz_joint_pos
+
+        if torch.isnan(obs_buffer).any():
+            print("\n[ENV DEBUG] NaN detected in _compute_pose_observation!")
+            print(f"  Position has NaNs: {torch.isnan(position).any().item()}")
+            print(f"  Orientation has NaNs: {torch.isnan(orientation).any().item()}")
+            print(f"  Lin Vel has NaNs: {torch.isnan(lin_vel).any().item()}")
+            print(f"  Ang Vel has NaNs: {torch.isnan(ang_vel).any().item()}")
+            print(f"  Last Action has NaNs: {torch.isnan(last_action_obs).any().item()}")
         return obs_buffer
     
     def _compute_local_map_observation(self) -> torch.Tensor:
@@ -431,16 +442,27 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             raise ValueError("Occupancy map is not enabled in the configuration.")
         robot_pos_w = self.robot.data.root_pos_w
         local_occ_map, local_vis_map, local_visit = self.occupancy_mapper.get_local_maps(robot_pos_w.cpu().numpy())
+        for name, tensor in {"occ": local_occ_map, "vis": local_vis_map, "visit": local_visit}.items():
+            if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+                msg = f"Invalid value (NaN or Inf) in Local Map: {name}"
+                print(msg)
+                raise ValueError(msg)
         return torch.stack([local_occ_map, local_vis_map, local_visit], dim=-1).to(self.device)
 
     def _get_observations(self) -> dict:
         # return  {"policy": None}
+        front_camera_data = torch.empty(0, device=self.device)
+        ptz_camera_data = torch.empty(0, device=self.device)
+
         if  "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types:
             front_camera_data = self._nav_camera.data.output[ "rgb"] / 255.0
+            if torch.isnan(front_camera_data).any():
+                print("[ENV DEBUG] NaN detected in Front Camera Data!")
 
         if  "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types:
             ptz_camera_data = self._ptz_camera.data.output["rgb"] / 255.0
-        
+            if torch.isnan(ptz_camera_data).any():
+                print("[ENV DEBUG] NaN detected in PTZ Camera Data!")
         semantic_channel = torch.zeros(
             (self.num_envs, self.cfg.sensor_cfg.ptz_camera.height, self.cfg.sensor_cfg.ptz_camera.width, 1),
             device=self.device
@@ -450,19 +472,39 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             if target_mask is not None:
                 semantic_channel = target_mask.float()
+
+                if torch.isnan(semantic_channel).any():
+                    print("[ENV DEBUG] NaN detected in Semantic Channel (Target Mask)!")
             
         combined_camera_data = torch.cat([
             front_camera_data, ptz_camera_data, semantic_channel], dim=-1)
-       
+        pose_obs = self._compute_pose_observation()
+        map_obs = self._compute_local_map_observation()
+        if torch.isinf(pose_obs).any() or torch.isnan(pose_obs).any():
+            print("\n[CRITICAL FAILURE] Infinite or NaN detected in ROBOT POSE")
+            print(f"  > Min Value: {pose_obs.min().item()}")
+            print(f"  > Max Value: {pose_obs.max().item()}")
+            print(f"  > Robot Velocity (First Env): {self.robot.data.root_lin_vel_w[0]}")
+            raise ValueError("Training stopped: Robot Physics Exploded (Pose contains Inf/NaN)")
+        if torch.isinf(map_obs).any() or torch.isnan(map_obs).any():
+            print("\n[CRITICAL FAILURE] Infinite or NaN detected in LOCAL MAP")
+            print(f"  > Min Value: {map_obs.min().item()}")
+            print(f"  > Max Value: {map_obs.max().item()}")
+            raise ValueError("Training stopped: Local Map contains Inf/NaN (likely divide by zero in mapper)")
 
+        # Check Cameras (Rendering Issues)
+        if torch.isinf(combined_camera_data).any() or torch.isnan(combined_camera_data).any():
+            print("\n[CRITICAL FAILURE] Infinite or NaN detected in CAMERAS")
+            raise ValueError("Training stopped: Camera tensor contains Inf/NaN")
+        
         if isinstance(self.single_observation_space["policy"], gym.spaces.Box):
             obs = combined_camera_data.clone()
 
         elif isinstance(self.single_observation_space["policy"], gym.spaces.Dict):
             obs =   {
-                'robot-pose': self._compute_pose_observation(),
+                'robot-pose': pose_obs,
                 'cameras': combined_camera_data.clone(),
-                'local-map': self._compute_local_map_observation()
+                'local-map': map_obs
                 }
             
             # obs = {
@@ -470,15 +512,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             #     'cameras': torch.ones_like(combined_camera_data.clone()) * 1.0,
             #     'local-map':  torch.ones_like(self._compute_local_map_observation()) * 2.0
             # }
-
         return {"policy": obs}
 
     def step(self, action: torch.Tensor) -> tuple[dict, torch.Tensor, torch.Tensor, dict]:
-        if self.common_step_counter % self.cfg.mapping_cfg.map_update_interval == 0:
-            # pass
-            self._update_maps(visualise=debug)
 
-        if not debug and self.common_step_counter % self.cfg.logging_interval == 0:
+        if self.common_step_counter % self.cfg.mapping_cfg.map_update_interval == 0:
+            self._update_maps(visualise=run_cfg.debug)
+
+        if not run_cfg.debug and self.common_step_counter % self.cfg.logging_interval == 0:
             mean_coverage = np.mean(self.episode_log_buffer["coverage_percent"])
             mean_faces_discovered = np.mean(self.episode_log_buffer["faces_discovered"])
             mean_final_map_entropy = np.mean(self.episode_log_buffer["final_map_entropy"])
@@ -506,20 +547,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     log_data[reward_name] = np.mean(reward_values)
             # Clear the reward logging buffer after logging
             self.reward_logging_buffer.clear()
-            if use_wandb:
-                wandb.log(log_data, step=self.common_step_counter)
+            if run_cfg.use_wandb:
+                # wandb.log(log_data, step=self.common_step_counter)
+                wandb.log(log_data)
 
-            if debug and display_cameras:
-                rgb_tensor = self._ptz_camera.data.output["rgb"][0]
-                if rgb_tensor is not None:
-                    img_np = rgb_tensor.cpu().numpy()
-                    if img_np.dtype != np.uint8:
-                        img_np = (img_np * 255).astype(np.uint8)
-                    if img_np.shape[-1] == 4:
-                        img_np = img_np[..., :3]
-                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                    cv2.imshow("Inspection Camera (Env 0)", img_bgr)
-                    cv2.waitKey(1)
         return super().step(action)
       
     def _get_semantic_mask(self, camera) -> torch.Tensor | None:
@@ -623,7 +654,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         return information_gain, visibility_increase_reward
 
-
     def _compute_visitation_reward(self) -> torch.Tensor:
         """
         Computes a reward for visiting new voxels, based on the 3D visitation map.
@@ -679,9 +709,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         face_discovery_raw, total_num_faces_inspected = self._compute_face_discovery_reward_fast()
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
         visitation_reward = self._compute_visitation_reward()
-        action_delta = torch.sum(torch.square(self.actions - self.last_action), dim=1)
+        action_delta = torch.sum(torch.square(self.actions - self.previous_action_for_rewards), dim=1)
         # Camera Penalty pan and tilt
-        camera_delta = torch.sum(torch.square(self.actions[:, 2:4] - self.last_action[:, 2:4]), dim=1)
+        camera_delta = torch.sum(
+            torch.square(self.actions[:, 2:4] - self.previous_action_for_rewards[:, 2:4]
+        ), dim=1)
 
         # Inpsection Coverage Ratio and Success Bonus
         current_coverage_ratio = total_num_faces_inspected / self.cfg.max_faces_to_inspect
@@ -697,17 +729,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visibility_increase_reward_scale * visibility_increase_reward
                         #+ self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
-                        + self.cfg.reward_cfg.action_penalty_scale * action_delta
-                        + self.cfg.reward_cfg.ptz_penalty_scale * camera_delta
+                        # + self.cfg.reward_cfg.action_penalty_scale * action_delta
+                        # + self.cfg.reward_cfg.ptz_penalty_scale * camera_delta
                         + success_bonus
                         + self.cfg.reward_cfg.time_penalty
                         )
-        self._cache_rewards(face_discovery_raw,
-                             information_gain_reward, 
-                             visibility_increase_reward, 
-                             action_delta,
-                             camera_delta,
-                               total_reward)
+        self._cache_rewards(
+            face_discovery_raw,
+            information_gain_reward, 
+            visibility_increase_reward, 
+            action_delta,
+            camera_delta,
+            total_reward
+            )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         # Logging
       
@@ -715,9 +749,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if torch.isnan(total_reward).any() or torch.isinf(total_reward).any():
             import ipdb; ipdb.set_trace()
             print("NaN or Inf detected in total reward calculation!")
-
-        normalized_reward = self.rewardscaler(total_reward)
-        return normalized_reward
+            raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
+        # normalized_reward = self.rewardscaler(total_reward)
+        return total_reward
     
     def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, total_unscaled):
         step_face_discovery = face_discovery.mean().item()
@@ -763,6 +797,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
 
         if len(env_ids)> 0:
+            self.last_action[env_ids] = 0.0
+            self.previous_action_for_rewards[env_ids] = 0.0
             num_faces_inspected = torch.tensor([len(self.discovered_faces_buffer[i]) for i in env_ids], device=self.device)
             achieved_coverage_ratios = num_faces_inspected / float(self.cfg.max_faces_to_inspect)
             current_goal = self.curriculum.get_current_coverage_goal()
@@ -771,7 +807,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             # Logging
             for i, env_id in enumerate(env_ids):
-                if debug and env_id == 0:
+                if run_cfg.debug and env_id == 0:
                     final_face_count = num_faces_inspected[i].item()
                     print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {final_face_count} ---")
 
@@ -806,6 +842,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     self.episode_log_buffer["final_unique_visible_cell_count"].append(final_unique_visible_cells[env_id].item())
                     # Map Entropy
                     self.episode_log_buffer["final_map_entropy"].append(final_entropies[env_id].item())
+                    if run_cfg.debug and env_id == 0:
+                        print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[env_id].item()} ---")
+                        print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[env_id].item()} ---")
 
 
         # --- END: New code for entropy logging ---

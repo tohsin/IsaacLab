@@ -9,11 +9,11 @@ DEG_NEG_205 = [ -0.2164396 , 0, 0, -0.976296]
 DEG_NEG_105 = [ 0.6087614,  0, 0, -0.7933533]
 import torch
 from collections import deque
-
+from .run_config import cfg_mode
 class Curriculum:
     def __init__(
                 self,
-                start_coverage_ratio: float = 0.1,
+                start_coverage_ratio: float = cfg_mode.inspection_goal,
                 max_coverage_ratio: float = 0.95,
                 coverage_increment: float = 0.05,
                 num_envs: int = 2,
@@ -27,10 +27,10 @@ class Curriculum:
 
         self.num_envs = num_envs 
         self.device = device
-        self.success_buffer = deque(maxlen=20 * self.num_envs) # Buffer ~20 resets per env
-        self.min_episodes_for_update = 3 * self.num_envs
+        self.success_buffer = deque(maxlen=200 * self.num_envs) # Buffer ~20 resets per env
+        self.min_episodes_for_update = 10 * self.num_envs
 
-        self.success_rate_threshold = 0.70 
+        self.success_rate_threshold = 0.60 
         self.success_rate = 0.0 
         
         self._setup_spawn_points()
@@ -64,7 +64,7 @@ class Curriculum:
             DEG_NEG_205, 
             DEG_NEG_105
         ], device=self.device, dtype=torch.float32)
-        self.start_pos = self.start_pos[:7]
+        self.start_pos = self.start_pos[:cfg_mode.initaltion_pool_sz]
         self.start_positions_tensor  = torch.tensor(
             [[item[0], item[1], self.init_z] for item in self.start_pos],
             device=self.device
@@ -104,6 +104,7 @@ class Curriculum:
         pool_size = len(self.start_positions_tensor)
         random_pos_indices = torch.randint(0, pool_size, (num_resets,), device=self.device)
         selected_pos = self.start_positions_tensor[random_pos_indices]
+        self.allowed_orientations = self.allowed_orientations[:1] if cfg_mode.debug else self.allowed_orientations
 
         # Random orientations
         num_orientations = len(self.allowed_orientations)

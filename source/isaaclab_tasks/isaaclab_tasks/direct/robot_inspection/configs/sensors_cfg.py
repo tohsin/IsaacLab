@@ -2,7 +2,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from .config_ import env_parameters
 from isaaclab.sensors import TiledCameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg
-_debug_vis = False
+from ..run_config import cfg_mode
 @configclass
 class SensorsCfg:
     """Configuration for all robot-mounted sensors."""
@@ -16,6 +16,7 @@ class SensorsCfg:
         height=camera_height,
         width=camera_width,
         data_types=["rgb", "distance_to_image_plane"],
+        update_latest_camera_pose=True,
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,
@@ -27,7 +28,7 @@ class SensorsCfg:
             rot=(-0.5, 0.5, -0.5, 0.5),
             convention="ros"
         ),
-        debug_vis=_debug_vis
+        debug_vis=cfg_mode.debug
     )
     ptz_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link/ptz_camera",
@@ -49,7 +50,7 @@ class SensorsCfg:
         colorize_semantic_segmentation=False,
         semantic_filter=f'class:{env_parameters["semantics_name"]}',
         update_latest_camera_pose=True,
-        debug_vis=_debug_vis
+        debug_vis=cfg_mode.debug
     )
 
     #Ray-caster for accurately identifying mesh faces.
@@ -72,5 +73,5 @@ class SensorsCfg:
         ),
         mesh_prim_paths=[env_parameters["inspection_goal_prim_path"]],
         update_mesh_ids=True,
-        debug_vis=_debug_vis
+        debug_vis=cfg_mode.debug
     )

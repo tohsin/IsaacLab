@@ -27,7 +27,7 @@ from  .configs.robot_cfg import RobotPhysicsCfg
 # from semantic_manager import SemanticManager
 from .configs.config_ import ROBOT_CONFIGS, Env_params
 env_parameters = Env_params["empty_room"]
-
+from .run_config import cfg_mode
 
 @configclass
 class WarehouseSceneCfg(InteractiveSceneCfg):
@@ -39,7 +39,7 @@ class WarehouseSceneCfg(InteractiveSceneCfg):
             # scale=(1.0, 1.0, 1.0),
         ),
         collision_group=-1, # Keep collision settings
-        debug_vis=True
+        debug_vis=cfg_mode.debug
     )
 
 
@@ -124,11 +124,11 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             ),
             "ptz_acts": ImplicitActuatorCfg(
                 joint_names_expr=ROBOT_CONFIGS["jackal_ptz"]["ptz_joint_expr"], 
-                stiffness=400.0, # High stiffness drives the joint to a specific angle
-                damping=40.0     # Moderate damping prevents oscillation
+                stiffness=0.0, # High stiffness drives the joint to a specific angle
+                damping= 200.0     # Moderate damping prevents oscillation #  40 -Position control
             )
         },
-        debug_vis=True
+        debug_vis=cfg_mode.debug
     
     )
     reward_cfg : RewardsCfg = RewardsCfg()
@@ -147,7 +147,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "robot-pose": spaces.Box(
             low=float("-inf"), 
             high=float("inf"),
-            shape=(13 + action_dim,),
+            shape=(13 + action_dim + 2,), # Plus ptz joint position
             dtype=np.float32
         ),
         "cameras": spaces.Box(
@@ -175,7 +175,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     init_inspection_threshold = 0.5# Coverage % threshold to count as valid inspection
 
     terminate_on_all_inspected = True
-    min_episode_length = 1200
+    min_episode_length = 1000
     max_faces_to_inspect = env_parameters["num_faces"]
 
     # Logging

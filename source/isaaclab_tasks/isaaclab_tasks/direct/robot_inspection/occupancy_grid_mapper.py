@@ -286,6 +286,7 @@ class OccupancyGridMapper:
             inputs=[self.visibility_map, 0.0, 1.0], # Min is 0
             device=self.device
         )
+    
     def update_visitation(self, robot_positions: np.ndarray):
         num_envs = robot_positions.shape[0]
         if num_envs == 0:
@@ -307,7 +308,6 @@ class OccupancyGridMapper:
             ],
             device=self.device,
         )
-
 
     def reset_map(self, env_ids: list[int] = None):
         if not env_ids:

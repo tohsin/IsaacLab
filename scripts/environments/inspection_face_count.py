@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environ
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=4, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -65,25 +65,25 @@ def main():
                 
 
                 for i in range(1000):
-                    if i < 40:
+                    if i < 30:
                         #forward
-                        actions = torch.tensor([[0.3, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
-                    elif i>=40 and i < 140:
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=30 and i < 120:
                         #print Turn
                         actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
-                    elif i>=140 and i <180:
+                    elif i>=120 and i <200:
                         #print Forward
                         actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
-                    elif i>=180 and i < 280:
+                    elif i>=200 and i < 280:
                         # turn
                         actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
-                    elif i>=280 and i <320:
+                    elif i>=280 and i <340:
                         # forward
                         actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
-                    elif i>=320 and i < 430:
+                    elif i>=340 and i < 400:
                         # turn
                         actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
-                    elif i>=430 and i <470:
+                    elif i>=400 and i <470:
                         # forward
                         actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
                     elif i>=470 and i <570:
