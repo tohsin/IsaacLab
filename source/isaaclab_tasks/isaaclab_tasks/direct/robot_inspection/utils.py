@@ -3,10 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class NormalizeReward:
-    def __init__(self, gamma=0.99, epsilon=1e-8, device=None):
+    def __init__(self, gamma=0.99, epsilon=1e-8, m_value = 1, device=None):
         self.return_rms = RunningMeanStd(shape=(), device=device)
         self.count = 0
         self.epsilon = epsilon
+        self.m_value = m_value
         self._update_running_mean = True
 
     @property
@@ -32,7 +33,7 @@ class NormalizeReward:
             print("NaN detected in normalized_reward!")
             print(f"Original reward: {reward}")
             print(f"Reward variance: {self.return_rms.var}")
-        normalized_reward = torch.clamp(normalized_reward, -10.0, 10.0)
+        normalized_reward = torch.clamp(normalized_reward, -self.m_value, self.m_value)
         return normalized_reward
     
 

@@ -750,8 +750,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             import ipdb; ipdb.set_trace()
             print("NaN or Inf detected in total reward calculation!")
             raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
-        # normalized_reward = self.rewardscaler(total_reward)
-        return total_reward
+        normalized_reward = self.rewardscaler(total_reward)
+        return normalized_reward
     
     def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, total_unscaled):
         step_face_discovery = face_discovery.mean().item()
