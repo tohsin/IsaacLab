@@ -12,13 +12,13 @@ torch.autograd.set_detect_anomaly(True)
 
 # conda install -c conda-forge gcc=12 -y
 from isaaclab.app import AppLauncher
-is_eval = False
+is_eval = True
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environments.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=128, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -27,8 +27,8 @@ parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-
 
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
-_use_wandb = True
-_headless = True
+_use_wandb = False
+_headless = False
 args_cli = parser.parse_args()
 args_cli.enable_cameras =  True
 args_cli.headless = _headless
@@ -315,8 +315,8 @@ cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 # logging to TensorBoard and write checkpoints (in timesteps)
 
-
-log_root_path = os.path.join("logs", "skrl", "3DInspection_direct")
+script_dir = os.path.dirname(os.path.abspath(__file__))
+log_root_path = os.path.join(script_dir, "logs", "skrl", "3DInspection_direct")
 log_root_path = os.path.abspath(log_root_path)
 
 experiment_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_ppo_gru_128"
@@ -360,8 +360,8 @@ print("[INFO] Starting training...")
 print_dict(cfg_trainer, nesting=4)
 if is_eval: 
     print("[INFO] Running in evaluation mode. No training will be performed.")
-    # path = "logs/skrl/3DInspection_direct/2025-08-03_20-01-28_ppo_gru_128/checkpoints/agent_1860000.pt"
-    # agent.load(path)
+    path = "/home/tosin/logs/skrl/3DInspection_direct/2026-01-18_18-56-03_ppo_gru_128/checkpoints/agent_155000.pt"
+    agent.load(path)
     trainer.eval()
 else:
     # path = "/home/tosin/IsaacLab_inspection/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2025-09-07_11-42-53_ppo_gru_128/checkpoints/agent_450000.pt"

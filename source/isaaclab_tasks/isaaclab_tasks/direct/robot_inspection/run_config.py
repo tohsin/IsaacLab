@@ -28,5 +28,18 @@ class train_Cfg:
     num_envs = 128
 
 
-modes = [debug_Cfg, train_Cfg]
-cfg_mode =   modes[1]
+class eval_Cfg:
+    debug = True
+    max_episode_length: int = 1200
+    initaltion_pool_sz : int = 7
+    inspection_goal =  0.95
+    visualisation_mode = None
+    visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
+    display_cameras = False
+    use_wandb =  False #not debug
+    headless = True
+    num_envs = 1
+
+
+modes = [debug_Cfg, train_Cfg, eval_Cfg]
+cfg_mode =   modes[2]
