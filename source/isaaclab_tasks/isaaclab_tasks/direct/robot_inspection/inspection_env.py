@@ -38,7 +38,8 @@ import torch.nn.functional as F
 import warp as wp
 from collections import defaultdict
 # opencv-python-headless-4.11.0.86
-import cv2
+from pxr import Usd, UsdGeom, Sdf
+from isaaclab.sim.utils import get_current_stage
 from .run_config import cfg_mode
 
 # congfig_mode = run_Config
@@ -59,6 +60,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.robot_pos = self.robot.data.root_pos_w
         self.robot_vel = self.robot.data.root_lin_vel_w
 
+
         if self.cfg.mapping_cfg.use_occupancy_map:
             self.occupancy_mapper = OccupancyGridMapper(
                 num_envs=self.num_envs,
@@ -73,7 +75,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             )
          
         self._setup_tensor_buffers()
-
+        self._setup_camera_zoom()
         self.curriculum = Curriculum(
             num_envs=self.num_envs,
             device=self.device
@@ -89,6 +91,23 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if self.cfg.mapping_cfg.use_occupancy_map and self.occupancy_mapper.visualizer:
             self.occupancy_mapper.visualizer.close()
         super().close()
+        
+    def _setup_camera_zoom(self):
+        stage = get_current_stage()
+        self.camera_prims = []
+        self.current_focal_lengths = torch.full(
+            (self.num_envs,), 
+            self.cfg.robot_phys_cfg.default_focal_length,
+            device=self.device,
+            dtype=torch.float32
+        )
+
+        for i in range(self.num_envs):
+            cam_prim_path = self.cfg.sensor_cfg.ptz_camera.prim_path.replace("env_.*", f"env_{i}")
+            prim = stage.GetPrimAtPath(cam_prim_path)
+            if not prim:
+                raise RuntimeError(f"Camera prim not found at path: {cam_prim_path}")
+            self.camera_prims.append(UsdGeom.Camera(prim))
 
     def _setup_tensor_buffers(self):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
@@ -213,11 +232,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Velocity Control for PTZ Camera
             pan_vel_cmd = self.actions[:, 2] * self.cfg.robot_phys_cfg.pan_speed
             tilt_vel_cmd = self.actions[:, 3] * self.cfg.robot_phys_cfg.tilt_speed
+
             ptz_targets = torch.stack([pan_vel_cmd, tilt_vel_cmd], dim=1)
 
             # Scale the wheel commands
             wheel_targets = self.wheel_commands * self.cfg.action_scale
             # x = target
+            zoom_cmd = self.actions[:, 4]
+            self._update_zoom(zoom_cmd)
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             '''
@@ -267,7 +289,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wheel_joint_indices)
         self.robot.set_joint_velocity_target(ptz_targets, joint_ids=self._ptz_joint_indices)
 
-    
+    def _update_zoom(self, zoom_cmd: torch.Tensor):
+        delta_zoom = zoom_cmd * self.cfg.robot_phys_cfg.zoom_speed
+        self.current_focal_lengths += delta_zoom
+
+        self.current_focal_lengths = torch.clamp(
+            self.current_focal_lengths,
+            self.cfg.robot_phys_cfg.min_focal_length,
+            self.cfg.robot_phys_cfg.max_focal_length
+        )
+        focal_lengths_cpu = self.current_focal_lengths.cpu().numpy()
+        for i, cam_api in enumerate(self.camera_prims):
+            # Set the focalLength attribute directly
+            # UsdGeom.Camera.GetFocalLengthAttr().Set(value)
+            cam_api.GetFocalLengthAttr().Set(float(focal_lengths_cpu[i]))
+            
     def _update_maps(self, visualise: bool = False):
         
         if not self.cfg.mapping_cfg.use_occupancy_map:
