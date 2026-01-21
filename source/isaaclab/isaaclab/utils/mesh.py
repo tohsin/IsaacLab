@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -6,10 +6,19 @@
 
 """Utility functions for working with meshes."""
 
+from collections.abc import Callable
+
 import numpy as np
 import trimesh
 
 from pxr import Usd, UsdGeom
+
+__all__ = [
+    "create_trimesh_from_geom_mesh",
+    "create_trimesh_from_geom_shape",
+    "convert_faces_to_triangles",
+    "PRIMITIVE_MESH_TYPES",
+]
 
 
 def create_trimesh_from_geom_mesh(mesh_prim: Usd.Prim) -> trimesh.Trimesh:
@@ -22,9 +31,7 @@ def create_trimesh_from_geom_mesh(mesh_prim: Usd.Prim) -> trimesh.Trimesh:
         mesh_prim: The mesh prim to read the vertices and faces from.
 
     Returns:
-        A tuple containing the vertices and faces of the mesh.
-        Shape of vertices is (n_vertices, 3).
-        Shape of faces is (n_faces, 3).
+        A trimesh.Trimesh object containing the mesh geometry.
     """
     if mesh_prim.GetTypeName() != "Mesh":
         raise ValueError(f"Prim at path '{mesh_prim.GetPath()}' is not a mesh.")
@@ -67,7 +74,7 @@ def convert_faces_to_triangles(faces: np.ndarray, point_counts: np.ndarray) -> n
 
     Args:
         faces: The faces of the quad mesh as a one-dimensional array. Shape is (N,).
-        point_counts: The number of points per face. Shape is (N, 3) or (N, 4).
+        point_counts: The number of points per face. Shape is (N,).
 
     Returns:
         The new face ids with triangles. Shape is (n_faces_new, 3).
@@ -78,24 +85,21 @@ def convert_faces_to_triangles(faces: np.ndarray, point_counts: np.ndarray) -> n
     all_faces = []
 
     vertex_counter = 0
-    # Iterates over all triangles of the mesh.
+    # Iterates over all faces of the mesh to triangulate them.
     # could be very slow for large meshes
     for num_points in point_counts:
-        if num_points == 3:
-            # triangle
-            all_faces.append(faces[vertex_counter : vertex_counter + 3])
-        elif num_points == 4:
-            # quads. Subdivide into two triangles
-            f = faces[vertex_counter : vertex_counter + 4]
-            first_triangle = f[:3]
-            second_triangle = np.array([f[0], f[2], f[3]])
-            all_faces.append(first_triangle)
-            all_faces.append(second_triangle)
-        else:
-            raise RuntimeError(f"Invalid number of points per face: {num_points}")
+        # Triangulate n-gons (n>4) using fan triangulation
+        for i in range(num_points - 2):
+            triangle = np.array([faces[vertex_counter], faces[vertex_counter + 1 + i], faces[vertex_counter + 2 + i]])
+            all_faces.append(triangle)
 
         vertex_counter += num_points
     return np.asarray(all_faces)
+
+
+"""
+Internal USD Shape Handlers.
+"""
 
 
 def _create_plane_trimesh(prim: Usd.Prim) -> trimesh.Trimesh:
@@ -122,10 +126,57 @@ def _create_sphere_trimesh(prim: Usd.Prim, subdivisions: int = 2) -> trimesh.Tri
     return mesh
 
 
-_MESH_CONVERTERS_CALLBACKS: dict[str, callable] = {
+def _create_cylinder_trimesh(prim: Usd.Prim) -> trimesh.Trimesh:
+    """Creates a trimesh for a cylinder primitive."""
+    radius = prim.GetAttribute("radius").Get()
+    height = prim.GetAttribute("height").Get()
+    mesh = trimesh.creation.cylinder(radius=radius, height=height)
+    axis = prim.GetAttribute("axis").Get()
+    if axis == "X":
+        # rotate −90° about Y to point the length along +X
+        R = trimesh.transformations.rotation_matrix(np.radians(-90), [0, 1, 0])
+        mesh.apply_transform(R)
+    elif axis == "Y":
+        # rotate +90° about X to point the length along +Y
+        R = trimesh.transformations.rotation_matrix(np.radians(90), [1, 0, 0])
+        mesh.apply_transform(R)
+    return mesh
+
+
+def _create_capsule_trimesh(prim: Usd.Prim) -> trimesh.Trimesh:
+    """Creates a trimesh for a capsule primitive."""
+    radius = prim.GetAttribute("radius").Get()
+    height = prim.GetAttribute("height").Get()
+    mesh = trimesh.creation.capsule(radius=radius, height=height)
+    axis = prim.GetAttribute("axis").Get()
+    if axis == "X":
+        # rotate −90° about Y to point the length along +X
+        R = trimesh.transformations.rotation_matrix(np.radians(-90), [0, 1, 0])
+        mesh.apply_transform(R)
+    elif axis == "Y":
+        # rotate +90° about X to point the length along +Y
+        R = trimesh.transformations.rotation_matrix(np.radians(90), [1, 0, 0])
+        mesh.apply_transform(R)
+    return mesh
+
+
+def _create_cone_trimesh(prim: Usd.Prim) -> trimesh.Trimesh:
+    """Creates a trimesh for a cone primitive."""
+    radius = prim.GetAttribute("radius").Get()
+    height = prim.GetAttribute("height").Get()
+    mesh = trimesh.creation.cone(radius=radius, height=height)
+    # shift all vertices down by height/2 for usd / trimesh cone primitive definition discrepancy
+    mesh.apply_translation((0.0, 0.0, -height / 2.0))
+    return mesh
+
+
+_MESH_CONVERTERS_CALLBACKS: dict[str, Callable[[Usd.Prim], trimesh.Trimesh]] = {
     "Plane": _create_plane_trimesh,
     "Cube": _create_cube_trimesh,
     "Sphere": _create_sphere_trimesh,
+    "Cylinder": _create_cylinder_trimesh,
+    "Capsule": _create_capsule_trimesh,
+    "Cone": _create_cone_trimesh,
 }
 
 PRIMITIVE_MESH_TYPES = list(_MESH_CONVERTERS_CALLBACKS.keys())

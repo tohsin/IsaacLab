@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -6,10 +6,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 import trimesh
-
-import pytest
 
 from isaaclab.app import AppLauncher
 
@@ -179,7 +178,9 @@ def test_raycast_rotated_cube(raycast_setup):
     single_mesh_id = raycast_setup["single_mesh_id"]
     expected_ray_hits = raycast_setup["expected_ray_hits"]
 
-    cube_rotation = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([np.pi]))
+    cube_rotation = quat_from_euler_xyz(
+        torch.tensor([0.0], device=device), torch.tensor([0.0], device=device), torch.tensor([np.pi], device=device)
+    )
     ray_hits, ray_distance, ray_normal, ray_face_id, _ = raycast_dynamic_meshes(
         ray_starts,
         ray_directions,

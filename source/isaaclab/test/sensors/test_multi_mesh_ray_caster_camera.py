@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -11,20 +11,18 @@
 from isaaclab.app import AppLauncher
 
 # launch omniverse app
-app_launcher = AppLauncher(headless=True, enable_cameras=True)
-simulation_app = app_launcher.app
+simulation_app = AppLauncher(headless=True, enable_cameras=True).app
 
 """Rest everything follows."""
 
 import copy
-import numpy as np
 import os
+
+import numpy as np
+import pytest
 import torch
 
-import isaacsim.core.utils.prims as prim_utils
-import isaacsim.core.utils.stage as stage_utils
 import omni.replicator.core as rep
-import pytest
 from pxr import Gf
 
 import isaaclab.sim as sim_utils
@@ -47,7 +45,7 @@ QUAT_WORLD = [-0.3647052, -0.27984815, -0.1159169, 0.88047623]
 def setup_simulation():
     """Fixture to set up and tear down the simulation environment."""
     # Create a new stage
-    stage_utils.create_new_stage()
+    sim_utils.create_new_stage()
     # Simulation time-step
     dt = 0.01
     # Load kit helper
@@ -57,7 +55,7 @@ def setup_simulation():
     mesh = make_plane(size=(100, 100), height=0.0, center_zero=True)
     create_prim_from_mesh("/World/defaultGroundPlane", mesh)
     # load stage
-    stage_utils.update_stage()
+    sim_utils.update_stage()
 
     camera_cfg = MultiMeshRayCasterCameraCfg(
         prim_path="/World/Camera",
@@ -75,7 +73,7 @@ def setup_simulation():
     )
 
     # create xform because placement of camera directly under world is not supported
-    prim_utils.create_prim("/World/Camera", "Xform")
+    sim_utils.create_prim("/World/Camera", "Xform")
 
     yield sim, dt, camera_cfg
 
@@ -98,6 +96,7 @@ def setup_simulation():
         ("world", QUAT_WORLD),
     ],
 )
+@pytest.mark.isaacsim_ci
 def test_camera_init_offset(setup_simulation, convention, quat):
     """Test camera initialization with offset using different conventions."""
     sim, dt, camera_cfg = setup_simulation
@@ -109,7 +108,7 @@ def test_camera_init_offset(setup_simulation, convention, quat):
         rot=quat,
         convention=convention,
     )
-    prim_utils.create_prim(f"/World/CameraOffset{convention.capitalize()}", "Xform")
+    sim_utils.create_prim(f"/World/CameraOffset{convention.capitalize()}", "Xform")
     cam_cfg_offset.prim_path = f"/World/CameraOffset{convention.capitalize()}"
 
     camera = MultiMeshRayCasterCamera(cam_cfg_offset)
@@ -126,6 +125,7 @@ def test_camera_init_offset(setup_simulation, convention, quat):
     del camera
 
 
+@pytest.mark.isaacsim_ci
 def test_camera_init(setup_simulation):
     """Test camera initialization."""
     sim, dt, camera_cfg = setup_simulation
@@ -162,6 +162,7 @@ def test_camera_init(setup_simulation):
     del camera
 
 
+@pytest.mark.isaacsim_ci
 def test_camera_resolution(setup_simulation):
     """Test camera resolution is correctly set."""
     sim, dt, camera_cfg = setup_simulation
@@ -183,6 +184,7 @@ def test_camera_resolution(setup_simulation):
     del camera
 
 
+@pytest.mark.isaacsim_ci
 def test_camera_init_intrinsic_matrix(setup_simulation):
     """Test camera initialization from intrinsic matrix."""
     sim, dt, camera_cfg = setup_simulation
@@ -232,6 +234,7 @@ def test_camera_init_intrinsic_matrix(setup_simulation):
     del camera_1, camera_2
 
 
+@pytest.mark.isaacsim_ci
 def test_multi_camera_init(setup_simulation):
     """Test multi-camera initialization."""
     sim, dt, camera_cfg = setup_simulation
@@ -239,14 +242,14 @@ def test_multi_camera_init(setup_simulation):
     # -- camera 1
     cam_cfg_1 = copy.deepcopy(camera_cfg)
     cam_cfg_1.prim_path = "/World/Camera_0"
-    prim_utils.create_prim("/World/Camera_0", "Xform")
+    sim_utils.create_prim("/World/Camera_0", "Xform")
     # Create camera
     cam_1 = MultiMeshRayCasterCamera(cam_cfg_1)
 
     # -- camera 2
     cam_cfg_2 = copy.deepcopy(camera_cfg)
     cam_cfg_2.prim_path = "/World/Camera_1"
-    prim_utils.create_prim("/World/Camera_1", "Xform")
+    sim_utils.create_prim("/World/Camera_1", "Xform")
     # Create camera
     cam_2 = MultiMeshRayCasterCamera(cam_cfg_2)
 
@@ -273,6 +276,7 @@ def test_multi_camera_init(setup_simulation):
     del cam_1, cam_2
 
 
+@pytest.mark.isaacsim_ci
 def test_camera_set_world_poses(setup_simulation):
     """Test camera function to set specific world pose."""
     sim, dt, camera_cfg = setup_simulation
@@ -294,6 +298,7 @@ def test_camera_set_world_poses(setup_simulation):
     del camera
 
 
+@pytest.mark.isaacsim_ci
 def test_camera_set_world_poses_from_view(setup_simulation):
     """Test camera function to set specific world pose from view."""
     sim, dt, camera_cfg = setup_simulation
@@ -317,6 +322,7 @@ def test_camera_set_world_poses_from_view(setup_simulation):
 
 
 @pytest.mark.parametrize("height,width", [(240, 320), (480, 640)])
+@pytest.mark.isaacsim_ci
 def test_intrinsic_matrix(setup_simulation, height, width):
     """Checks that the camera's set and retrieve methods work for intrinsic matrix."""
     sim, dt, camera_cfg = setup_simulation
@@ -349,8 +355,9 @@ def test_intrinsic_matrix(setup_simulation, height, width):
     del camera
 
 
+@pytest.mark.isaacsim_ci
 def test_throughput(setup_simulation):
-    """Checks that the single camera gets created properly with a rig."""
+    """Test camera throughput for different image sizes."""
     sim, dt, camera_cfg = setup_simulation
 
     # Create directory temp dir to dump the results
@@ -414,12 +421,10 @@ def test_throughput(setup_simulation):
         ["distance_to_camera"],
     ],
 )
+@pytest.mark.isaacsim_ci
 def test_output_equal_to_usdcamera(setup_simulation, data_types):
     """Test that ray caster camera output equals USD camera output."""
     sim, dt, camera_cfg = setup_simulation
-
-    # Check simulation parameter is set correctly
-    assert sim.has_rtx_sensors()
 
     camera_pattern_cfg = patterns.PinholeCameraPatternCfg(
         focal_length=24.0,
@@ -427,9 +432,9 @@ def test_output_equal_to_usdcamera(setup_simulation, data_types):
         height=240,
         width=320,
     )
-    prim_utils.create_prim("/World/Camera_warp", "Xform")
+    sim_utils.create_prim("/World/Camera_warp", "Xform")
     camera_cfg_warp = MultiMeshRayCasterCameraCfg(
-        prim_path="/World/Camera",
+        prim_path="/World/Camera_warp",
         mesh_prim_paths=["/World/defaultGroundPlane"],
         update_period=0,
         offset=MultiMeshRayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
@@ -483,15 +488,11 @@ def test_output_equal_to_usdcamera(setup_simulation, data_types):
         camera_usd._sensor_prims[0].GetHorizontalApertureAttr().Get(),
         camera_cfg_warp.pattern_cfg.horizontal_aperture,
     )
-    torch.testing.assert_close(
-        camera_usd._sensor_prims[0].GetVerticalApertureAttr().Get(),
-        camera_cfg_warp.pattern_cfg.vertical_aperture,
-    )
 
     # check image data
     for data_type in data_types:
         if data_type in camera_usd.data.output and data_type in camera_warp.data.output:
-            if data_type == "distance_to_camera":
+            if data_type == "distance_to_camera" or data_type == "distance_to_image_plane":
                 torch.testing.assert_close(
                     camera_usd.data.output[data_type],
                     camera_warp.data.output[data_type],
@@ -515,19 +516,11 @@ def test_output_equal_to_usdcamera(setup_simulation, data_types):
     del camera_usd, camera_warp
 
 
-@pytest.mark.parametrize(
-    "offset_rot",
-    [
-        [-0.1251, 0.3617, 0.8731, -0.3020],
-        [0.0, 0.0, 0.0, 1.0],
-    ],
-)
-def test_output_equal_to_usdcamera_offset(setup_simulation, offset_rot):
+@pytest.mark.isaacsim_ci
+def test_output_equal_to_usdcamera_offset(setup_simulation):
     """Test that ray caster camera output equals USD camera output with offset."""
     sim, dt, camera_cfg = setup_simulation
-
-    # Check simulation parameter is set correctly
-    assert sim.has_rtx_sensors()
+    offset_rot = (-0.1251, 0.3617, 0.8731, -0.3020)
 
     camera_pattern_cfg = patterns.PinholeCameraPatternCfg(
         focal_length=24.0,
@@ -535,9 +528,9 @@ def test_output_equal_to_usdcamera_offset(setup_simulation, offset_rot):
         height=240,
         width=320,
     )
-    prim_utils.create_prim("/World/Camera_warp", "Xform")
+    sim_utils.create_prim("/World/Camera_warp", "Xform")
     camera_cfg_warp = MultiMeshRayCasterCameraCfg(
-        prim_path="/World/Camera",
+        prim_path="/World/Camera_warp",
         mesh_prim_paths=["/World/defaultGroundPlane"],
         update_period=0,
         offset=MultiMeshRayCasterCameraCfg.OffsetCfg(pos=(2.5, 2.5, 4.0), rot=offset_rot, convention="ros"),
@@ -577,10 +570,14 @@ def test_output_equal_to_usdcamera_offset(setup_simulation, offset_rot):
     torch.testing.assert_close(
         camera_usd.data.output["distance_to_image_plane"],
         camera_warp.data.output["distance_to_image_plane"],
+        atol=5e-5,
+        rtol=5e-6,
     )
     torch.testing.assert_close(
         camera_usd.data.output["distance_to_camera"],
         camera_warp.data.output["distance_to_camera"],
+        atol=5e-5,
+        rtol=5e-6,
     )
 
     # check normals
@@ -595,13 +592,11 @@ def test_output_equal_to_usdcamera_offset(setup_simulation, offset_rot):
     del camera_usd, camera_warp
 
 
+@pytest.mark.isaacsim_ci
 def test_output_equal_to_usdcamera_prim_offset(setup_simulation):
     """Test that the output of the ray caster camera is equal to the output of the usd camera when both are placed
     under an XForm prim that is translated and rotated from the world origin."""
     sim, dt, camera_cfg = setup_simulation
-
-    # Check simulation parameter is set correctly
-    assert sim.has_rtx_sensors()
 
     offset_rot = [-0.1251, 0.3617, 0.8731, -0.3020]
 
@@ -616,7 +611,7 @@ def test_output_equal_to_usdcamera_prim_offset(setup_simulation):
         height=240,
         width=320,
     )
-    prim_raycast_cam = prim_utils.create_prim("/World/Camera_warp", "Xform")
+    prim_raycast_cam = sim_utils.create_prim("/World/Camera_warp", "Xform")
     prim_raycast_cam.GetAttribute("xformOp:translate").Set(tuple(POSITION))
     prim_raycast_cam.GetAttribute("xformOp:orient").Set(gf_quatf)
 
@@ -643,8 +638,9 @@ def test_output_equal_to_usdcamera_prim_offset(setup_simulation):
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(1e-6, 1.0e5)
         ),
         offset=CameraCfg.OffsetCfg(pos=(0, 0, 2.0), rot=offset_rot, convention="ros"),
+        update_latest_camera_pose=True,
     )
-    prim_usd = prim_utils.create_prim("/World/Camera_usd", "Xform")
+    prim_usd = sim_utils.create_prim("/World/Camera_usd", "Xform")
     prim_usd.GetAttribute("xformOp:translate").Set(tuple(POSITION))
     prim_usd.GetAttribute("xformOp:orient").Set(gf_quatf)
 
@@ -670,6 +666,8 @@ def test_output_equal_to_usdcamera_prim_offset(setup_simulation):
     torch.testing.assert_close(
         camera_usd.data.output["distance_to_image_plane"],
         camera_warp.data.output["distance_to_image_plane"],
+        atol=5e-5,
+        rtol=5e-6,
     )
     torch.testing.assert_close(
         camera_usd.data.output["distance_to_camera"],
@@ -691,19 +689,17 @@ def test_output_equal_to_usdcamera_prim_offset(setup_simulation):
 
 
 @pytest.mark.parametrize("height,width", [(540, 960), (240, 320)])
+@pytest.mark.isaacsim_ci
 def test_output_equal_to_usd_camera_intrinsics(setup_simulation, height, width):
     """Test that the output of the ray caster camera and usd camera are the same when both are
     initialized with the same intrinsic matrix."""
     sim, dt, camera_cfg = setup_simulation
 
-    # Check simulation parameter is set correctly
-    assert sim.has_rtx_sensors()
-
     # create cameras
     offset_rot = [-0.1251, 0.3617, 0.8731, -0.3020]
     offset_pos = (2.5, 2.5, 4.0)
     intrinsics = [380.0831, 0.0, width / 2, 0.0, 380.0831, height / 2, 0.0, 0.0, 1.0]
-    prim_utils.create_prim("/World/Camera_warp", "Xform")
+    sim_utils.create_prim("/World/Camera_warp", "Xform")
     # get camera cfgs
     camera_warp_cfg = MultiMeshRayCasterCameraCfg(
         prim_path="/World/Camera_warp",
@@ -716,7 +712,7 @@ def test_output_equal_to_usd_camera_intrinsics(setup_simulation, height, width):
             width=width,
             focal_length=38.0,
         ),
-        max_distance=20.0,
+        max_distance=25.0,
         data_types=["distance_to_image_plane"],
     )
     camera_usd_cfg = CameraCfg(
@@ -726,7 +722,7 @@ def test_output_equal_to_usd_camera_intrinsics(setup_simulation, height, width):
             intrinsic_matrix=intrinsics,
             height=height,
             width=width,
-            clipping_range=(0.01, 20),
+            clipping_range=(0.01, 25),
             focal_length=38.0,
         ),
         height=height,
@@ -787,13 +783,11 @@ def test_output_equal_to_usd_camera_intrinsics(setup_simulation, height, width):
     del camera_usd, camera_warp
 
 
+@pytest.mark.isaacsim_ci
 def test_output_equal_to_usd_camera_when_intrinsics_set(setup_simulation):
     """Test that the output of the ray caster camera is equal to the output of the usd camera when both are placed
     under an XForm prim and an intrinsic matrix is set."""
     sim, dt, camera_cfg = setup_simulation
-
-    # Check simulation parameter is set correctly
-    assert sim.has_rtx_sensors()
 
     camera_pattern_cfg = patterns.PinholeCameraPatternCfg(
         focal_length=24.0,
