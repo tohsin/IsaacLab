@@ -51,7 +51,7 @@ Env_params = {
         "env_prim_path": "/World/envs/env_.*/warehouse"
     },
     'empty_room':{
-        "num_faces": 1200,
+        "num_faces": 1500,
         "semantics_type": "class",
         "semantics_name": "inspection_goal",
         "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",

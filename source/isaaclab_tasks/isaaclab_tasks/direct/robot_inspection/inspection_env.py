@@ -13,7 +13,7 @@ import numpy as np
 
 from datetime import datetime
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv
 from isaaclab.utils import configclass
 from isaacsim.core.utils.semantics import add_labels
@@ -28,17 +28,18 @@ from isaaclab.markers import VisualizationMarkers
 from isaaclab.utils.math import quat_mul, quat_apply, quat_conjugate, quat_apply_inverse
 # from semanc_manager import SemanticManager, add_semantic_tags_from_config
 from .inspection_cfg import Isaac3dinspectionEnvCfg
-import wandb
+# import wandb
 from .curriculum_manager import Curriculum
-from .utils import  NormalizeReward, visualise_faces
+from .utils import  NormalizeReward, visualise_faces, _show_face_ids_
 from .occupancy_grid_mapper import OccupancyGridMapper
+from .inspection_logger import InspectionLogger
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import time 
 import torch.nn.functional as F
 import warp as wp
 from collections import defaultdict
 # opencv-python-headless-4.11.0.86
-from pxr import Usd, UsdGeom, Sdf
+from pxr import Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema, Gf
 from isaaclab.sim.utils import get_current_stage
 from .run_config import cfg_mode
 
@@ -71,11 +72,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 env_origins= self.scene.env_origins.cpu().numpy(),
                 device=self.device,
                 # visualize_env_id= None
-                visualize_env_id=0 if run_cfg.debug else None
+                visualize_env_id=0 if (run_cfg.debug and getattr(run_cfg, 'enable_voxel_visualization', False)) else None
             )
          
         self._setup_tensor_buffers()
         self._setup_camera_zoom()
+        
+        # Initialize point cloud markers if needed
+        self.pc_markers = None
+        if run_cfg.visualise_point_cloud:
+            cfg = RAY_CASTER_MARKER_CFG.replace(prim_path="/Visuals/CameraPointCloud")
+            cfg.markers["hit"].radius = 0.002
+            self.pc_markers = VisualizationMarkers(cfg)
         self.curriculum = Curriculum(
             num_envs=self.num_envs,
             device=self.device
@@ -85,7 +93,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.last_log_step = 0
         self.visualization_timer = 0
         self.visualization_interval = 10
-
+        self.face_max_counts = defaultdict(int)
+        self.global_max_ray_count = 0
     def close(self):
         """Cleanup for the environment."""
         if self.cfg.mapping_cfg.use_occupancy_map and self.occupancy_mapper.visualizer:
@@ -113,6 +122,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
+        self.q_capacity = 5000
+        self.best_q_per_face = torch.zeros((self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32)
 
         self.episode_goal_achieved = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
@@ -123,18 +134,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.last_action = torch.zeros(action_shape, device=self.device)
         self.previous_action_for_rewards = torch.zeros(action_shape, device=self.device)
-        self.discovered_faces_buffer = [torch.tensor([], dtype=torch.float32, device=self.device) for _ in range(self.num_envs)]
+        
+        # Buffers are managed by the logger
+        self.logger = InspectionLogger(self.cfg, use_wandb=run_cfg.use_wandb, debug=run_cfg.debug)
+        self.episode_log_buffer = self.logger.episode_log_buffer
+        self.reward_logging_buffer = self.logger.reward_logging_buffer
 
-        self.episode_log_buffer = {
-            "coverage_percent": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "faces_discovered": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_map_entropy": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_unique_visible_cell_count": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_visited_cells_count":deque(maxlen=self.cfg.scene.num_envs * 4),
-            "curriculum/current_threshold": deque(maxlen=self.cfg.scene.num_envs * 4),
-        }
-        self.reward_logging_buffer = defaultdict(list)
-     
+
         self.success_rate = 0.0
         # Buffers for exploration rewards
         local_map_shape = self.cfg.observation_space["local-map"].shape
@@ -151,8 +157,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if hasattr(self.cfg.mapping_cfg, 'compute_global_map_entropy') and self.cfg.mapping_cfg.compute_global_map_entropy:
             self.prev_global_map_entropy = torch.zeros(self.num_envs, device=self.device)
 
-    
-
     def _setup_scene(self):
         #Add robot, camera and terain to the scene
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -164,19 +168,76 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._ptz_camera = TiledCamera(self.cfg.sensor_cfg.ptz_camera)
         self.scene.sensors["ptz_camera"] = self._ptz_camera
 
-        cfg = sim_utils.UsdFileCfg(
-            usd_path="/home/tosin/Documents/GitHub/IsaacLab/assets/ruby.usd",
-            scale=(0.5, 0.5, 0.5),
+        # --- RESTORED MANUAL SPAWN LOGIC ---
+        # Spawning manually as per original implementation which works with the USD assets
+        rubiks_cfg = sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+            scale=(10.0, 10.0, 10.0),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True),
             mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             semantic_tags=[("class", "inspection_goal")]
             )
-        cfg.func(
-            "/World/envs/env_.*/rubiks_cube", cfg, 
-            translation=(-2, 0.0, 0.02), 
-            orientation=(0.70711, 0.0, 0.0, 0.70711)
+        rubiks_cfg.func(
+            "/World/envs/env_.*/rubiks_cube", 
+            rubiks_cfg, 
+            translation=(2.0, 0.0, 0.4), 
+            orientation=(1, 0.0, 0.0, 0.0),
         )
+
+        # Create RigidObject wrapper for the manually spawned object to enable programmatic control
+        # spawn=None because it's already spawned above
+        self.inspection_goal = RigidObject(
+            RigidObjectCfg(
+                prim_path=self.cfg.inspection_objective_prim_path,
+                spawn=None,
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
+            )
+        )
+        self.scene.rigid_objects["inspection_goal"] = self.inspection_goal
+        
+        # Force collision on Rubik's cube meshes to fix pass-through issue
+        stage = get_current_stage()
+        import re
+        # Get the template path from config, e.g. "/World/envs/env_.*/rubiks_cube"
+        prim_path_template = self.cfg.inspection_objective_prim_path
+        
+        for i in range(self.num_envs):
+            # Resolve the specific path for this environment
+            if "env_.*" in prim_path_template:
+                cube_prim_path = prim_path_template.replace("env_.*", f"env_{i}")
+            else:
+                cube_prim_path = f"/World/envs/env_{i}/rubiks_cube"
+            
+            cube_prim = stage.GetPrimAtPath(cube_prim_path)
+            if cube_prim.IsValid():
+                # Ensure the root prim has RigidBodyAPI so RigidObject can wrap it
+                if not cube_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    UsdPhysics.RigidBodyAPI.Apply(cube_prim)
+
+                for child in Usd.PrimRange(cube_prim):
+                    if child.IsA(UsdGeom.Mesh):
+                        if not child.HasAPI(UsdPhysics.CollisionAPI):
+                            UsdPhysics.CollisionAPI.Apply(child)
+                        if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
+                            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
+                            mesh_collision.GetApproximationAttr().Set("convexHull")
+                        if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
+                            PhysxSchema.PhysxCollisionAPI.Apply(child)
+        
+        # Cache goal prims for manual USD updates
+        self.goal_prims = []
+        for i in range(self.num_envs):
+            if "env_.*" in prim_path_template:
+                cube_prim_path = prim_path_template.replace("env_.*", f"env_{i}")
+            else:
+                cube_prim_path = f"/World/envs/env_{i}/rubiks_cube"
+            prim = stage.GetPrimAtPath(cube_prim_path)
+            if prim.IsValid():
+                self.goal_prims.append(UsdGeom.Xformable(prim))
+            else:
+                print(f"[WARNING] Goal prim not found at {cube_prim_path}")
+                self.goal_prims.append(None)
         
         self.cone = RigidObject(self.cfg.cone_cfg)
         self.scene.rigid_objects["cone"] = self.cone
@@ -202,7 +263,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         actions = torch.clamp(actions, -1.0, 1.0)
         self.last_action.copy_(actions)
         self.actions = actions.clone()
-        
     
     def _apply_action(self) -> None:
         
@@ -303,7 +363,28 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Set the focalLength attribute directly
             # UsdGeom.Camera.GetFocalLengthAttr().Set(value)
             cam_api.GetFocalLengthAttr().Set(float(focal_lengths_cpu[i]))
-            
+
+        self._zoom_ray_caster()
+
+    def _zoom_ray_caster(self):
+        pcfg = self._raycaster_camera.cfg.pattern_cfg
+        w, h = pcfg.width, pcfg.height
+        ha = pcfg.horizontal_aperture
+        va = pcfg.vertical_aperture if pcfg.vertical_aperture is not None else ha * (h / w)
+
+        f = self.current_focal_lengths.to(self.device)
+        fx = w * f / ha
+        fy = h * f / va
+        cx = pcfg.horizontal_aperture_offset * fx + (w / 2.0)
+        cy = pcfg.vertical_aperture_offset * fy + (h / 2.0)
+        K = torch.zeros((self.num_envs, 3, 3), device=self.device, dtype=torch.float32)
+        K[:, 0, 0] = fx
+        K[:, 1, 1] = fy
+        K[:, 0, 2] = cx
+        K[:, 1, 2] = cy
+        K[:, 2, 2] = 1.0
+        self._raycaster_camera.set_intrinsic_matrices(K) 
+
     def _update_maps(self, visualise: bool = False):
         
         if not self.cfg.mapping_cfg.use_occupancy_map:
@@ -335,12 +416,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             )
             
             # To visualise the point cloud in my Scene
-            if i ==0 and run_cfg.visualise_point_cloud and visualise:
-                cfg = RAY_CASTER_MARKER_CFG.replace(prim_path="/Visuals/CameraPointCloud")
-                cfg.markers["hit"].radius = 0.002
-                pc_markers = VisualizationMarkers(cfg)
+            if i ==0 and run_cfg.visualise_point_cloud and visualise and self.pc_markers is not None:
                 if pointcloud.size()[0] > 0:
-                    pc_markers.visualize(translations=pointcloud)
+                    self.pc_markers.visualize(translations=pointcloud)
             
             if pointcloud.shape[0] > 0:
                 # 1. Find the indices of all points that are not part of the floor
@@ -555,37 +633,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if self.common_step_counter % self.cfg.mapping_cfg.map_update_interval == 0:
             self._update_maps(visualise=run_cfg.debug)
 
-        if not run_cfg.debug and self.common_step_counter % self.cfg.logging_interval == 0:
-            mean_coverage = np.mean(self.episode_log_buffer["coverage_percent"])
-            mean_faces_discovered = np.mean(self.episode_log_buffer["faces_discovered"])
-            mean_final_map_entropy = np.mean(self.episode_log_buffer["final_map_entropy"])
-            mean_final_visited_cells_count = np.mean(self.episode_log_buffer["final_visited_cells_count"])
-            mean_final_unique_visible_cell_count = np.mean(self.episode_log_buffer["final_unique_visible_cell_count"])
-            mean_current_threshold = np.mean(self.episode_log_buffer["curriculum/current_threshold"])
-
-            # mean_current_episode_length = np.mean(self.episode_log_buffer["curriculum/current_episode_length"])
-            log_data = {
-                # Curriculum Status
-                "curriculum/exploration_threshold_goal": mean_current_threshold,
-                # "curriculum/episode_length_limit": mean_current_episode_length,
-                "curriculum/success_rate": self.curriculum.success_rate,
-                
-                # Episode Performance Summary
-                "episode_summary/mean_coverage_percent": mean_coverage,
-                "episode_summary/mean_faces_discovered": mean_faces_discovered,
-                "episode_summary/mean_final_map_entropy": mean_final_map_entropy,
-                "episode_summary/mean_final_unique_visible_cell_count": mean_final_unique_visible_cell_count,
-                "episode_summary/mean_final_visited_cells_count": mean_final_visited_cells_count,
-
-            }
-            for reward_name, reward_values in self.reward_logging_buffer.items():
-                if len(reward_values) > 0:
-                    log_data[reward_name] = np.mean(reward_values)
-            # Clear the reward logging buffer after logging
-            self.reward_logging_buffer.clear()
-            if run_cfg.use_wandb:
-                # wandb.log(log_data, step=self.common_step_counter)
-                wandb.log(log_data)
+        self.logger.log_step(self.common_step_counter, self.curriculum.success_rate)
 
         return super().step(action)
       
@@ -615,14 +663,57 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         return None
     
+    def _update_max_ray_counts(self, valid_faces_tensor):
+        """
+        Helper: Checks if the current view of any face has more rays (better zoom) 
+        than previously recorded.
+        """
+        # Count how many rays are hitting each unique face in this specific frame
+        unique_ids, counts = torch.unique(valid_faces_tensor, return_counts=True)
+
+        # Move to CPU for standard dictionary updates
+        ids_cpu = unique_ids.tolist()
+        counts_cpu = counts.tolist()
+
+        for fid, count in zip(ids_cpu, counts_cpu):
+            # If this count is higher than our previous best for this face, update it
+            if count > self.face_max_counts[fid]:
+                self.face_max_counts[fid] = count
+                # Optional: Print to verify it's working
+
+            
+                # print(f"New Max Zoom for Face {fid}: {count} rays")
+            if count > self.global_max_ray_count:
+                self.global_max_ray_count = count
+                print(f"!!! New Global Max Zoom Record: {count} rays (Face {fid}) !!!")
+
+    def _ensure_q_capacity(self, required_capacity: int):
+        """
+        Ensure that the discovered faces buffer can hold the required capacity.
+        """
+        if required_capacity <= self.q_capacity:
+            return
+        new_capacity = max(required_capacity, 2 * self.q_capacity)
+        new_buf = torch.zeros((self.num_envs, new_capacity), dtype=torch.float32, device=self.device)
+        new_buf[:, :self.q_capacity] = self.best_q_per_face
+        self.best_q_per_face = new_buf
+        self.q_capacity = new_capacity
+
     def _compute_face_discovery_reward_fast(self):
         """
         Compute the reward for discovering new faces.
         """
-
-
         face_ids = self._raycaster_camera.data.output.get("face_ids")
         target_mask = self._get_semantic_mask(self._ptz_camera)
+        if run_cfg.debug and run_cfg.visualise_face_ids:
+            self._show_face_ids_(
+                face_ids=face_ids,
+                target_mask=target_mask,
+                env_id=0,
+                win="face_ids_debug",
+                scale=10,
+                max_ids_in_text=12,
+            )
 
          # Exit if either camera data is missing
         if target_mask is None or face_ids is None:
@@ -637,29 +728,82 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         face_rewards = torch.zeros(self.num_envs, device=self.device)
         num_faces_inspected = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
+        k = self.cfg.reward_cfg.face_quality_k
+
+        # --- New Logic for Angle-Weighted Reward ---
+        if self.cfg.reward_cfg.use_angle_weighted_reward:
+            # Get normals: (Num_Envs, H, W, 3)
+            normals = self._raycaster_camera.data.output["normals"]
+            
+            # Get ray directions in world frame: (Num_Envs, Num_Rays, 3)
+            # We need to reshape to (Num_Envs, H, W, 3) to match normals
+            # Note: Checking MultiMeshRayCasterCamera, num_rays = width * height
+            H, W = normals.shape[1], normals.shape[2]
+            ray_dirs = self._raycaster_camera._ray_directions_w.view(self.num_envs, H, W, 3)
+
+            # View direction is roughly -ray_direction (vector from surface to camera)
+            # Dot product: (N . V) = (N . -R) = -(N . R)
+            # We want max(0, N . V)
+            dot_prods = -torch.sum(normals * ray_dirs, dim=-1)
+            weights = torch.clamp(dot_prods, min=0.0, max=1.0)
+        else:
+            # Fallback to pure counts (weight = 1.0)
+            weights = torch.ones_like(face_ids, dtype=torch.float32).squeeze(-1)
+
+        visible_faces_counts = []
+
         for env_idx in range(self.num_envs):
-            # Get all valid face IDs for this one environment (already computed)
-            valid_faces = occlusion_filtered_face_ids[env_idx].flatten()
-            valid_faces = valid_faces[valid_faces >= 0]
+            # Flatten everything for this env
+            env_faces = occlusion_filtered_face_ids[env_idx].flatten()
+            env_weights = weights[env_idx].flatten()
 
-            if valid_faces.numel() > 0:
-                existing_faces = self.discovered_faces_buffer[env_idx]
-                current_unique_faces = torch.unique(valid_faces)
+            # Filter valid faces
+            valid_mask = env_faces >= 0
+            valid_faces = env_faces[valid_mask]
+            valid_weights = env_weights[valid_mask]
 
-                is_new_mask = ~torch.isin(current_unique_faces, self.discovered_faces_buffer[env_idx])
-                newly_discovered_ids = current_unique_faces[is_new_mask]
+            unique_ids_visible = torch.unique(valid_faces)
+            visible_faces_counts.append(len(unique_ids_visible))
 
-                # combined_faces = torch.cat([existing_faces, current_unique_faces])
-                # unique_in_combined, counts = torch.unique(combined_faces, return_counts=True)
-                # newly_discovered_ids = unique_in_combined[counts == 1]
+            if valid_faces.numel() == 0:
+                num_faces_inspected[env_idx] = (self.best_q_per_face[env_idx] > 0).sum()
+                continue
 
-                if newly_discovered_ids.numel() > 0:
-                    self.discovered_faces_buffer[env_idx] = torch.cat(
-                        (self.discovered_faces_buffer[env_idx], newly_discovered_ids)
-                    )
-                    face_rewards[env_idx] = newly_discovered_ids.numel()
+            if run_cfg.debug and run_cfg.display_ray_counts:
+                self._update_max_ray_counts(valid_faces)
 
-            num_faces_inspected[env_idx] = self.discovered_faces_buffer[env_idx].numel()
+            # We need sum of weights per unique face ID
+            # Since IDs are integers, we can use scatter_add or bincount if memory allows, 
+            # or loop through unique IDs if sparse.
+            # Given q_capacity can be large but valid_faces in a frame is small (1024),
+            # let's find unique IDs and sum weights for them.
+            
+            # Method:
+            # 1. Find unique faces and their inverse indices to map pixels to unique faces
+            unique_ids, inverse_indices = torch.unique(valid_faces, return_inverse=True)
+            
+            # 2. Sum weights for each unique face
+            # Initialize with zeros
+            weighted_counts = torch.zeros_like(unique_ids, dtype=torch.float32)
+            # Add weights: index=inverse_indices adds valid_weights to weighted_counts
+            weighted_counts.scatter_add_(0, inverse_indices, valid_weights)
+
+            max_id = int(unique_ids.max().item())
+            self._ensure_q_capacity(max_id + 1)
+
+            # Calculate Quality: Q = 1 - exp(-WeightedCount / k)
+            q_now = 1.0 - torch.exp(-weighted_counts / k)
+
+            q_best = self.best_q_per_face[env_idx, unique_ids]
+
+            dq = torch.relu(q_now - q_best)
+            face_rewards[env_idx] = dq.sum()
+
+            # Update best q values
+            self.best_q_per_face[env_idx, unique_ids] = torch.maximum(q_best, q_now)
+            num_faces_inspected[env_idx] = (self.best_q_per_face[env_idx] > 0).sum()
+        
+        self.logger.log_visible_faces(np.mean(visible_faces_counts))
         return face_rewards, num_faces_inspected
     
     def _calculate_entropy(self, log_odds):
@@ -671,6 +815,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # H = -(p*log(p) + (1-p)*log(1-p))
         entropy = F.binary_cross_entropy(p, p, reduction='none')
         return entropy
+    
+    _show_face_ids_ = _show_face_ids_
     
     def _compute_exploration_rewards(self):
         # --- Entropy / Information Gain ---
@@ -746,9 +892,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
         visitation_reward = self._compute_visitation_reward()
         action_delta = torch.sum(torch.square(self.actions - self.previous_action_for_rewards), dim=1)
-        # Camera Penalty pan and tilt
-        camera_delta = torch.sum(
-            torch.square(self.actions[:, 2:4] - self.previous_action_for_rewards[:, 2:4]
+        
+        # Base Action Penalty (Linear & Angular velocity which are indices 0, 1)
+        base_action_delta = torch.sum(torch.square(
+            self.actions[:, :2] - self.previous_action_for_rewards[:, :2]
+        ), dim=1)
+
+        # Camera Penalty (Pan, Tilt, Zoom which are indices 2, 3, 4)
+        ptz_action_delta = torch.sum(torch.square(
+            self.actions[:, 2:] - self.previous_action_for_rewards[:, 2:]
         ), dim=1)
 
         # Inpsection Coverage Ratio and Success Bonus
@@ -765,17 +917,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visibility_increase_reward_scale * visibility_increase_reward
                         #+ self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
-                        # + self.cfg.reward_cfg.action_penalty_scale * action_delta
-                        # + self.cfg.reward_cfg.ptz_penalty_scale * camera_delta
+                        - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
+                        - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
                         + success_bonus
-                        + self.cfg.reward_cfg.time_penalty
+                        -self.cfg.reward_cfg.time_penalty
                         )
         self._cache_rewards(
             face_discovery_raw,
             information_gain_reward, 
             visibility_increase_reward, 
-            action_delta,
-            camera_delta,
+            base_action_delta,
+            ptz_action_delta,
             total_reward
             )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
@@ -823,10 +975,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Check for timeout
-        time_out = self.episode_length_buf >= self.cfg.min_episode_length - 1
-        num_faces_inspected = torch.tensor([len(s) for s in self.discovered_faces_buffer], device=self.device)
-        coverage_condition = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_current_coverage_goal()
-        return coverage_condition, time_out
+        # Check for timeout
+        max_steps = self.curriculum.get_current_episode_length()
+        time_out = self.episode_length_buf >= max_steps - 1
+        current_q_values = self.best_q_per_face
+        num_faces_inspected = (current_q_values > 0.0).sum(dim=1)
+
+        total_quality = current_q_values.sum(dim=1)
+        mean_quality = torch.zeros_like(total_quality)
+        mask = num_faces_inspected > 0
+        mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
+        coverage_achieved = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_current_coverage_goal()
+        success_condition = coverage_achieved 
+        return success_condition, time_out
     
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
@@ -835,11 +996,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if len(env_ids)> 0:
             self.last_action[env_ids] = 0.0
             self.previous_action_for_rewards[env_ids] = 0.0
-            num_faces_inspected = torch.tensor([len(self.discovered_faces_buffer[i]) for i in env_ids], device=self.device)
+
+
+            current_q_values = self.best_q_per_face[env_ids]
+            num_faces_inspected = (current_q_values > 0.0).sum(dim=1)
+            total_quality = current_q_values.sum(dim=1)
+
+            mean_quality = torch.zeros_like(total_quality)
+            mask = num_faces_inspected > 0
+            mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
+
             achieved_coverage_ratios = num_faces_inspected / float(self.cfg.max_faces_to_inspect)
-            current_goal = self.curriculum.get_current_coverage_goal()
-            episode_successes = achieved_coverage_ratios >= current_goal
-            self.curriculum.update_curriculum(episode_successes)
+            current_cov_goal = self.curriculum.get_current_coverage_goal()
+            episode_successes = (achieved_coverage_ratios >= current_cov_goal) # & (mean_quality >= self.curriculum.get_current_quality_goal())
+            self.curriculum.update_curriculum(episode_successes, mean_quality)
 
             # Logging
             for i, env_id in enumerate(env_ids):
@@ -849,12 +1019,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
                 self.episode_log_buffer["coverage_percent"].append(achieved_coverage_ratios[i].item() * 100)
                 self.episode_log_buffer["faces_discovered"].append(num_faces_inspected[i].item())
-                self.episode_log_buffer["curriculum/current_threshold"].append(current_goal)
-
+                self.logger.update_episode_stats(num_faces_inspected[i].item()) # Update global stats
+                self.episode_log_buffer["mean_inspection_quality"].append(mean_quality[i].item())
+                self.episode_log_buffer["curriculum/current_threshold"].append(current_cov_goal)
                 # Clear Buffers
-                self.discovered_faces_buffer[env_id] = torch.tensor([], dtype=torch.float32, device=self.device)
+                
                 self.prev_coverage_ratio[env_id] = 0.0
 
+            self.best_q_per_face[env_ids] = 0.0
             # Map Logging and Reset
             if self.cfg.mapping_cfg.use_occupancy_map:
 
@@ -867,10 +1039,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 final_robot_path_cells = (all_visit_maps_torch > 0).sum(dim=1)
                 final_unique_visible_cells = (all_vis_maps_torch > 0).sum(dim=1)
 
-                current_scores = final_unique_visible_cells[env_ids]
-
-
-
                 for env_id in env_ids.cpu().tolist():
                     # Covergae for Trajectory
                     self.episode_log_buffer["final_visited_cells_count"].append(final_robot_path_cells[env_id].item())
@@ -882,8 +1050,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[env_id].item()} ---")
                         print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[env_id].item()} ---")
 
-
-        # --- END: New code for entropy logging ---
                 self.occupancy_mapper.reset_map(env_ids.cpu().tolist())
                 all_vis_maps = wp.to_torch(self.occupancy_mapper.visibility_map)
                 num_cells = all_vis_maps.view(self.num_envs, -1).shape[1]
@@ -915,6 +1081,42 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         # Add environment origins
         new_root_state[:, :3] += self.scene.env_origins[env_ids]
+        
+        # --- Update Information Object Position ---
+        # Get new objective positions based on curriculum and robot position
+        # We pass the robot's *local* position (new_pos) to the curriculum manager
+        obj_pos = self.curriculum.get_objective_start_pos(num_resets, new_pos[:, :3])
+        
+        obj_state = torch.zeros((num_resets, 13), device=self.device)
+        obj_state[:, :3] = obj_pos + self.scene.env_origins[env_ids]
+        obj_state[:, 3] = 1.0 # Identity quaternion (w)
+        
+        self.inspection_goal.write_root_pose_to_sim(obj_state[:, :7], env_ids)
+        self.inspection_goal.write_root_velocity_to_sim(obj_state[:, 7:], env_ids)
+
+        # Manually update USD prim translation for RayCaster
+        obj_pos_cpu = obj_state[:, :3].cpu().numpy().astype(float)
+        for i, env_id in enumerate(env_ids.cpu().tolist()):
+            xf = self.goal_prims[env_id]
+            if xf:
+                # We assume no rotation/scale ops need clearing or complex handling for now
+                # Just find or create the translation op
+                # Note: This updates the *local* transform if ops exist, or adds one. 
+                # Since these are root objects in envs, relative to env root might be tricky 
+                # if we used relative paths, but here we used absolute paths in _setup_scene.
+                # However, obj_state includes env_origins, so it's global pose.
+                
+                # Check current ops
+                found_translate = False
+                for op in xf.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        op.Set(Gf.Vec3d(*obj_pos_cpu[i]))
+                        found_translate = True
+                        break
+                
+                if not found_translate:
+                    xf.AddTranslateOp().Set(Gf.Vec3d(*obj_pos_cpu[i]))
+        # ------------------------------------------
         
         # Reset joint positions and velocities to default
         joint_pos = self.robot.data.default_joint_pos[env_ids]

@@ -111,6 +111,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-3.0, 15.0, 0.05))
     )
+
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
@@ -175,9 +176,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     init_inspection_threshold = 0.5# Coverage % threshold to count as valid inspection
 
     terminate_on_all_inspected = True
-    min_episode_length = 1000
+    min_episode_length = cfg_mode.max_episode_length
     max_faces_to_inspect = env_parameters["num_faces"]
 
     # Logging
-    logging_interval: int = 1000
+    logging_interval: int = cfg_mode.logging_interval
 

@@ -62,26 +62,16 @@ def main():
         while simulation_app.is_running():
             # run everything in inference mode
             with torch.inference_mode():
-                
 
-                for i in range(3000):
-                    # if i < 200:
-                    #     actions = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
-                    # else:
-                    #     zoom_signal = math.sin(i * 0.05)
-                    #     actions = torch.tensor([[0.0, 0.0, -1.0, 0.0, zoom_signal]], device=env.unwrapped.device)
-                    actions = torch.tensor([[0.0, 0.0, -1.0, 0.0, 1.0]], device=env.unwrapped.device)
-                    # if i < 50:
-                    #     actions = torch.tensor([[0.0, 0.0, -1.0, 0.0, 0.3]], device=env.unwrapped.device)
-                    # else:
-                    #      actions = torch.tensor([[0.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
-                    # if i < 100:
-                        #     actions = torch.tensor([[0.7, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
-
-                    # else:
-                    #     tilt_signal = math.sin(i * 0.05)
-                    #     #print(tilt_signal)
-                    #     actions = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                for i in range(2000):
+                    # turn a bit first
+                    print(f"[INFO]: Step {i}")  
+                    if i < 100:
+                        actions = torch.tensor([[1.0, 1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i >= 100 and i < 120:
+                        actions = torch.tensor([[0.0,  1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    else:
+                        actions = torch.tensor([[1.0,  0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

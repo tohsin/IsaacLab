@@ -1,0 +1,3 @@
+conda activate env_isaaclab
+cd /home/tosin/Documents/GitHub/IsaacLab
+python3 scripts/reinforcement_learning/skrl/train_gru_kl_adaptive.py

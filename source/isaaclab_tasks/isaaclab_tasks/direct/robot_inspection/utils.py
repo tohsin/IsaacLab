@@ -75,6 +75,7 @@ class RunningMeanStd:
         new_count = tot_count
 
         self.mean, self.var, self.count = new_mean, new_var, new_count
+        
 class RewardScaler:
     def __init__(self, epsilon=1e-8, is_neg_pos1=True):
         """
@@ -161,4 +162,60 @@ def visualise_faces(self, face_ids_to_show):
         self.fig_face.canvas.draw()
         self.fig_face.canvas.flush_events()
 
+
+def _show_face_ids_(
+            self,
+            face_ids: torch.Tensor,
+            target_mask: torch.Tensor,
+            env_id: int = 0,
+            win: str = "face_ids_debug",
+            scale: int = 6,
+            max_ids_in_text: int = 12,):
+        import cv2
+        x = face_ids[env_id]
+        if x.ndim == 3:
+            x = x[..., 0]
+        x = x.to(torch.int64)
+
+        valid = x >= 0
+
+        if target_mask is not None:
+            tm = target_mask[env_id]
+            if tm.ndim == 3:
+                tm = tm[..., 0]
+            tm = tm.bool()
+        else:
+            tm = None
+
+        # Build RGB image (H,W,3) in torch
+        H, W = x.shape
+        img = torch.zeros((H, W, 3), device=x.device, dtype=torch.uint8)
+
+        if tm is None:
+            img[valid] = torch.tensor([0, 255, 0], device=x.device, dtype=torch.uint8)
+            ids = x[valid]
+        else:
+            img[tm & valid] = torch.tensor([0, 255, 0], device=x.device, dtype=torch.uint8)
+            ids = x[tm & valid]
+
+        unique_ids = torch.unique(ids) if ids.numel() > 0 else torch.empty((0,), device=x.device, dtype=torch.int64)
+        n_unique = int(unique_ids.numel())
+        shown = unique_ids[:max_ids_in_text].tolist()
+
+        # To numpy for OpenCV
+        img_np = img.detach().cpu().numpy()  # RGB uint8
+
+        # Overlay text (OpenCV uses BGR color tuples but we're drawing on RGB array; color choice still fine visually)
+        cv2.putText(img_np, f"env={env_id}  unique={n_unique}", (5, 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(img_np, f"ids[:{max_ids_in_text}]={shown}", (5, 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Scale up so it’s visible
+        if scale != 1:
+            img_np = cv2.resize(img_np, (W * scale, H * scale), interpolation=cv2.INTER_NEAREST)
+
+        cv2.imshow(win, img_np)
+        key = cv2.waitKey(1)  # required for live refresh [web:31]
+        return key
 

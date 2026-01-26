@@ -12,13 +12,14 @@ torch.autograd.set_detect_anomaly(True)
 
 # conda install -c conda-forge gcc=12 -y
 from isaaclab.app import AppLauncher
-is_eval = True
+from run_config import CONFIG
+is_eval = CONFIG.is_eval
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environments.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -27,8 +28,8 @@ parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-
 
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
-_use_wandb = False
-_headless = False
+_use_wandb = CONFIG.use_wandb
+_headless = CONFIG.headless
 args_cli = parser.parse_args()
 args_cli.enable_cameras =  True
 args_cli.headless = _headless
@@ -283,7 +284,7 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 100_000
+total_timesteps = 500_000
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
@@ -302,7 +303,7 @@ cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 3e-4
+cfg["entropy_loss_scale"] = 6e-4
 cfg["value_loss_scale"] = 1.0
 # cfg["kl_threshold"] = 0.0
 cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
@@ -360,9 +361,60 @@ print("[INFO] Starting training...")
 print_dict(cfg_trainer, nesting=4)
 if is_eval: 
     print("[INFO] Running in evaluation mode. No training will be performed.")
-    path = "/home/tosin/logs/skrl/3DInspection_direct/2026-01-18_18-56-03_ppo_gru_128/checkpoints/agent_155000.pt"
+    if CONFIG.checkpoint_path:
+        path = CONFIG.checkpoint_path
+    else:
+         # Fallback or error if you prefer, but aiming for minimal disruption
+         path = "/home/tosin/logs/skrl/3DInspection_direct/2026-01-18_18-56-03_ppo_gru_128/checkpoints/agent_155000.pt" 
+         print(f"[WARNING] No checkpoint path in CONFIG, using default: {path}")
+
     agent.load(path)
-    trainer.eval()
+    # Custom evaluation loop to handle RNN states
+    print("[INFO] Starting custom evaluation loop with RNN state management...")
+    
+    # Initialize agent for evaluation
+    agent.set_running_mode("eval")
+    
+    # Reset environment
+    states, _ = env.reset()
+    
+    # Initialize RNN states if applicable
+    if agent._rnn:
+        # Reset internal RNN states
+        for rnn_state in agent._rnn_initial_states["policy"]:
+            rnn_state.zero_()
+        if agent.policy is not agent.value:
+            for rnn_state in agent._rnn_initial_states["value"]:
+                rnn_state.zero_()
+                
+    with torch.no_grad():
+        while simulation_app.is_running():
+            # Get actions using the agent (handles RNN state internally via _rnn_initial_states)
+            # The agent.act() method uses _rnn_initial_states, computes output, and populates _rnn_final_states
+            actions, _, _ = agent.act(states, timestep=0, timesteps=0)
+            
+            # Step environment
+            next_states, rewards, terminated, truncated, infos = env.step(actions)
+            
+            # Update RNN states for next step
+            if agent._rnn:
+                # Move final states to initial states for next step
+                # Note: agent._rnn_final_states is updated inside agent.act()
+                agent._rnn_initial_states = agent._rnn_final_states
+                
+                # Reset RNN states for terminated episodes
+                # The agent.record_transition method usually does this, but we are skipping it in eval
+                # so we must do it manually
+                finished_episodes = (terminated | truncated).nonzero(as_tuple=False)
+                if finished_episodes.numel():
+                    for rnn_state in agent._rnn_initial_states["policy"]:
+                        rnn_state[:, finished_episodes[:, 0]] = 0
+                    if agent.policy is not agent.value:
+                        for rnn_state in agent._rnn_initial_states["value"]:
+                            rnn_state[:, finished_episodes[:, 0]] = 0
+
+            # Update current state
+            states = next_states
 else:
     # path = "/home/tosin/IsaacLab_inspection/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2025-09-07_11-42-53_ppo_gru_128/checkpoints/agent_450000.pt"
     # agent.load(path)

@@ -26,6 +26,12 @@ class MultiMeshRayCasterCfg(RayCasterCfg):
         target_prim_expr: str = MISSING
         """The regex to specify the target prim to ray cast against."""
 
+        is_global: bool = False
+        """Whether the target prim is assumed to be global (static) or environment-specific. Defaults to False.
+
+        If True, the mesh is assumed to be in the global frame and not duplicated per environment.
+        """
+
         is_shared: bool = False
         """Whether the target prim is assumed to be the same mesh across all environments. Defaults to False.
 

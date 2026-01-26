@@ -58,7 +58,7 @@ class SensorsCfg:
         # prim_path="/World/envs/env_.*/Robot/base_link",
         prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link",
         update_period=0.24,
-        data_types=["face_ids"],
+        data_types=["face_ids", "normals"],
         offset=RayCasterCameraCfg.OffsetCfg(
             pos=(0.3, 0.0, 0.15),
             #rot=(0, 0, -0.7071068, 0.7071068),
@@ -71,7 +71,12 @@ class SensorsCfg:
             focal_length=24.0,
             horizontal_aperture=20.955,
         ),
-        mesh_prim_paths=[env_parameters["inspection_goal_prim_path"]],
+        mesh_prim_paths=[
+            MultiMeshRayCasterCameraCfg.RaycastTargetCfg(
+                target_prim_expr=env_parameters["inspection_goal_prim_path"],
+                track_mesh_transforms=True
+            )
+        ],
         update_mesh_ids=True,
         debug_vis=cfg_mode.debug
     )
