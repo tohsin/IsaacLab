@@ -40,8 +40,8 @@ class Curriculum:
 
         self.num_envs = num_envs 
         self.device = device
-        self.success_buffer = deque(maxlen=200 * self.num_envs) # Buffer ~20 resets per env
-        self.quality_buffer = deque(maxlen=200 * self.num_envs)
+        self.success_buffer = deque(maxlen=50 * self.num_envs) # Buffer ~20 resets per env
+        self.quality_buffer = deque(maxlen=50 * self.num_envs)
         self.min_episodes_for_update = 20 * self.num_envs
 
         self.success_rate_threshold = 0.60 
@@ -158,6 +158,7 @@ class Curriculum:
         
         episode_length = int(self.min_episode_length_limit + (self.max_episode_length_limit - self.min_episode_length_limit) * progress)
         return episode_length
+
     def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Gets random start positions from the pool based on progress."""
         total_items = len(self.start_positions_tensor)
