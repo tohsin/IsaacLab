@@ -5,6 +5,7 @@ class visualisation_mode:
 
 class debug_Cfg:
     debug = True
+    min_episode_length: int = 1200
     logging_interval: int = 1500
     max_episode_length: int = 1500
     initaltion_pool_sz : int = 1
@@ -22,12 +23,12 @@ class debug_Cfg:
 
 class train_Cfg:
     debug = False
-    min_episode_length: int = 1000
+    min_episode_length: int = 1200
     max_episode_length: int = 1500
-    logging_interval: int = 1500
-    initaltion_pool_sz : int = 7
-    initaltion_pool_sz_goal : int = 4
-    inspection_goal =  0.1
+    logging_interval: int = 1000
+    initaltion_pool_sz : int = 12
+    initaltion_pool_sz_goal : int = 13
+    inspection_goal =  0.2
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False

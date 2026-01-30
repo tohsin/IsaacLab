@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class NormalizeReward:
-    def __init__(self, gamma=0.99, epsilon=1e-8, m_value = 1, device=None):
+    def __init__(self, gamma=0.99, epsilon=1e-8, m_value = 10, device=None):
         self.return_rms = RunningMeanStd(shape=(), device=device)
         self.count = 0
         self.epsilon = epsilon

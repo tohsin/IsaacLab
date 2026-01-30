@@ -65,7 +65,7 @@ def main():
 
                 for i in range(2000):
                     # turn a bit first
-                    print(f"[INFO]: Step {i}")  
+                    # print(f"[INFO]: Step {i}")  
                     if i < 100:
                         actions = torch.tensor([[1.0, 1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i >= 100 and i < 120:

@@ -14,12 +14,15 @@ torch.autograd.set_detect_anomaly(True)
 from isaaclab.app import AppLauncher
 from run_config import CONFIG
 is_eval = CONFIG.is_eval
+
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environments.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
+parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
+parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -284,7 +287,7 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 500_000
+total_timesteps = 1_000_000
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
@@ -294,19 +297,25 @@ cfg["learning_epochs"] = 4 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 3e-5  # 0.0003     0.0006
+cfg["learning_rate"] = 3e-4  # 0.0003     0.0006
 cfg["learning_rate_scheduler"] = KLAdaptiveRL
-cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.016} # 0.008
-scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
+cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008} 
+scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"] 
+# cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.LinearLR
+# cfg["learning_rate_scheduler_kwargs"] = {
+#     "start_factor": 1.0,     # Start at the full learning_rate
+#     "end_factor": 0.001,      
+#     "total_iters": scheduler_max_steps,
+# }
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 6e-4
+cfg["entropy_loss_scale"] = 3e-4 # 1e-3
 cfg["value_loss_scale"] = 1.0
 # cfg["kl_threshold"] = 0.0
-cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
+cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.01
 cfg["rewards_shaper"] =  None
 cfg["time_limit_bootstrap"] = True
 
@@ -352,6 +361,18 @@ agent = PPO(models=models,
             device=env.device,)
 # path = "logs/skrl/3DInspection_direct/2025-08-03_20-01-28_ppo_gru_128/checkpoints/agent_1862000.pt"
 # agent.load(path)
+
+if args_cli.checkpoint:
+    print(f"[INFO] Loading checkpoint from: {args_cli.checkpoint}")
+    agent.load(args_cli.checkpoint)
+    if args_cli.reset_std:
+        print("[INFO] Resetting log_std_parameter to force exploration.")
+        with torch.no_grad():
+             # Assuming shared model or separate policy has this specific parameter name
+             if hasattr(agent.policy, "log_std_parameter"):
+                 agent.policy.log_std_parameter.fill_(0.0) # Reset to initial 0.0 (std=1.0)
+             else:
+                 print("[WARNING] Could not find log_std_parameter to reset.")
 cfg_trainer ={"timesteps": total_timesteps,  # total timesteps to train the agent
                 "headless": _headless,
                }#  "stochastic_evaluation": False

@@ -16,7 +16,7 @@ class Curriculum:
 
                 start_coverage_ratio: float = cfg_mode.inspection_goal,
                 max_coverage_ratio: float = 0.99,
-                coverage_increment: float = 0.03,
+                coverage_increment: float = 0.05,
 
                 start_quality_threshold: float = 0.1,
                 max_quality_threshold: float = 0.6,
@@ -42,7 +42,7 @@ class Curriculum:
         self.device = device
         self.success_buffer = deque(maxlen=50 * self.num_envs) # Buffer ~20 resets per env
         self.quality_buffer = deque(maxlen=50 * self.num_envs)
-        self.min_episodes_for_update = 20 * self.num_envs
+        self.min_episodes_for_update = 10 * self.num_envs
 
         self.success_rate_threshold = 0.60 
         self.success_rate = 0.0 
@@ -71,7 +71,7 @@ class Curriculum:
                     [-1.08, 6.32],
                     [-6.73, 15.10],
                     [0.83, 15.10],
-                    [-7.0, -8.81], # Bottom-Left (Stress Test)
+                    # [-7.0, -8.81], # Bottom-Left (Stress Test)
                     ]
 
         self.start_pos_objective = [ # X and Y positions only
@@ -88,7 +88,7 @@ class Curriculum:
                     [5.7, 13.67],
                     [0.83, 15.10],
                     [-4.7, 10.2],
-                    [5.7, 13.67],   # Top-Right (Stress Test)
+                    # [5.7, 13.67],   # Top-Right (Stress Test)
                     ]
         self.allowed_orientations = torch.tensor([
             DEG_0, 

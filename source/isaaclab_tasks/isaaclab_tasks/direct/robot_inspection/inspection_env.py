@@ -57,6 +57,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
 
+        # Automatically count faces after the scene is set up
+        # self.total_mesh_faces = self._count_total_mesh_faces()
+        self.total_mesh_faces = self.cfg.max_faces_to_inspect
+
+
 
         self.robot_pos = self.robot.data.root_pos_w
         self.robot_vel = self.robot.data.root_lin_vel_w
@@ -904,7 +909,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         ), dim=1)
 
         # Inpsection Coverage Ratio and Success Bonus
-        current_coverage_ratio = total_num_faces_inspected / self.cfg.max_faces_to_inspect
+        current_coverage_ratio = total_num_faces_inspected / self.total_mesh_faces
         self.prev_coverage_ratio = current_coverage_ratio.clone()
        
         success_bonus = torch.where(
@@ -915,8 +920,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         total_reward = (self.cfg.reward_cfg.mesh_coverage_reward_scale * face_discovery_raw
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
-                        + self.cfg.reward_cfg.visibility_increase_reward_scale * visibility_increase_reward
-                        #+ self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
+                        + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
                         - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
                         - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
                         + success_bonus
@@ -928,6 +932,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             visibility_increase_reward, 
             base_action_delta,
             ptz_action_delta,
+            visitation_reward,
             total_reward
             )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
@@ -938,40 +943,30 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             import ipdb; ipdb.set_trace()
             print("NaN or Inf detected in total reward calculation!")
             raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
-        normalized_reward = self.rewardscaler(total_reward)
-        return normalized_reward
+        return total_reward
+        # normalized_reward = self.rewardscaler(total_reward)
+        # return normalized_reward
     
-    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, total_unscaled):
-        step_face_discovery = face_discovery.mean().item()
-        step_info_gain = info_gain.mean().item()
-        step_vis_increase = visibility_increase.mean().item()
-        step_action_delta = action_delta.mean().item()
-        step_camera_delta = camera_delta.mean().item()
-        step_total_raw = total_unscaled.mean().item()
-
-        self.reward_logging_buffer["reward_components/face_discovery"].append(step_face_discovery)
-        self.reward_logging_buffer["reward_components/info_gain"].append(step_info_gain)
-        self.reward_logging_buffer["reward_components/visibility_increase"].append(step_vis_increase)
-        self.reward_logging_buffer["reward_components/total_unscaled"].append(step_total_raw)
-        self.reward_logging_buffer["reward_components/action_penalty"].append(step_action_delta)
-        self.reward_logging_buffer["reward_components/camera_penalty"].append(step_camera_delta)
-        
-        # Scaled versioons
-        self.reward_logging_buffer["reward_components/face_discovery_scaled"].append(   
-            self.cfg.reward_cfg.mesh_coverage_reward_scale * step_face_discovery
-        )
-        self.reward_logging_buffer["reward_components/info_gain_scaled"].append(
-            self.cfg.reward_cfg.information_gain_reward_scale * step_info_gain
-        )
-        self.reward_logging_buffer["reward_components/visibility_increase_scaled"].append(
-            self.cfg.reward_cfg.visibility_increase_reward_scale * step_vis_increase
-        )
-        self.reward_logging_buffer["reward_components/action_penalty_scaled"].append(
-            self.cfg.reward_cfg.action_penalty_scale * step_action_delta
-        )
-        self.reward_logging_buffer["reward_components/camera_penalty_scaled"].append(
-            self.cfg.reward_cfg.ptz_penalty_scale * step_camera_delta
-        )
+    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled):
+        # Construct dictionary for logging (both accumulation and per-step means)
+        reward_dict = {
+            "face_discovery_raw": face_discovery,
+            "info_gain": info_gain,
+            "visibility_increase": visibility_increase,
+            "action_penalty": action_delta,
+            "camera_penalty": camera_delta,
+            "visitation_reward": visitation_reward,
+            "total_unscaled": total_unscaled,
+            
+            # Scaled
+            "face_discovery_scaled": self.cfg.reward_cfg.mesh_coverage_reward_scale * face_discovery,
+            "info_gain_scaled": self.cfg.reward_cfg.information_gain_reward_scale * info_gain,
+            "visibility_increase_scaled": self.cfg.reward_cfg.visibility_increase_reward_scale * visibility_increase,
+            "action_penalty_scaled": self.cfg.reward_cfg.action_penalty_scale * action_delta,
+            "camera_penalty_scaled": self.cfg.reward_cfg.ptz_penalty_scale * camera_delta,
+            "visitation_reward_scaled": self.cfg.reward_cfg.visitation_reward_scale * visitation_reward
+        }
+        self.logger.accumulate_rewards(reward_dict)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Check for timeout
@@ -985,7 +980,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         mean_quality = torch.zeros_like(total_quality)
         mask = num_faces_inspected > 0
         mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
-        coverage_achieved = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_current_coverage_goal()
+        coverage_achieved = (num_faces_inspected / self.total_mesh_faces) >= self.curriculum.get_current_coverage_goal()
         success_condition = coverage_achieved 
         return success_condition, time_out
     
@@ -1006,7 +1001,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             mask = num_faces_inspected > 0
             mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
 
-            achieved_coverage_ratios = num_faces_inspected / float(self.cfg.max_faces_to_inspect)
+            achieved_coverage_ratios = num_faces_inspected / float(self.total_mesh_faces)
             current_cov_goal = self.curriculum.get_current_coverage_goal()
             episode_successes = (achieved_coverage_ratios >= current_cov_goal) # & (mean_quality >= self.curriculum.get_current_quality_goal())
             self.curriculum.update_curriculum(episode_successes, mean_quality)
@@ -1022,6 +1017,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.logger.update_episode_stats(num_faces_inspected[i].item()) # Update global stats
                 self.episode_log_buffer["mean_inspection_quality"].append(mean_quality[i].item())
                 self.episode_log_buffer["curriculum/current_threshold"].append(current_cov_goal)
+                
+            # Log and Reset Reward Sums
+            self.logger.log_and_reset_episode_rewards(env_ids)
+
+            # Logging Loop Continue
+            for i, env_id in enumerate(env_ids):
                 # Clear Buffers
                 
                 self.prev_coverage_ratio[env_id] = 0.0
@@ -1131,3 +1132,95 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         root_state = self.robot.data.root_state_w[env_ids]
         self.init_position[env_ids] = root_state[:, :3]
         self.init_quats[env_ids] = root_state[:, 3:7]
+
+    def _count_total_mesh_faces(self) -> int:
+        """
+        Performs a 'Pre-Scan' of the object to count observable faces.
+        Teleports the raycaster camera to multiple positions around the object (in env 0)
+        and accumulates the unique face IDs seen. 
+        This is more accurate than raw mesh counts as it ignores internal/occluded faces.
+        """
+        print("[INFO] Starting Pre-Scan to count observable faces...")
+        
+        # 1. Setup Scan Views (Hemisphere around object)
+        # Object position (from __init__ spawn)
+        target_pos = torch.tensor([2.0, 0.0, 0.4], device=self.device)
+        radius = 1.5
+        
+        # Generate view positions
+        # Ring 1: Robot height approx
+        azimuths = torch.linspace(0, 2*np.pi, 12, device=self.device)
+        elevations = torch.tensor([0.2, 0.6], device=self.device) # Low and High angle
+        
+        view_positions = []
+        for el in elevations:
+            z = target_pos[2] + el
+            # Radius shrinks for higher elevation to keep focusing on object? No, just cylinder/cone logic.
+            # Simple cylinder rings
+            for az in azimuths:
+                x = target_pos[0] + radius * torch.cos(az)
+                y = target_pos[1] + radius * torch.sin(az)
+                view_positions.append(torch.tensor([x, y, z], device=self.device))
+                
+        view_positions = torch.stack(view_positions)
+        
+        # Compute orientations (look at target)
+        # forward = target - eye
+        forward = target_pos - view_positions
+        forward = F.normalize(forward, dim=-1)
+        
+        # Assume up vector is Z world
+        up = torch.tensor([0.0, 0.0, 1.0], device=self.device).expand_as(forward)
+        
+        # Use simple look-at logic (Gram-Schmidt)
+        # z_axis = -forward (Camera looks down -Z conventionally, but let's check config convention)
+        # Config says convention="ros", so Forward is +Z? Or +X?
+        # Standard ROS camera: X=Right, Y=Down, Z=Forward.
+        # Isaac Lab Camera usually follows USD: -Z forward, +Y up.
+        # Let's check quat_from_view_dirs usage in codebase or assume standard LookAt.
+        # Better: use a helper or try generic lookat.
+        
+        # Re-using math utils usually safest. 
+        # But wait, sensors_cfg says convention="ros". 
+        # In ROS: Z is forward.
+        
+        # Simplified LookAt (Z forward):
+        z_axis = forward
+        x_axis = torch.linalg.cross(up, z_axis)
+        x_axis = F.normalize(x_axis, dim=-1)
+        y_axis = torch.linalg.cross(z_axis, x_axis)
+        
+        # Rotation Matrix [X, Y, Z] columns
+        rot_mat = torch.stack([x_axis, y_axis, z_axis], dim=-1)
+        from isaaclab.utils.math import quat_from_matrix
+        view_quats = quat_from_matrix(rot_mat)
+
+        # 2. Iterate and Scan
+        unique_faces_seen = set()
+        
+        # Save current state (though we are in init, so maybe not strictly needed, but good practice)
+        # Note: We can't easily 'save' the camera state if it's attached, but we can just let it reset later.
+        
+        env_ids = torch.tensor([0], device=self.device)
+        
+        for i in range(len(view_positions)):
+            pos = view_positions[i].unsqueeze(0) + self.scene.env_origins[0] # Add global offset
+            quat = view_quats[i].unsqueeze(0)
+            
+            self._raycaster_camera.set_world_poses(pos, quat, env_ids)
+            self._raycaster_camera.update(dt=0.0)
+            
+            # Get IDs
+            face_ids = self._raycaster_camera.data.output["face_ids"][0].cpu().numpy().flatten()
+            valid_ids = face_ids[face_ids >= 0]
+            unique_faces_seen.update(valid_ids)
+            
+        total_observable = len(unique_faces_seen)
+        
+        if total_observable == 0:
+            print("[WARNING] Pre-Scan found 0 faces! Falling back to raw mesh count or config.")
+            return self.cfg.max_faces_to_inspect # Fallback
+            
+        print(f"[INFO] Pre-Scan Complete. Observable Faces: {total_observable} (Raw Mesh may be higher)")
+        
+        return total_observable

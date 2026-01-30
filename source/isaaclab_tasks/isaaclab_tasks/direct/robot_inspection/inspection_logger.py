@@ -22,6 +22,10 @@ class InspectionLogger:
         }
         self.reward_logging_buffer = defaultdict(list)
         
+        # New buffers for per-episode cumulative sums
+        # We'll initialize these dynamically on the first update to adapt to device
+        self.episode_cumulative_rewards = defaultdict(lambda: torch.zeros(self.cfg.scene.num_envs, device='cuda:0')) 
+        
         # Derived metrics state
         self.global_max_faces_discovered = 0
         
@@ -35,6 +39,12 @@ class InspectionLogger:
             mean_final_unique_visible_cell_count = np.mean(self.episode_log_buffer["final_unique_visible_cell_count"]) if self.episode_log_buffer["final_unique_visible_cell_count"] else 0.0
             mean_current_threshold = np.mean(self.episode_log_buffer["curriculum/current_threshold"]) if self.episode_log_buffer["curriculum/current_threshold"] else 0.0            
             mean_visible_faces = np.mean(self.episode_log_buffer["visible_faces_per_step"]) if self.episode_log_buffer["visible_faces_per_step"] else 0.0
+            
+            # Calculate means for reward sums
+            reward_sum_metrics = {}
+            for k, buffer in self.episode_log_buffer.items():
+                if k.startswith("reward_sum/"):
+                     reward_sum_metrics[k] = np.mean(buffer) if buffer else 0.0
 
             log_data = {
                 # Curriculum Status
@@ -50,6 +60,9 @@ class InspectionLogger:
                 "episode_summary/avg_faces_visible_per_step": mean_visible_faces,
             }
             
+            # Add reward sum metrics
+            log_data.update(reward_sum_metrics)
+            
             for reward_name, reward_values in self.reward_logging_buffer.items():
                 if len(reward_values) > 0:
                     log_data[reward_name] = np.mean(reward_values)
@@ -59,6 +72,53 @@ class InspectionLogger:
             
             if self.use_wandb:
                 wandb.log(log_data)
+    
+    def accumulate_rewards(self, reward_dict: dict):
+        """
+        Accumulates rewards per environment for the current step (for episode sums)
+        AND logs the mean step reward (for instantaneous rates).
+        reward_dict: Dictionary of {name: tensor(num_envs)}
+        """
+        for k, v in reward_dict.items():
+            # 1. Accumulate Sums (Per-Episode)
+            if k not in self.episode_cumulative_rewards:
+                 self.episode_cumulative_rewards[k] = torch.zeros_like(v)
+            self.episode_cumulative_rewards[k] += v
+
+            # 2. Log Step Mean (Instantaneous)
+            # We prefix with "reward_components/" to keep it organized
+            # v is a tensor of shape (num_envs,), we take the mean across envs
+            self.reward_logging_buffer[f"reward_components/{k}"].append(v.mean().item())
+
+    def log_and_reset_episode_rewards(self, env_ids):
+        """
+        Logs the cumulative rewards for the reset environments and resets their counters.
+        env_ids: Indices of environments being reset.
+        """
+        if len(env_ids) == 0:
+            return
+
+        for k, v in self.episode_cumulative_rewards.items():
+            # Extract sums for the reset environments
+            sums = v[env_ids]
+            
+            # Log these sums into the episode log buffer (which feeds into log_step means)
+            # We want to log the "Mean Sum per Episode" effectively.
+            # Convert to list and extend our deque
+            
+            # Key modification: separate scaled vs raw if needed, but here k captures that distinction
+            # We add a prefix "reward_sum/" for clarity if not present, though caller likely provides good keys.
+            
+            # Ensure the deque exists in episode_log_buffer
+            buffer_key = f"reward_sum/{k}"
+            if buffer_key not in self.episode_log_buffer:
+                 self.episode_log_buffer[buffer_key] = deque(maxlen=self.cfg.scene.num_envs * 4)
+
+            for val in sums.cpu().tolist():
+                self.episode_log_buffer[buffer_key].append(val)
+            
+            # Reset
+            v[env_ids] = 0.0
                 
     def cache_rewards(self, reward_dict: dict):
         for k, v in reward_dict.items():

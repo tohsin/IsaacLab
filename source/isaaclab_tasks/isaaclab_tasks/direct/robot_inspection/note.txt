@@ -1,0 +1,3 @@
+do you think that we can potentially maybe randomly slect a navigation taget basially swap the inpsection taget? i mean like instead of rubix cube we get a new object fromt he probs library we cn astartw ith randmly selcting from a list of two maybe we have a dictionary ina  diffret file for storing the path 
+
+
