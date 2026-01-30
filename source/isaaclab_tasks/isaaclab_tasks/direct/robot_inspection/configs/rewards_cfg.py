@@ -4,7 +4,7 @@ from isaaclab.utils import configclass
 class RewardsCfg:
     """Configuration for all reward function terms."""
     alpha = 0.5
-    mesh_coverage_reward_scale: float = 1.0
+    mesh_coverage_reward_scale: float = 2.5
     face_quality_k = 60.0
     use_angle_weighted_reward: bool = True
     coverage_reward: float = 5.0
