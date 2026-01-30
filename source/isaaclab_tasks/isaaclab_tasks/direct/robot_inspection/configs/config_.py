@@ -1,4 +1,12 @@
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+import os
+
+# Resolve repository root
+# File: source/isaaclab_tasks/isaaclab_tasks/direct/robot_inspection/configs/config_.py
+# Root: ../../../../../../
+CURRENT_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+ISAACLAB_REPO_ROOT = os.path.abspath(os.path.join(CURRENT_FILE_DIR, "../../../../../../"))
+
 ROBOT_CONFIGS = {
     "jackal": {
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal_basic.usd",
@@ -7,7 +15,7 @@ ROBOT_CONFIGS = {
     },
     "jackal_ptz": {
         #"usd_path": "assets/jackal_basic_ptz_o.usd",
-        "usd_path": "/home/tosin/Documents/GitHub/IsaacLab/assets/jackal_basic_ptz_o.usd",
+        "usd_path": os.path.join(ISAACLAB_REPO_ROOT, "assets/jackal_basic_ptz_o.usd"),
         # "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal_basic.usd",
         "wheel_joint_expr": ".*wheel.*",
         "ptz_joint_expr":  ".*ptz.*",

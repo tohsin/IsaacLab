@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import deque
+import os
 import gymnasium as gym
 import torch
 from collections.abc import Sequence
@@ -173,11 +174,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._ptz_camera = TiledCamera(self.cfg.sensor_cfg.ptz_camera)
         self.scene.sensors["ptz_camera"] = self._ptz_camera
 
-        # --- RESTORED MANUAL SPAWN LOGIC ---
-        # Spawning manually as per original implementation which works with the USD assets
+        # Resolve the absolute path to the asset relative to this file
+        # File is at: source/isaaclab_tasks/isaaclab_tasks/direct/robot_inspection/inspection_env.py
+        # Asset is at: assets/ruby.usd (relative to repo root)
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        # go up 5 levels: robot_inspection -> direct -> isaaclab_tasks(inner) -> isaaclab_tasks(outer) -> source -> IsaacLab(root)
+        isaaclab_repo_root = os.path.abspath(os.path.join(current_file_dir, "../../../../../"))
+        usd_file_path = os.path.join(isaaclab_repo_root, "assets/ruby.usd")
+
         rubiks_cfg = sim_utils.UsdFileCfg(
-            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-            scale=(10.0, 10.0, 10.0),
+            usd_path=usd_file_path,
+            scale=(0.5, 0.5, 0.5),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True),
             mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),

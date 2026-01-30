@@ -67,30 +67,30 @@ def main():
                 for i in range(1000):
                     if i < 30:
                         #forward
-                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=30 and i < 120:
                         #print Turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=120 and i <200:
                         #print Forward
-                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=200 and i < 280:
                         # turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=280 and i <340:
                         # forward
-                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=340 and i < 400:
                         # turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=400 and i <470:
                         # forward
-                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=470 and i <570:
                         # turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     else:
-                        actions = torch.tensor([[1.0,  0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0,  0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

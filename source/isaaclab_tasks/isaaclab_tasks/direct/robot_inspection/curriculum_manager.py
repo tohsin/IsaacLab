@@ -57,7 +57,7 @@ class Curriculum:
 
     def _setup_spawn_points(self):
         self.init_z = 0.06
-        self.init_z_goal = 0.4
+        self.init_z_goal = 0.3
         self.start_pos_robot = [ # X and Y positions only
                     [0.0, 0], #Valid # at the back
                     [0, -5], 
