@@ -34,6 +34,7 @@ from .curriculum_manager import Curriculum
 from .utils import  NormalizeReward, visualise_faces, _show_face_ids_
 from .occupancy_grid_mapper import OccupancyGridMapper
 from .inspection_logger import InspectionLogger
+from .reconstruction import ImageCollector
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import time 
 import torch.nn.functional as F
@@ -145,6 +146,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.logger = InspectionLogger(self.cfg, use_wandb=run_cfg.use_wandb, debug=run_cfg.debug)
         self.episode_log_buffer = self.logger.episode_log_buffer
         self.reward_logging_buffer = self.logger.reward_logging_buffer
+
+        self.image_collector = ImageCollector()
 
 
         self.success_rate = 0.0
@@ -269,6 +272,56 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+    def _collect_data_for_reconstruction(self, env_id: int):
+        """
+        Collects RGB, Depth, Pose, and Intrinsic data for the specified environment
+        and passes it to the ImageCollector.
+        """
+        # Ensure sensors have data
+        if "rgb" not in self._ptz_camera.data.output or "distance_to_image_plane" not in self._ptz_camera.data.output:
+            return
+
+        # 1. Get Data (CPU)
+        rgb_tensor = self._ptz_camera.data.output["rgb"][env_id]
+        depth_tensor = self._ptz_camera.data.output["distance_to_image_plane"][env_id]
+        
+        # 2. Get Pose (Camera -> World)
+        cam_pos = self._ptz_camera.data.pos_w[env_id]
+        cam_quat = self._ptz_camera.data.quat_w_ros[env_id] # (w, x, y, z)
+        
+        # Convert to 4x4 Matrix
+        # Manual conversion to avoid external dependencies like scipy
+        # quaternion is (w, x, y, z)
+        w, x, y, z = cam_quat[0].item(), cam_quat[1].item(), cam_quat[2].item(), cam_quat[3].item()
+        
+        xx, yy, zz = x * x, y * y, z * z
+        xy, xz, yz = x * y, x * z, y * z
+        xw, yw, zw = x * w, y * w, z * w
+        
+        R = np.array([
+            [1 - 2 * (yy + zz),     2 * (xy - zw),     2 * (xz + yw)],
+            [    2 * (xy + zw), 1 - 2 * (xx + zz),     2 * (yz - xw)],
+            [    2 * (xz - yw),     2 * (yz + xw), 1 - 2 * (xx + yy)]
+        ])
+        
+        t = cam_pos.cpu().numpy()
+        
+        pose_matrix = np.eye(4)
+        pose_matrix[:3, :3] = R
+        pose_matrix[:3, 3] = t
+        
+        # 3. Get Intrinsics
+        K = self._ptz_camera.data.intrinsic_matrices[env_id].cpu().numpy()
+        
+        # 4. Pass to collector
+        self.image_collector.save_data(
+            rgb=rgb_tensor.cpu().numpy(),
+            depth=depth_tensor.cpu().numpy(),
+            pose=pose_matrix,
+            intrinsic=K,
+            step=self.common_step_counter
+        )
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.previous_action_for_rewards.copy_(self.last_action)
@@ -644,6 +697,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if self.common_step_counter % self.cfg.mapping_cfg.map_update_interval == 0:
             self._update_maps(visualise=run_cfg.debug)
+        
+        # Collect data for reconstruction (Env 0 only)
+        # Collect every 10 steps to balance density and performance
+        if self.common_step_counter % 10 == 0:
+            self._collect_data_for_reconstruction(env_id=0)
 
         self.logger.log_step(self.common_step_counter, self.curriculum.success_rate)
 

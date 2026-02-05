@@ -56,4 +56,4 @@ class eval_Cfg:
 
 
 modes = [debug_Cfg, train_Cfg, eval_Cfg]
-cfg_mode =   modes[1]
+cfg_mode =   modes[0]
