@@ -14,9 +14,7 @@ ROBOT_CONFIGS = {
         "action_space": 4  # 4 wheels
     },
     "jackal_ptz": {
-        #"usd_path": "assets/jackal_basic_ptz_o.usd",
         "usd_path": os.path.join(ISAACLAB_REPO_ROOT, "assets/jackal_basic_ptz_o.usd"),
-        # "usd_path": f"{ISAAC_NUCLEUS_DIR}/Robots/Clearpath/Jackal/jackal_basic.usd",
         "wheel_joint_expr": ".*wheel.*",
         "ptz_joint_expr":  ".*ptz.*",
         "action_space": 6  # 4 +2 wheels and ptz
