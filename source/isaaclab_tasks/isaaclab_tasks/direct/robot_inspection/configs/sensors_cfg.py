@@ -2,12 +2,16 @@ import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from .config_ import env_parameters
 from isaaclab.sensors import TiledCameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg
-from ..run_config import cfg_mode
+from ..run_config import cfg_mode, record_Cfg
 @configclass
 class SensorsCfg:
     """Configuration for all robot-mounted sensors."""
-    camera_height: int = 64
-    camera_width: int = 64
+    if cfg_mode == record_Cfg:
+        camera_height: int = 512
+        camera_width: int = 512
+    else:
+        camera_height: int = 64
+        camera_width: int = 64
 
     # Front-facing camera for navigation.
     navigation_camera: TiledCameraCfg = TiledCameraCfg(

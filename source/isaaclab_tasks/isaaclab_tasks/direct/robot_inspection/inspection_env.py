@@ -23,7 +23,7 @@ from isaaclab.sensors import RayCasterCamera, TiledCamera,  MultiMeshRayCasterCa
 from isaaclab.utils.math import transform_points, unproject_depth
 from isaaclab.sensors.camera.utils import create_pointcloud_from_depth
 import isaacsim.core.utils.stage as stage_utils
-from isaaclab.markers.config import RAY_CASTER_MARKER_CFG
+from isaaclab.markers.config import RAY_CASTER_MARKER_CFG, CUBOID_MARKER_CFG
 # from isaaclab.assets import RigidObject, RigidObjectCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.utils.math import quat_mul, quat_apply, quat_conjugate, quat_apply_inverse
@@ -43,6 +43,7 @@ from collections import defaultdict
 from pxr import Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema, Gf
 from isaaclab.sim.utils import get_current_stage
 from .run_config import cfg_mode
+from .data_collector import DataCollector
 
 # congfig_mode = run_Config
 run_cfg = cfg_mode
@@ -57,6 +58,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._ptz_joint_indices, _ = self.robot.find_joints(".*ptz.*")
 
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
+
 
         # Automatically count faces after the scene is set up
         # self.total_mesh_faces = self._count_total_mesh_faces()
@@ -101,10 +103,46 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.visualization_interval = 10
         self.face_max_counts = defaultdict(int)
         self.global_max_ray_count = 0
+        
+        self.spawn_markers = None
+        if run_cfg.debug and getattr(run_cfg, "visualise_all_objective_spawns", False):
+            self._debug_visualize_objective_spawns()
+
+
+
+        # Initialize Data Collector if needed
+        self.data_collector = None
+        if hasattr(run_cfg, "data_recording_path"):
+            self.data_collector = DataCollector(run_cfg, device=self.device)
+
+    def _debug_visualize_objective_spawns(self):
+        """Visualises all possible spawn positions for the inspection objective."""
+        # Get all positions from curriculum
+        all_positions = self.curriculum.objective_positions_tensor.clone()[:run_cfg.visualise_objective_spawns_count]
+        
+        # Create markers configuration
+        cfg = CUBOID_MARKER_CFG.replace(prim_path="/Visuals/SpawnMarkers")
+        cfg.markers["cuboid"].scale = (3, 3, 3) # Small cubes
+        cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 1.0, 1.0) # Cyan color
+        
+        # Initialize markers
+        self.spawn_markers = VisualizationMarkers(cfg)
+        
+        # Set markers at all positions (Num_Envs x Num_Positions is not needed, just world positions)
+        # But VisualizationMarkers usually expects (N, 3). We can just visualize them once or replicate.
+        # Since Visualizer handles batching, we can visualze all unique positions.
+        
+        # The positions are (N_candidates, 3).
+        self.spawn_markers.visualize(translations=all_positions)
+
     def close(self):
         """Cleanup for the environment."""
         if self.cfg.mapping_cfg.use_occupancy_map and self.occupancy_mapper.visualizer:
             self.occupancy_mapper.visualizer.close()
+            
+        if self.data_collector:
+            self.data_collector.save() # Just prints final stats now
+            
         super().close()
         
     def _setup_camera_zoom(self):
@@ -642,6 +680,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.logger.log_step(self.common_step_counter, self.curriculum.success_rate)
 
+        if self.data_collector:
+            self.data_collector.collect(self._ptz_camera, self.common_step_counter)
+
         return super().step(action)
       
     def _get_semantic_mask(self, camera) -> torch.Tensor | None:
@@ -920,7 +961,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             0.0
         )
 
-        total_reward = (self.cfg.reward_cfg.mesh_coverage_reward_scale * face_discovery_raw
+        # --- Adaptive Reward Scaling ---
+        # Decay the face discovery reward as curriculum progresses
+        # We want it high initially (to learn what faces are) and lower later (to prioritize exploration)
+        progress = self.curriculum.get_progress()
+        
+        # Linear Decay: Scales from 1.0 down to 0.2 (20% of original)
+        decay_factor = 1.0 - (progress * 0.8) 
+        current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale * decay_factor
+
+        total_reward = (current_face_reward_scale * face_discovery_raw
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
                         - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
@@ -935,21 +985,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             base_action_delta,
             ptz_action_delta,
             visitation_reward,
-            total_reward
+            total_reward,
+            current_face_reward_scale # Pass the dynamic scale for logging
             )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         # Logging
       
-        total_reward = total_reward.to(torch.float32)
         if torch.isnan(total_reward).any() or torch.isinf(total_reward).any():
             import ipdb; ipdb.set_trace()
             print("NaN or Inf detected in total reward calculation!")
             raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
-        return total_reward
-        # normalized_reward = self.rewardscaler(total_reward)
-        # return normalized_reward
+        # return total_reward
+        normalized_reward = self.rewardscaler(total_reward)
+        return normalized_reward
     
-    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled):
+    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled, current_face_reward_scale):
         # Construct dictionary for logging (both accumulation and per-step means)
         reward_dict = {
             "face_discovery_raw": face_discovery,
@@ -961,12 +1011,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "total_unscaled": total_unscaled,
             
             # Scaled
-            "face_discovery_scaled": self.cfg.reward_cfg.mesh_coverage_reward_scale * face_discovery,
+            "face_discovery_scaled": current_face_reward_scale * face_discovery,
             "info_gain_scaled": self.cfg.reward_cfg.information_gain_reward_scale * info_gain,
             "visibility_increase_scaled": self.cfg.reward_cfg.visibility_increase_reward_scale * visibility_increase,
             "action_penalty_scaled": self.cfg.reward_cfg.action_penalty_scale * action_delta,
             "camera_penalty_scaled": self.cfg.reward_cfg.ptz_penalty_scale * camera_delta,
-            "visitation_reward_scaled": self.cfg.reward_cfg.visitation_reward_scale * visitation_reward
+            "visitation_reward_scaled": self.cfg.reward_cfg.visitation_reward_scale * visitation_reward,
+            
+            # Debug Stats - Must be a tensor of shape (num_envs,) for the logger to handle it correctly during resets
+            "stats/face_reward_scale": torch.full((self.num_envs,), current_face_reward_scale, device=self.device)
         }
         self.logger.accumulate_rewards(reward_dict)
 

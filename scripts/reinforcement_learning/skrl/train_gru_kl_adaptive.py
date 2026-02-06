@@ -110,7 +110,19 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         #self.gru_input_size = camera_cnn_output_dim + self.robot_pose_dim + map_cnn_output_dim
         camera_features_size = self.camera_encoder.get_out_size()
         map_features_size = self.map_encoder.get_out_size()
-        self.gru_input_size = camera_features_size + self.robot_pose_dim + map_features_size
+        self.combined_features_size = camera_features_size + self.robot_pose_dim + map_features_size
+        
+        # New MLP for feature fusion
+        self.feature_mlp = nn.Sequential(
+            nn.Linear(self.combined_features_size, 2048),
+            nn.ELU(),
+            nn.Linear(2048, 1024),
+            nn.ELU(),
+            nn.Linear(1024, 512),
+            nn.ELU()
+        )
+        
+        self.gru_input_size = 512 # Output of the feature MLP
         self.gru_hidden_size = 512 #H output size of GRU
         self.gru_num_layers = 1
         # print(f"DEBUG: gru_input_size: {self.gru_input_size}")
@@ -213,11 +225,13 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         map_features = self.map_encoder(local_map_permuted)
         
         combined_features = torch.cat((camera_features, map_features, robot_pose), dim=1)
+        
+        mlp_features = self.feature_mlp(combined_features)
 
         if self.training:
             # just return dummy action to debug sim
             # return torch.zeros((self.num_envs, self.num_actions), device=self.device), {"rnn": [hidden_states]}
-            rnn_input = combined_features.view(-1, self.sequence_length, combined_features.shape[-1])
+            rnn_input = mlp_features.view(-1, self.sequence_length, mlp_features.shape[-1])
             hidden_states = hidden_states.view(self.gru_num_layers, -1, self.sequence_length, self.gru_hidden_size)
             # get the hidden states corresponding to the initial sequence
             hidden_states = hidden_states[:, :, 0, :].contiguous()
@@ -239,7 +253,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             else:
                 rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
         else:
-            rnn_input = combined_features.unsqueeze(1)
+            rnn_input = mlp_features.unsqueeze(1)
             rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
 
 
@@ -257,7 +271,6 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
 
 
-
 env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
 )
@@ -271,6 +284,7 @@ TOTAL_BATCH_SIZE = 8192 #8192# 2048
 sequence_length = 32
 rollout_length = TOTAL_BATCH_SIZE // env.num_envs
 
+from skrl.memories.torch import RandomMemory
 memory = RandomMemory(memory_size=rollout_length, num_envs=env.num_envs, device=device)
 model_config = {
         "nonlinearity": "elu",
@@ -297,26 +311,46 @@ cfg["learning_epochs"] = 4 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 3e-4  # 0.0003     0.0006
-cfg["learning_rate_scheduler"] = KLAdaptiveRL
-cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008} 
-scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"] 
-# cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.LinearLR
+
+cfg["learning_rate_scheduler"] = None
+cfg["learning_rate_scheduler_kwargs"] = {}
+cfg["learning_rate"] = 3e-5 
+
+
+# cfg["learning_rate"] = 1.5e-5 # Reduced from 3e-4 for stability
+# cfg["learning_rate_scheduler"] = KLAdaptiveRL
 # cfg["learning_rate_scheduler_kwargs"] = {
-#     "start_factor": 1.0,     # Start at the full learning_rate
-#     "end_factor": 0.001,      
-#     "total_iters": scheduler_max_steps,
+#     "kl_threshold": 0.016,
+#     "min_lr": 5e-6,    # Allow it to drop lower if needed
+#     "max_lr": 1.5e-5,    # Cap at the initial LR (no increasing!)
+#     "lr_factor": 1.05
 # }
+# cfg["learning_rate_scheduler"]  = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
+# cfg["learning_rate_scheduler_kwargs"] = {
+#     "T_0": 2500, # Tuned based on observed frequency (~3 restarts per run)
+#     "T_mult": 1,
+#     "eta_min": 1e-6,
+# }
+# cfg["optimizer_class"] = ForeachMuon
+
+cfg["optimizer_class"] = torch.optim.AdamW
+scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
+
+cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.LinearLR
+cfg["learning_rate_scheduler_kwargs"] = {
+    "start_factor": 1.0,     # Start at the full learning_rate
+    "end_factor": 0.01,      
+    "total_iters": scheduler_max_steps,
+}
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 3e-4 # 1e-3
+cfg["entropy_loss_scale"] = 3e-4 # Reduced to 1e-4 to stop std from climbing
 cfg["value_loss_scale"] = 1.0
 # cfg["kl_threshold"] = 0.0
-cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.01
-cfg["rewards_shaper"] =  None
+# cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.05
 cfg["time_limit_bootstrap"] = True
 
 cfg["state_preprocessor"] = RunningStandardScaler
@@ -341,7 +375,7 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 2400
+cfg["experiment"]["write_interval"] = 1000
 cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
 cfg["experiment"]["checkpoint_interval"] = 5_000
 cfg["experiment"]["directory"] = log_root_path

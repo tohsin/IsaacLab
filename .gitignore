@@ -69,3 +69,6 @@ tests/
 
 # Docker history
 .isaac-lab-docker-history
+
+data/test_3dgs_collection_v2
+

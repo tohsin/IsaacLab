@@ -16,9 +16,14 @@ class Curriculum:
 
                 start_coverage_ratio: float = cfg_mode.inspection_goal,
                 max_coverage_ratio: float = 0.99,
-                coverage_increment: float = 0.05,
+                
+                # Asymmetric increments
+                coverage_increment_up: float = 0.05,
+                coverage_increment_down: float = 0.025,
+                success_rate_increase_thresh = 0.72,
+                success_rate_decrease_thresh = 0.60,
 
-                start_quality_threshold: float = 0.1,
+                start_quality_threshold: float = 0.05,
                 max_quality_threshold: float = 0.6,
                 quality_increment: float = 0.02,
                 
@@ -27,8 +32,12 @@ class Curriculum:
         
         # 
         self.current_coverage_threshold = start_coverage_ratio
+        self.start_coverage_ratio = start_coverage_ratio # Keep track of min
         self.max_coverage_threshold = max_coverage_ratio
-        self.coverage_increment = coverage_increment
+        
+        self.coverage_increment_up = coverage_increment_up
+        self.coverage_increment_down = coverage_increment_down
+        
         self.initaltion_pool_sz_goal = cfg_mode.initaltion_pool_sz_goal
 
         self.current_quality_treshold = start_quality_threshold
@@ -42,53 +51,59 @@ class Curriculum:
         self.device = device
         self.success_buffer = deque(maxlen=50 * self.num_envs) # Buffer ~20 resets per env
         self.quality_buffer = deque(maxlen=50 * self.num_envs)
-        self.min_episodes_for_update = 15 * self.num_envs
+        self.min_episodes_for_update = 10 * self.num_envs
 
-        self.success_rate_threshold = 0.60 
+        # Hysteresis Thresholds
+        self.success_rate_increase_thresh = success_rate_increase_thresh
+        self.success_rate_decrease_thresh = success_rate_decrease_thresh
+        
         self.success_rate = 0.0 
+        self.avg_quality = 0.0 # Init
         
         self.last_objective_pool_size = -1
         self.last_robot_pool_size = -1
 
         self._setup_spawn_points()
-        print("--- Inspection Curriculum Initialized (No Time Schedule) ---")
+        print("--- Inspection Curriculum Initialized (Reversible w/ Hysteresis) ---")
         print(f"  Initial Coverage Goal: {self.current_coverage_threshold*100:.1f}%")
+        print(f"  Increase Thresh: >{self.success_rate_increase_thresh:.2f}, Decrease Thresh: <{self.success_rate_decrease_thresh:.2f}")
         print("----------------------------------------------------------")
 
     def _setup_spawn_points(self):
         self.init_z = 0.06
         self.init_z_goal = 0.3
-        self.start_pos_robot = [ # X and Y positions only
-                    [0.0, 0], #Valid # at the back
-                    [0, -5], 
-                    [-4.47, -5], 
-                    [1.15, -5.56], 
-                    [1.15, 0],
-                    [-7.0, 1.74], # Navigation required Starts here
-                    [-7.0, -8.81],
-                    [6.7, -8.81 ],
-                    [3.63, 6.32],
-                    [-1.08, 6.32],
-                    [-6.73, 15.10],
-                    [0.83, 15.10],
-                    # [-7.0, -8.81], # Bottom-Left (Stress Test)
+        
+        # Sorted by distance from origin for spatial curriculum
+        self.start_pos_robot = [ 
+                    [0.0, 0],         # Dist: 0.0
+                    [1.15, 0],        # Dist: 1.15
+                    [0, -5],          # Dist: 5.0
+                    [1.15, -5.56],    # Dist: 5.68
+                    [-1.08, 6.32],    # Dist: 6.41
+                    [-4.47, -5],      # Dist: 6.70
+                    [-7.0, 1.74],     # Dist: 7.21
+                    [3.63, 6.32],     # Dist: 7.29
+                    [6.7, -8.81 ],    # Dist: 11.07
+                    [-7.0, -8.81],    # Dist: 11.25
+                    [0.83, 15.10],    # Dist: 15.12
+                    [-6.73, 15.10],   # Dist: 16.53
                     ]
 
-        self.start_pos_objective = [ # X and Y positions only
-                    [0.0, -2.0], 
-                    [0.0, 0], #Valid # at the back
-                    [0, -5], 
-                    [-4, -5], 
-                    [1.15, -5.56], 
-                    [-5.5, 1.74], 
-                    [-7.0, -8.8],
-                    [5, -7.4 ],
-                    [3.63, 6.32],
-                    [-1.08, 6.32],
-                    [5.7, 13.67],
-                    [0.83, 15.10],
-                    [-4.7, 10.2],
-                    # [5.7, 13.67],   # Top-Right (Stress Test)
+        # Sorted by distance from origin for spatial curriculum
+        self.start_pos_objective = [ 
+                    [0.0, 0],         # Dist: 0.0
+                    [0.0, -2.0],      # Dist: 2.0
+                    [0, -5],          # Dist: 5.0
+                    [1.15, -5.56],    # Dist: 5.68
+                    [-5.5, 1.74],     # Dist: 5.77
+                    [-4, -5],         # Dist: 6.40
+                    [-1.08, 6.32],    # Dist: 6.41
+                    [3.63, 6.32],     # Dist: 7.29
+                    [5, -7.4 ],       # Dist: 8.93
+                    [-4.7, 10.2],     # Dist: 11.23
+                    [-7.0, -8.8],     # Dist: 11.24
+                    [5.7, 13.67],     # Dist: 14.83
+                    [0.83, 15.10],    # Dist: 15.12
                     ]
         self.allowed_orientations = torch.tensor([
             DEG_0, 
@@ -133,40 +148,68 @@ class Curriculum:
         self.success_rate = sum(self.success_buffer) / len(self.success_buffer)
         self.avg_quality = sum(self.quality_buffer) / len(self.quality_buffer)
 
-        # Check if we should advance
-        # Check if we should advance
-        if self.success_rate >= self.success_rate_threshold:
-            # Increase Coverage Requirement
-            new_cov = self.current_coverage_threshold + self.coverage_increment
+        # Check if we should advance (Increase Difficulty)
+        if self.success_rate >= self.success_rate_increase_thresh:
+            new_cov = self.current_coverage_threshold + self.coverage_increment_up
             
+            # Use a small epsilon for float comparison or just ensure we don't go over max
             if self.current_coverage_threshold < self.max_coverage_threshold:
-                self.current_coverage_threshold = min(new_cov, self.max_coverage_threshold)
+                 # Only clear buffer if we actually change something
+                 if new_cov > self.current_coverage_threshold:
+                     self.current_coverage_threshold = min(new_cov, self.max_coverage_threshold)
+                     self.success_buffer.clear()
+                     self.quality_buffer.clear()
+                     print(f"--- CURRICULUM LEVEL UP ---")
+                     print(f"  New Coverage Goal: {self.current_coverage_threshold:.2f}")
+                     print(f"  Reason: Success Rate ({self.success_rate:.2f}) >= {self.success_rate_increase_thresh}")
 
-            if self.current_coverage_threshold >= new_cov:
-                self.success_buffer.clear() # Reset buffer to prove capability at new level
-                self.quality_buffer.clear()
-                print(f"--- CURRICULUM LEVEL UP ---")
-                print(f"  New Coverage Goal: {self.current_coverage_threshold:.2f}")
-                print(f"  Prev Success Rate: {self.success_rate:.2f}, Prev Avg Quality: {self.avg_quality:.2f}")
-                print(f"  Prev Success Rate: {self.success_rate:.2f}, Prev Avg Quality: {self.avg_quality:.2f}")
+        # Check if we should retreat (Decrease Difficulty)
+        elif self.success_rate < self.success_rate_decrease_thresh:
+             new_cov = self.current_coverage_threshold - self.coverage_increment_down
+            
+             if self.current_coverage_threshold > self.start_coverage_ratio:
+                 # Only clear buffer if we actually change something
+                 if new_cov < self.current_coverage_threshold:
+                     self.current_coverage_threshold = max(new_cov, self.start_coverage_ratio)
+                     self.success_buffer.clear()
+                     self.quality_buffer.clear()
+                     print(f"--- CURRICULUM LEVEL DOWN ---")
+                     print(f"  New Coverage Goal: {self.current_coverage_threshold:.2f}")
+                     print(f"  Reason: Success Rate ({self.success_rate:.2f}) < {self.success_rate_decrease_thresh}")
+
+    def get_progress(self) -> float:
+        """Returns the curriculum progress from 0.0 to 1.0."""
+        if self.max_coverage_threshold == self.start_coverage_ratio:
+            return 0.0
+        progress = (self.current_coverage_threshold - self.start_coverage_ratio) / (self.max_coverage_threshold - self.start_coverage_ratio)
+        return max(0.0, min(1.0, progress))
 
     def get_current_episode_length(self) -> int:
         """Returns the current max episode length based on curriculum progress."""
-        # Calculate progress ratio (0.0 to 1.0)
-        progress = (self.current_coverage_threshold - 0.1) / (self.max_coverage_threshold - 0.1)
-        progress = max(0.0, min(1.0, progress))
+        progress = self.get_progress()
         
         episode_length = int(self.min_episode_length_limit + (self.max_episode_length_limit - self.min_episode_length_limit) * progress)
         return episode_length
 
     def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Gets random start positions from the pool based on progress."""
+        # --- Hardcoded Spawn for Data Recording ---
+        if hasattr(cfg_mode, "data_recording_path"):
+            # Robot at [0, 0, z]
+            pos = torch.zeros((num_resets, 3), device=self.device)
+            pos[:, 0] = 0.0
+            pos[:, 1] = 0.0
+            pos[:, 2] = self.init_z
+            
+            # Identity quaternion (w=1, x=0, y=0, z=0)
+            ori = torch.zeros((num_resets, 4), device=self.device)
+            ori[:, 0] = 1.0 
+            return pos, ori
+            
         total_items = len(self.start_positions_tensor)
         min_items = cfg_mode.initaltion_pool_sz
         
-        # Calculate progress ratio (0.0 to 1.0)
-        progress = (self.current_coverage_threshold - 0.1) / (self.max_coverage_threshold - 0.1)
-        progress = max(0.0, min(1.0, progress))
+        progress = self.get_progress()
         
         # Current active pool size
         pool_size = int(min_items + (total_items - min_items) * progress)
@@ -194,14 +237,21 @@ class Curriculum:
         Ensures the object is not placed too close to the robot.
         Pool of textends as coverage threshold increases.
         """
+        # --- Hardcoded Spawn for Data Recording ---
+        if hasattr(cfg_mode, "data_recording_path"):
+            # Objective at [0, -2.0, z_goal]
+            pos = torch.zeros((num_resets, 3), device=self.device)
+            pos[:, 0] = 0.0
+            pos[:, 1] = -2.0
+            pos[:, 2] = self.init_z_goal
+            return pos
+
         # Determine pool size based on coverage threshold or success rate
         # Scale pool size linearly from min items to all items based on progress
         total_items = len(self.objective_positions_tensor)
         min_items =  self.initaltion_pool_sz_goal
         
-        # Calculate progress ratio (0.0 to 1.0)
-        progress = (self.current_coverage_threshold - 0.1) / (self.max_coverage_threshold - 0.1)
-        progress = max(0.0, min(1.0, progress))
+        progress = self.get_progress()
         
         # Current active pool size
         pool_size = int(min_items + (total_items - min_items) * progress)
@@ -221,28 +271,37 @@ class Curriculum:
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         
         # Naive rejection sampling per environment
-        # Since we are doing this for a batch, we can iterate or try to vectorize
-        # Given num_resets is usually small (equal to num_envs or subset), loop is acceptable for spawn logic logic
-        
         for i in range(num_resets):
             valid = False
             attempts = 0
+            curr_robot_pos = robot_pos[i, :2]
+            
+            # 1. Try Random Sampling first
             while not valid and attempts < 20:
                 idx = torch.randint(0, pool_size, (1,), device=self.device)
                 candidate = available_positions[idx].squeeze(0)
                 
-                # Check distance to robot
-                # robot_pos[i] is (3,)
-                dist_sq = torch.sum((candidate[:2] - robot_pos[i, :2])**2)
+                dist_sq = torch.sum((candidate[:2] - curr_robot_pos)**2)
                 
                 if dist_sq > min_dist_sq:
                     selected_positions[i] = candidate
                     valid = True
                 attempts += 1
             
+            # 2. If Random failed, exhaustive search through available pool
             if not valid:
-                # Fallback: just take the candidate if we couldn't find a better one
-                # Or pick the furthest one? For now just take it to avoid hang
+                # Iterate through all available positions
+                for j in range(pool_size):
+                    candidate = available_positions[j]
+                    dist_sq = torch.sum((candidate[:2] - curr_robot_pos)**2)
+                    if dist_sq > min_dist_sq:
+                        selected_positions[i] = candidate
+                        valid = True
+                        break # Found one
+            
+            # 3. Last Resort: Just take the candidate (should ideally error or warn, but returning candidate prevents crash)
+            if not valid:
+                print(f"[Curriculum WARN] Could not find valid spawn for env {i} far enough from robot. Using fallback.")
                 selected_positions[i] = candidate
                 
         return selected_positions

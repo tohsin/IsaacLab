@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class NormalizeReward:
-    def __init__(self, gamma=0.99, epsilon=1e-8, m_value = 10, device=None):
+    def __init__(self, gamma=0.99, epsilon=1e-8, m_value = 1, device=None):
         self.return_rms = RunningMeanStd(shape=(), device=device)
         self.count = 0
         self.epsilon = epsilon
@@ -19,6 +19,12 @@ class NormalizeReward:
     def update_running_mean(self, setting: bool):
         """Sets the property to freeze/continue the running mean calculation of the reward statistics."""
         self._update_running_mean = setting
+
+    def reset(self):
+        """Resets the running mean and variance."""
+        self.return_rms = RunningMeanStd(shape=(), device=self.return_rms.device)
+        # self.count = 0 # Not used in __call__ logic but good for completeness if extended
+
 
     def __call__(self, reward):
         # Update running mean and variance using Welford's algorithm

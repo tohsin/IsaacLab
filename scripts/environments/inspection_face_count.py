@@ -36,6 +36,12 @@ import torch
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
+from isaaclab_tasks.direct.robot_inspection import run_config
+
+# Force Recording Mode
+run_config.cfg_mode = run_config.modes[3] 
+run_config.cfg_mode.data_recording_path = "data/test_3dgs_collection_v2"
+run_config.cfg_mode.use_wandb = False
 
 
 def main():
@@ -64,38 +70,44 @@ def main():
             with torch.inference_mode():
                 
 
-                for i in range(1000):
+                for i in range(800):
+                    if i ==570:
+                        print("done with filming")
                     if i < 30:
                         #forward
                         actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=30 and i < 120:
                         #print Turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=120 and i <200:
                         #print Forward
-                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=200 and i < 280:
                         # turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=280 and i <340:
                         # forward
-                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=340 and i < 400:
                         # turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=400 and i <470:
                         # forward
-                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     elif i>=470 and i <570:
                         # turn
-                        actions = torch.tensor([[0.0, -1.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    
                     else:
-                        actions = torch.tensor([[1.0,  0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0,  0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 
+    except KeyboardInterrupt:
+        print("\n[INFO] KeyboardInterrupt received. Closing environment...")
     finally:
-          env.close()
+        print("[INFO] Finalizing and saving data...")
+        env.close()
 
 
 if __name__ == "__main__":

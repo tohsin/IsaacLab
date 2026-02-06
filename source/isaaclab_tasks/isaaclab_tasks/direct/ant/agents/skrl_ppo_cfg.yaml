@@ -73,7 +73,7 @@ agent:
   experiment:
     directory: "ant_direct"
     experiment_name: ""
-    write_interval: auto
+    write_interval: 1000
     checkpoint_interval: auto
 
 
