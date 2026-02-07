@@ -54,7 +54,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     decimation = 6
     # semantic_config_path = "source/isaaclab_tasks/isaaclab_tasks/direct/robot_inspection/semantic_config_warehouse.json"
     episode_length_s = 42
-    action_scale = 1.0  # [N]
+    action_scale = 0.75  # [N]
     '''
         Action Space Discrete(5):
             - [v_high, ω_zero] (Go Straight Fast)

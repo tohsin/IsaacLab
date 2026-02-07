@@ -48,10 +48,7 @@ def main():
     """Random actions agent with Isaac Lab environment."""
     # create environment configuration
     env_cfg = parse_env_cfg(
-        args_cli.task,
-        device=args_cli.device, 
-        num_envs=args_cli.num_envs, 
-        use_fabric=not args_cli.disable_fabric
+        args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
     env_cfg.seed = 42
     # create environment
@@ -73,54 +70,36 @@ def main():
             with torch.inference_mode():
                 
 
-                import math
-                
-                # --- ORBIT & TILT PARAMETERS ---
-                # Orbit Speed
-                lin_vel = 0.3   # Slow forward
-                # Tilt Oscillation
-                tilt_amp = 0.8   # Amplitude of look up/down (0 to 1 range approx)
-                tilt_freq = 0.05 # Frequency of oscillation
-                
-                import math
-                tilt_amp = 0.8
-                tilt_freq = 0.05
-                fwd_speed = 0.8
-                turn_speed = -0.8
                 for i in range(800):
-                    if i == 570:
-                        print("done with f  ilming")
-                    
-                    # Calculate Continuous Tilt
-                    tilt = 0
-                    
+                    if i ==570:
+                        print("done with filming")
                     if i < 30:
+                        #forward
+                        actions = torch.tensor([[1.0, 0.0, -1.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=30 and i < 110: 
+                        #print Turn
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=110 and i <180:
+                        #print Forward
+                        actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=180 and i < 250:
+                        # print turn
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=250 and i <320:
                         # forward
-                        actions = torch.tensor([[fwd_speed, 0.0, -1.0, tilt, 0.0]], device=env.unwrapped.device)
-                    elif i >= 30 and i < 120: 
-                        # Turn
-                        actions = torch.tensor([[0.0, turn_speed, 0.0, tilt, 0.0]], device=env.unwrapped.device)
-                    elif i >= 120 and i < 230:
-                        # Forward
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, tilt, 0.0]], device=env.unwrapped.device)
-                    elif i >= 230 and i < 320:
-                        # Turn
-                        actions = torch.tensor([[0.0, turn_speed, 0.0, tilt, 0.0]], device=env.unwrapped.device)
-                    elif i >= 300 and i < 390:
-                        # Forward
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, tilt, 0.0]], device=env.unwrapped.device)
-                    elif i >= 390 and i < 470:
-                        # Turn
-                        actions = torch.tensor([[0.0, turn_speed, 0.0, tilt, 0.0]], device=env.unwrapped.device)
-                    elif i >= 470 and i < 550:
-                        # Forward
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, tilt, 0.0]], device=env.unwrapped.device)
-                    elif i >= 550 and i < 640:
-                        # Turn
-                        actions = torch.tensor([[0.0, turn_speed, 0.0, tilt, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=320 and i <400:
+                        # turn
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=400 and i <480:
+                        # forward
+                        actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i>=480 and i <560:
+                        # turn
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    
                     else:
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, tilt, 0.0]], device=env.unwrapped.device)
-
+                        actions = torch.tensor([[1.0,  0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

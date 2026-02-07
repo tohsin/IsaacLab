@@ -1042,6 +1042,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
+        
+        # Print reset info for debugging
+        if run_cfg.debug and ((isinstance(env_ids, torch.Tensor) and 0 in env_ids) or (isinstance(env_ids, list) and 0 in env_ids)):
+             print(f"[DEBUG] Env 0 RESETTING at Step: {self.common_step_counter}. Time: {self.common_step_counter * self.cfg.sim.dt * self.cfg.decimation:.2f}s")
+
 
         if len(env_ids)> 0:
             self.last_action[env_ids] = 0.0

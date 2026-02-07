@@ -131,8 +131,30 @@ class DataCollector:
         # Isaac Lab Quat is (w, x, y, z)
         # Scipy Rotation expects (x, y, z, w)
         rot = Rotation.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        
+        # Apply correction: ROS (+X forward) to OpenGL (-Z forward)
+        # ROS Basis: [Forward, Left, Up] = [X, Y, Z]
+        # OpenGL Basis: [Right, Up, Back] = [X, Y, Z] (where Forward = -Z)
+        
+        # We need to map:
+        # OpenGL X (Right) = -ROS Y (Right is -Left)
+        # OpenGL Y (Up)    =  ROS Z (Up)
+        # OpenGL Z (Back)  = -ROS X (Back is -Forward)
+        
+        # Correction Matrix T (post-multiply):
+        # [[ 0,  0, -1],
+        #  [-1,  0,  0],
+        #  [ 0,  1,  0]]
+        
+        T = np.array([
+            [ 0,  0, -1],
+            [-1,  0,  0],
+            [ 0,  1,  0]
+        ])
+        
         mat = np.eye(4)
-        mat[:3, :3] = rot.as_matrix()
+        # Apply T to the rotation part
+        mat[:3, :3] = rot.as_matrix() @ T
         mat[:3, 3] = pos
         return mat
 

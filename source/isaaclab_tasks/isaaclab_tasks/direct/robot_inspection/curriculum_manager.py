@@ -18,12 +18,12 @@ class Curriculum:
                 max_coverage_ratio: float = 0.99,
                 
                 # Asymmetric increments
-                coverage_increment_up: float = 0.05,
-                coverage_increment_down: float = 0.025,
-                success_rate_increase_thresh = 0.72,
-                success_rate_decrease_thresh = 0.60,
+                coverage_increment_up: float = 0.025,
+                coverage_increment_down: float = 0.01,
+                success_rate_increase_thresh = 0.68,
+                success_rate_decrease_thresh = 0.55,
 
-                start_quality_threshold: float = 0.05,
+                start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
                 quality_increment: float = 0.02,
                 
