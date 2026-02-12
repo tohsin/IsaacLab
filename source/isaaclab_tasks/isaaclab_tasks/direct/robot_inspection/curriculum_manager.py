@@ -18,10 +18,10 @@ class Curriculum:
                 max_coverage_ratio: float = 0.99,
                 
                 # Asymmetric increments
-                coverage_increment_up: float = 0.025,
-                coverage_increment_down: float = 0.01,
-                success_rate_increase_thresh = 0.68,
-                success_rate_decrease_thresh = 0.55,
+                coverage_increment_up: float = 0.05,
+                coverage_increment_down: float = 0.02,
+                success_rate_increase_thresh = 0.67,
+                success_rate_decrease_thresh = 0.57,
 
                 start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
@@ -51,7 +51,7 @@ class Curriculum:
         self.device = device
         self.success_buffer = deque(maxlen=50 * self.num_envs) # Buffer ~20 resets per env
         self.quality_buffer = deque(maxlen=50 * self.num_envs)
-        self.min_episodes_for_update = 10 * self.num_envs
+        self.min_episodes_for_update = 20 * self.num_envs
 
         # Hysteresis Thresholds
         self.success_rate_increase_thresh = success_rate_increase_thresh
@@ -81,12 +81,12 @@ class Curriculum:
                     [1.15, -5.56],    # Dist: 5.68
                     [-1.08, 6.32],    # Dist: 6.41
                     [-4.47, -5],      # Dist: 6.70
-                    [-7.0, 1.74],     # Dist: 7.21
-                    [3.63, 6.32],     # Dist: 7.29
-                    [6.7, -8.81 ],    # Dist: 11.07
-                    [-7.0, -8.81],    # Dist: 11.25
-                    [0.83, 15.10],    # Dist: 15.12
-                    [-6.73, 15.10],   # Dist: 16.53
+                    # [-7.0, 1.74],     # Dist: 7.21
+                    # [3.63, 6.32],     # Dist: 7.29
+                    # [6.7, -8.81 ],    # Dist: 11.07
+                    # [-7.0, -8.81],    # Dist: 11.25
+                    # [0.83, 15.10],    # Dist: 15.12
+                    # [-6.73, 15.10],   # Dist: 16.53
                     ]
 
         # Sorted by distance from origin for spatial curriculum
@@ -98,12 +98,13 @@ class Curriculum:
                     [-5.5, 1.74],     # Dist: 5.77
                     [-4, -5],         # Dist: 6.40
                     [-1.08, 6.32],    # Dist: 6.41
-                    [3.63, 6.32],     # Dist: 7.29
-                    [5, -7.4 ],       # Dist: 8.93
-                    [-4.7, 10.2],     # Dist: 11.23
-                    [-7.0, -8.8],     # Dist: 11.24
-                    [5.7, 13.67],     # Dist: 14.83
-                    [0.83, 15.10],    # Dist: 15.12
+                    # stop here
+                    # [3.63, 6.32],     # Dist: 7.29
+                    # [5, -7.4 ],       # Dist: 8.93
+                    # [-4.7, 10.2],     # Dist: 11.23
+                    # [-7.0, -8.8],     # Dist: 11.24
+                    # [5.7, 13.67],     # Dist: 14.83
+                    # [0.83, 15.10],    # Dist: 15.12
                     ]
         self.allowed_orientations = torch.tensor([
             DEG_0, 
@@ -207,12 +208,14 @@ class Curriculum:
             return pos, ori
             
         total_items = len(self.start_positions_tensor)
-        min_items = cfg_mode.initaltion_pool_sz
+        # Ensure min_items does not exceed total_items
+        min_items = min(cfg_mode.initaltion_pool_sz, total_items)
         
         progress = self.get_progress()
         
         # Current active pool size
         pool_size = int(min_items + (total_items - min_items) * progress)
+        # Clamp pool_size to be within [min_items, total_items]
         pool_size = max(min_items, min(total_items, pool_size))
         
         if pool_size != self.last_robot_pool_size:
@@ -249,12 +252,14 @@ class Curriculum:
         # Determine pool size based on coverage threshold or success rate
         # Scale pool size linearly from min items to all items based on progress
         total_items = len(self.objective_positions_tensor)
-        min_items =  self.initaltion_pool_sz_goal
+        # Ensure min_items does not exceed total_items
+        min_items = min(self.initaltion_pool_sz_goal, total_items)
         
         progress = self.get_progress()
         
         # Current active pool size
         pool_size = int(min_items + (total_items - min_items) * progress)
+        # Clamp pool_size to be within [min_items, total_items]
         pool_size = max(min_items, min(total_items, pool_size))
         
         if pool_size != self.last_objective_pool_size:

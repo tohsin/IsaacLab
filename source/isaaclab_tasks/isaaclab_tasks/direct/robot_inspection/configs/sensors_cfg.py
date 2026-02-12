@@ -10,8 +10,12 @@ class SensorsCfg:
         camera_height: int = 512
         camera_width: int = 512
     else:
-        camera_height: int = 64
-        camera_width: int = 64
+        camera_height: int = 128
+        camera_width: int = 128
+
+    nav_data_types = ["distance_to_image_plane"]
+    if getattr(cfg_mode, "nav_camera_modality", "rgb") in ["rgb", "rgbd"]:
+        nav_data_types.append("rgb")
 
     # Front-facing camera for navigation.
     navigation_camera: TiledCameraCfg = TiledCameraCfg(
@@ -19,7 +23,7 @@ class SensorsCfg:
         update_period=0.24,
         height=camera_height,
         width=camera_width,
-        data_types=["rgb", "distance_to_image_plane"],
+        data_types=nav_data_types,
         update_latest_camera_pose=True,
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,

@@ -301,7 +301,7 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 1_000_000
+total_timesteps = 500_000
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
@@ -312,45 +312,37 @@ cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
 
-cfg["learning_rate_scheduler"] = None
-cfg["learning_rate_scheduler_kwargs"] = {}
-cfg["learning_rate"] = 3e-5 
+# cfg["learning_rate_scheduler"] = None
+# cfg["learning_rate_scheduler_kwargs"] = {}
 
 
-# cfg["learning_rate"] = 1.5e-5 # Reduced from 3e-4 for stability
-# cfg["learning_rate_scheduler"] = KLAdaptiveRL
-# cfg["learning_rate_scheduler_kwargs"] = {
-#     "kl_threshold": 0.016,
-#     "min_lr": 5e-6,    # Allow it to drop lower if needed
-#     "max_lr": 1.5e-5,    # Cap at the initial LR (no increasing!)
-#     "lr_factor": 1.05
-# }
-# cfg["learning_rate_scheduler"]  = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
-# cfg["learning_rate_scheduler_kwargs"] = {
-#     "T_0": 2500, # Tuned based on observed frequency (~3 restarts per run)
-#     "T_mult": 1,
-#     "eta_min": 1e-6,
-# }
-# cfg["optimizer_class"] = ForeachMuon
 
 cfg["optimizer_class"] = torch.optim.AdamW
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
 
+cfg["learning_rate"] = 3e-5 
 cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.LinearLR
 cfg["learning_rate_scheduler_kwargs"] = {
     "start_factor": 1.0,     # Start at the full learning_rate
     "end_factor": 0.01,      
     "total_iters": scheduler_max_steps,
 }
+# cfg["learning_rate"] = 3e-5 
+# cfg["learning_rate_scheduler"] = KLAdaptiveRL
+# cfg["learning_rate_scheduler_kwargs"] = {
+#     "kl_threshold": 0.016,
+#     "min_lr": 1e-5,    # Allow it to drop lower if needed
+#     "max_lr": 3e-5,    # Cap at the initial LR (no increasing!)
+#     "lr_factor": 1.15
+# }
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 3e-4 # Reduced to 1e-4 to stop std from climbing
+cfg["entropy_loss_scale"] = 7e-5 # Reduced to 1e-4 to stop std from climbing
 cfg["value_loss_scale"] = 1.0
-# cfg["kl_threshold"] = 0.0
-# cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.05
+cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.01
 cfg["time_limit_bootstrap"] = True
 
 cfg["state_preprocessor"] = RunningStandardScaler
@@ -359,6 +351,15 @@ cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 # logging to TensorBoard and write checkpoints (in timesteps)
 
+# cfg["learning_rate"] = 1.5e-5 # Reduced from 3e-4 for stability
+
+# cfg["learning_rate_scheduler"]  = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
+# cfg["learning_rate_scheduler_kwargs"] = {
+#     "T_0": 2500, # Tuned based on observed frequency (~3 restarts per run)
+#     "T_mult": 1,
+#     "eta_min": 1e-6,
+# }
+# cfg["optimizer_class"] = ForeachMuon
 script_dir = os.path.dirname(os.path.abspath(__file__))
 log_root_path = os.path.join(script_dir, "logs", "skrl", "3DInspection_direct")
 log_root_path = os.path.abspath(log_root_path)
@@ -385,8 +386,43 @@ if _use_wandb:
     cfg["experiment"]["wandb_kwargs"] = {
         "project": "3DInspection_NoRNN",  # Name of the project in WandB dashboard
         "name": experiment_name,           # Name of this specific run
-        "tags": ["PPO", "IsaacLab", args_cli.task]
+        "tags": ["PPO", "IsaacLab", args_cli.task],
+        # "config": {}
     }
+
+    # Try to extract curriculum config if available
+    try:
+        # Access the base environment
+        if hasattr(env, "unwrapped"):
+             base_env = env.unwrapped
+        else:
+             base_env = env
+        
+        if hasattr(base_env, "curriculum"):
+            curr = base_env.curriculum
+            cfg["experiment"]["wandb_kwargs"]["config"].update({
+                "curr_start_coverage": getattr(curr, "start_coverage_ratio", "N/A"),
+                "curr_max_coverage": getattr(curr, "max_coverage_threshold", "N/A"),
+                 # Check for both "treshold" (typo in file) and "threshold"
+                "curr_quality_start": getattr(curr, "start_quality_threshold", getattr(curr, "start_quality_treshold", "N/A")),  
+                "curr_quality_max": getattr(curr, "max_quality_threshold", getattr(curr, "max_quality_treshold", "N/A")),
+                
+                "curr_inc_up": getattr(curr, "coverage_increment_up", "N/A"),
+                "curr_inc_down": getattr(curr, "coverage_increment_down", "N/A"),
+                "curr_quality_inc": getattr(curr, "quality_increment", "N/A"),
+                
+                "curr_success_thresh_up": getattr(curr, "success_rate_increase_thresh", "N/A"),
+                "curr_success_thresh_down": getattr(curr, "success_rate_decrease_thresh", "N/A"),
+                
+                "curr_min_ep_len": getattr(curr, "min_episode_length_limit", "N/A"),
+                "curr_max_ep_len": getattr(curr, "max_episode_length_limit", "N/A"),
+            })
+            print(f"[INFO] Added Curriculum config to WandB: {cfg['experiment']['wandb_kwargs']['config']}")
+        else:
+            print("[WARNING] Could not find 'curriculum' in environment for WandB logging.")
+            
+    except Exception as e:
+        print(f"[WARNING] Failed to extract curriculum config for WandB: {e}")
 agent = PPO(models=models, 
             memory=memory,
             cfg=cfg,

@@ -230,18 +230,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             orientation=(1, 0.0, 0.0, 0.0),
         )
 
-        # Create RigidObject wrapper for the manually spawned object to enable programmatic control
-        # spawn=None because it's already spawned above
-        self.inspection_goal = RigidObject(
-            RigidObjectCfg(
-                prim_path=self.cfg.inspection_objective_prim_path,
-                spawn=None,
-                init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
-            )
-        )
-        self.scene.rigid_objects["inspection_goal"] = self.inspection_goal
-        
-        # Force collision on Rubik's cube meshes to fix pass-through issue
+         # Force collision on Rubik's cube meshes to fix pass-through issue
         stage = get_current_stage()
         import re
         # Get the template path from config, e.g. "/World/envs/env_.*/rubiks_cube"
@@ -269,6 +258,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                             mesh_collision.GetApproximationAttr().Set("convexHull")
                         if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
                             PhysxSchema.PhysxCollisionAPI.Apply(child)
+
+        # Create RigidObject wrapper for the manually spawned object to enable programmatic control
+        # spawn=None because it's already spawned above
+        self.inspection_goal = RigidObject(
+            RigidObjectCfg(
+                prim_path=self.cfg.inspection_objective_prim_path,
+                spawn=None,
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
+            )
+        )
+        self.scene.rigid_objects["inspection_goal"] = self.inspection_goal
         
         # Cache goal prims for manual USD updates
         self.goal_prims = []
@@ -613,10 +613,32 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         front_camera_data = torch.empty(0, device=self.device)
         ptz_camera_data = torch.empty(0, device=self.device)
 
-        if  "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types:
-            front_camera_data = self._nav_camera.data.output[ "rgb"] / 255.0
-            if torch.isnan(front_camera_data).any():
-                print("[ENV DEBUG] NaN detected in Front Camera Data!")
+        nav_modality = getattr(run_cfg, "nav_camera_modality", "rgb")
+        
+        if nav_modality == "rgb":
+            if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types:
+                front_camera_data = self._nav_camera.data.output["rgb"] / 255.0
+                if torch.isnan(front_camera_data).any():
+                    print("[ENV DEBUG] NaN detected in Front Camera Data!")
+
+        elif nav_modality == "depth":
+             if "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
+                front_camera_data = self._nav_camera.data.output["distance_to_image_plane"].clone()
+                # Replace Inf with a max range (e.g. 10.0m) to keep inputs sane
+                front_camera_data[torch.isinf(front_camera_data)] = 10.0
+                front_camera_data = front_camera_data.unsqueeze(-1)
+                if torch.isnan(front_camera_data).any():
+                    print("[ENV DEBUG] NaN detected in Front Camera Depth Data!")
+
+        elif nav_modality == "rgbd":
+            if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
+                rgb = self._nav_camera.data.output["rgb"] / 255.0
+                depth = self._nav_camera.data.output["distance_to_image_plane"].clone()
+                depth[torch.isinf(depth)] = 10.0
+                depth = depth.unsqueeze(-1)
+                front_camera_data = torch.cat([rgb, depth], dim=-1)
+                if torch.isnan(front_camera_data).any():
+                    print("[ENV DEBUG] NaN detected in Front Camera RGBD Data!")
 
         if  "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types:
             ptz_camera_data = self._ptz_camera.data.output["rgb"] / 255.0
@@ -996,8 +1018,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print("NaN or Inf detected in total reward calculation!")
             raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
         # return total_reward
-        normalized_reward = self.rewardscaler(total_reward)
-        return normalized_reward
+        # normalized_reward = self.rewardscaler(total_reward)
+        return total_reward
     
     def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled, current_face_reward_scale):
         # Construct dictionary for logging (both accumulation and per-step means)

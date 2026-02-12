@@ -22,15 +22,16 @@ class debug_Cfg:
     use_wandb =  False #not debug
     headless = False
     num_envs = 1
+    nav_camera_modality = "rgb"
 
 class train_Cfg:
     debug = False
-    min_episode_length: int = 800
+    min_episode_length: int = 850
     max_episode_length: int = 1500
     logging_interval: int = 1000
-    initaltion_pool_sz : int = 12
-    initaltion_pool_sz_goal : int =13
-    inspection_goal =  0.075 # User requested lower start threshold to bootstrap learning
+    initaltion_pool_sz : int = 6
+    initaltion_pool_sz_goal : int =6
+    inspection_goal =  0.1
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -39,6 +40,7 @@ class train_Cfg:
     use_wandb =  True #not debug
     headless = True
     num_envs = 128
+    nav_camera_modality = "depth" # "rgb", "depth", or "rgbd"
 
 
 class eval_Cfg:
@@ -55,6 +57,7 @@ class eval_Cfg:
     use_wandb =  False #not debug
     headless = True
     num_envs = 1
+    nav_camera_modality = "rgb"
 
 class record_Cfg:
     debug = False
@@ -79,6 +82,7 @@ class record_Cfg:
     save_images = True
     save_depth = False
     save_interval = 2
+    nav_camera_modality = "rgb" # "rgb" or "depth"
 
 modes = [debug_Cfg, train_Cfg, eval_Cfg, record_Cfg]
-cfg_mode =   modes[3]
+cfg_mode =   modes[1]
