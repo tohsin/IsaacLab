@@ -3,9 +3,10 @@ class TrainingConfig:
     is_eval = False
     headless = True
     checkpoint_path = None
-    num_envs = 128
+    num_envs = 64 # 128
     # checkpoint_path = "/home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-02-09_04-38-32_ppo_gru_128/checkpoints/best_agent.pt"
     reset_std = True
+    batch_size = 4096 # 8192
     # reset_std = False
     use_wandb = True
 

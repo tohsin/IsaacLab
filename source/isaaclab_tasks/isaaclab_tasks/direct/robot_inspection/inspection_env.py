@@ -635,7 +635,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 rgb = self._nav_camera.data.output["rgb"] / 255.0
                 depth = self._nav_camera.data.output["distance_to_image_plane"].clone()
                 depth[torch.isinf(depth)] = 10.0
-                depth = depth.unsqueeze(-1)
+                if depth.dim() == 3:
+                     depth = depth.unsqueeze(-1)
+                
                 front_camera_data = torch.cat([rgb, depth], dim=-1)
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera RGBD Data!")

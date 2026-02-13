@@ -6,8 +6,8 @@ import sys
 from datetime import datetime
 import numpy as np
 import warnings
-from heavyball import ForeachMuon
-import heavyball.utils
+# from heavyball import ForeachMuon
+# import heavyball.utils
 torch.autograd.set_detect_anomaly(True)
 
 # conda install -c conda-forge gcc=12 -y
@@ -280,7 +280,7 @@ env = wrap_env(env)
 
 device = env.device
 # assume num env is 16
-TOTAL_BATCH_SIZE = 8192 #8192# 2048
+TOTAL_BATCH_SIZE = CONFIG.batch_size #8192# 2048
 sequence_length = 32
 rollout_length = TOTAL_BATCH_SIZE // env.num_envs
 
@@ -304,8 +304,8 @@ models['value'] = models["policy"]  # Shared(env.observation_space, env.action_s
 total_timesteps = 10_000_000 // env.num_envs
 
 cfg = PPO_DEFAULT_CONFIG.copy()
-warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
-heavyball.utils.compile_mode = None
+# warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
+# heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
 cfg["learning_epochs"] = 4 #8
 cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16

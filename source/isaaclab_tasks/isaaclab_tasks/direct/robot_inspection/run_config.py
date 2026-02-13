@@ -40,7 +40,7 @@ class train_Cfg:
     use_wandb =  True #not debug
     headless = True
     num_envs = 128
-    nav_camera_modality = "depth" # "rgb", "depth", or "rgbd"
+    nav_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
 
 
 class eval_Cfg:
