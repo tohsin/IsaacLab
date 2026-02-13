@@ -318,7 +318,10 @@ scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs
 
 cfg["learning_rate"] = CONFIG.learning_rate
 cfg["learning_rate_scheduler"] = CONFIG.scheduler_class
-cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs
+cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs.copy()
+
+if "total_iters" in cfg["learning_rate_scheduler_kwargs"]:
+        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
