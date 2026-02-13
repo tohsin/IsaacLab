@@ -301,7 +301,7 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 500_000
+total_timesteps = 1_000_000
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
@@ -312,35 +312,19 @@ cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
 
-# cfg["learning_rate_scheduler"] = None
-# cfg["learning_rate_scheduler_kwargs"] = {}
-
-
-
 cfg["optimizer_class"] = torch.optim.AdamW
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
 
-cfg["learning_rate"] = 3e-5 
-cfg["learning_rate_scheduler"] = torch.optim.lr_scheduler.LinearLR
-cfg["learning_rate_scheduler_kwargs"] = {
-    "start_factor": 1.0,     # Start at the full learning_rate
-    "end_factor": 0.01,      
-    "total_iters": scheduler_max_steps,
-}
-# cfg["learning_rate"] = 3e-5 
-# cfg["learning_rate_scheduler"] = KLAdaptiveRL
-# cfg["learning_rate_scheduler_kwargs"] = {
-#     "kl_threshold": 0.016,
-#     "min_lr": 1e-5,    # Allow it to drop lower if needed
-#     "max_lr": 3e-5,    # Cap at the initial LR (no increasing!)
-#     "lr_factor": 1.15
-# }
+
+cfg["learning_rate"] = CONFIG.learning_rate
+cfg["learning_rate_scheduler"] = CONFIG.scheduler_class
+cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 7e-5 # Reduced to 1e-4 to stop std from climbing
+cfg["entropy_loss_scale"] = CONFIG.entropy_coec # Reduced to 1e-4 to stop std from climbing
 cfg["value_loss_scale"] = 1.0
 cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.01
 cfg["time_limit_bootstrap"] = True
