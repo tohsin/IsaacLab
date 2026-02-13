@@ -301,7 +301,7 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length)
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = 10_000_000 // env.num_envs
+total_timesteps = CONFIG.global_timesteps // env.num_envs
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
@@ -324,7 +324,7 @@ cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = CONFIG.entropy_coec # Reduced to 1e-4 to stop std from climbing
+cfg["entropy_loss_scale"] = CONFIG.entropy_coef # Reduced to 1e-4 to stop std from climbing
 cfg["value_loss_scale"] = 1.0
 cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.01
 cfg["time_limit_bootstrap"] = True
