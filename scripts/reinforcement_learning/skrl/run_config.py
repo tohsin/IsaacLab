@@ -16,9 +16,6 @@ class TrainingConfig_1:
     use_wandb = True
     global_timesteps = 10_000_000
 
-<<<<<<< Updated upstream
-    # scheduler_class = torch.optim.lr_scheduler.LinearLR
-=======
     scheduler_class = torch.optim.lr_scheduler.LinearLR
     scheduler_kwargs = {
         "start_factor": 1.0,     # Start at the full learning_rate
@@ -27,20 +24,12 @@ class TrainingConfig_1:
     } 
 
     # scheduler_class = KLAdaptiveRL
->>>>>>> Stashed changes
     # scheduler_kwargs = {
-    #     "start_factor": 1.0,     # Start at the full learning_rate
-    #     "end_factor": 0.01,      
-    #     "total_iters": scheduler_max_steps,
-    # } 
-
-    scheduler_class = KLAdaptiveRL
-    scheduler_kwargs = {
-        "kl_threshold": 0.016,
-        "min_lr": 1e-5,
-        "max_lr": 3e-5,
-        "lr_factor": 1.15
-    }
+    #     "kl_threshold": 0.016,
+    #     "min_lr": 1e-5,
+    #     "max_lr": 3e-5,
+    #     "lr_factor": 1.15
+    # }
 
 
 class TrainingConfig_2:

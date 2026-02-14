@@ -329,7 +329,7 @@ cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef # Reduced to 1e-4 to stop std from climbing
 cfg["value_loss_scale"] = 1.0
-cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.01
+cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
 cfg["time_limit_bootstrap"] = True
 
 cfg["state_preprocessor"] = RunningStandardScaler

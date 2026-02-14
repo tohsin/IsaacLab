@@ -988,11 +988,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # --- Adaptive Reward Scaling ---
         # Decay the face discovery reward as curriculum progresses
         # We want it high initially (to learn what faces are) and lower later (to prioritize exploration)
-        progress = self.curriculum.get_progress()
+        # progress = self.curriculum.get_progress()
         
-        # Linear Decay: Scales from 1.0 down to 0.2 (20% of original)
-        decay_factor = 1.0 - (progress * 0.8) 
-        current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale * decay_factor
+        # # Linear Decay: Scales from 1.0 down to 0.2 (20% of original)
+        # decay_factor = 1.0 - (progress * 0.8) 
+        # current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale * decay_factor
+        current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
 
         total_reward = (current_face_reward_scale * face_discovery_raw
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
