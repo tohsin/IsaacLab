@@ -43,7 +43,8 @@ from collections import defaultdict
 from pxr import Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema, Gf
 from isaaclab.sim.utils import get_current_stage
 from .run_config import cfg_mode
-from .data_collector import DataCollector
+from .utils.data_collector import DataCollector
+from .utils.point_cloud_collector import PointCloudCollector
 
 # congfig_mode = run_Config
 run_cfg = cfg_mode
@@ -58,7 +59,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._ptz_joint_indices, _ = self.robot.find_joints(".*ptz.*")
 
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
-
 
         # Automatically count faces after the scene is set up
         # self.total_mesh_faces = self._count_total_mesh_faces()
@@ -110,10 +110,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
 
 
-        # Initialize Data Collector if needed
+        # Initialize Data Collector if needed (saves RGB/images)
         self.data_collector = None
-        if hasattr(run_cfg, "data_recording_path"):
+        if hasattr(run_cfg, "data_recording_path") and getattr(run_cfg, "save_images", False):
             self.data_collector = DataCollector(run_cfg, device=self.device)
+
+        # Initialize Point Cloud Collector if needed (saves Depth/masks)
+        self.pc_collector = None
+        
+        if hasattr(run_cfg, "data_recording_path") and getattr(run_cfg, "save_depth", False):
+             self.pc_collector = PointCloudCollector(run_cfg, device=self.device)
 
     def _debug_visualize_objective_spawns(self):
         """Visualises all possible spawn positions for the inspection objective."""
@@ -216,15 +222,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Spawning manually as per original implementation which works with the USD assets
 
         rubiks_cfg = sim_utils.UsdFileCfg(
-            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-            scale=(10.0, 10.0, 10.0),
+            # usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+            #scale=(10.0, 10.0, 10.0),
+            usd_path= self.cfg.inspection_goal_cfg["inspection_goal_usd_path"],
+            scale=self.cfg.inspection_goal_cfg["inspection_goal_scale"],
             rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True),
             mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            semantic_tags=[("class", "inspection_goal")]
+            semantic_tags=[(self.cfg.inspection_goal_cfg["semantics_type"],
+                            self.cfg.inspection_goal_cfg["semantics_name"])]
             )
         rubiks_cfg.func(
-            "/World/envs/env_.*/rubiks_cube", 
+            self.cfg.inspection_goal_cfg["inspection_goal_prim_path"], 
             rubiks_cfg, 
             translation=(2.0, 0.0, 0.4), 
             orientation=(1, 0.0, 0.0, 0.0),
@@ -706,6 +715,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if self.data_collector:
             self.data_collector.collect(self._ptz_camera, self.common_step_counter)
+
+        if self.pc_collector:
+             target_mask = self._get_semantic_mask(self._ptz_camera)
+             if target_mask is not None:
+                 self.pc_collector.collect(self._ptz_camera, self.common_step_counter, semantic_mask=target_mask)
 
         return super().step(action)
       

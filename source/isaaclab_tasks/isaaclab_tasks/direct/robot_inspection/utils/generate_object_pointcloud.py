@@ -1,5 +1,7 @@
 """
 Script to generate a point cloud from an inspection object in Isaac Sim.
+Uses Ray Casting to capture only the exterior visible surface.
+Supports scaling and positioning to match simulation environment.
 """
 
 from __future__ import annotations
@@ -11,7 +13,10 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Generate a point cloud from an inspection object.")
 parser.add_argument("--usd_path", type=str, default=None, help="Path to the USD file.")
 parser.add_argument("--num_points", type=int, default=10000, help="Number of points to sample.")
-parser.add_argument("--output", type=str, default="inspection_object_baseline.ply", help="Output PLY file path.")
+parser.add_argument("--output", type=str, default="data/point_clouds/inspection_object_baseline.ply", help="Output PLY file path.")
+parser.add_argument("--scale", type=float, nargs=3, default=[10.0, 10.0, 10.0], help="Scale of the object (x, y, z).")
+parser.add_argument("--pos", type=float, nargs=3, default=[0.0, -2.0, 0.3], help="Position of the object (x, y, z).")
+parser.add_argument("--center", action="store_true", help="Center the point cloud at (0,0,0) by subtracting the centroid.")
 # parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode.") # AppLauncher handles this
 
 # Append AppLauncher arguments
@@ -77,17 +82,13 @@ def main():
     # Default path if none provided
     usd_path = args.usd_path
     if not usd_path:
-        # Fallback to Rubik's cube as seen in config
-        # Note: ISAAC_NUCLEUS_DIR might be an environment variable or a placeholder in some contexts
-        # but in isaaclab.utils.assets it should be resolved.
         usd_path = f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd"
         print(f"[INFO] No USD path provided. Using default Rubik's Cube: {usd_path}")
 
-    # Check if file exists if it's a local path, otherwise trust it's a nucleus path
+    # Check existence if local
     if not usd_path.startswith("http") and not usd_path.startswith("omniverse://"):
          if not os.path.exists(usd_path) and not os.path.exists(usd_path.replace("file:", "")):
-             # Try to resolve relative to current dir?
-             pass
+             pass # Let Isaac Sim handle error if it fails
 
     # Open stage
     stage_utils.create_new_stage()
@@ -106,24 +107,19 @@ def main():
         if prim.IsA(UsdGeom.Mesh):
             mesh_prim = UsdGeom.Mesh(prim)
             
-            # Check visibility (simple check)
+            # Check visibility
             vis = mesh_prim.GetVisibilityAttr().Get()
             if vis == 'invisible':
                 continue
             
             tm = get_mesh_from_prim(mesh_prim)
             if tm:
-                # Apply World Transform
+                # Apply World Transform (from USD structure)
                 xform = UsdGeom.Xformable(prim)
                 world_transform = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
                 
-                # Convert Gf.Matrix4d to numpy
-                matrix = np.array(world_transform).T # Transpose for standard layout if needed? 
-                # Gf matrix is row-major? No, Gf is row-major, numpy usually expects standard.
-                # Trimesh expects 4x4.
-                # Let's check Gf.Matrix4d structure.
-                # Standard USD matrices are row-major?
-                # Actually, trimesh.apply_transform expects (4,4) 
+                # Convert Gf.Matrix4d to numpy (row-major in USD, compatible with trimesh)
+                matrix = np.array(world_transform).T
                 
                 tm.apply_transform(matrix)
                 all_meshes.append(tm)
@@ -140,14 +136,88 @@ def main():
         combined_mesh = trimesh.util.concatenate(all_meshes)
     else:
         combined_mesh = all_meshes[0]
+        
+    # --- Apply USER defined Scale and Position ---
+    # User args: scale (x,y,z), pos (x,y,z)
     
-    print(f"[INFO] Combined Mesh Area: {combined_mesh.area}")
-    print(f"[INFO] Sampling {args.num_points} points...")
+    # Apply Scale
+    scale_matrix = np.eye(4)
+    scale_matrix[0, 0] = args.scale[0]
+    scale_matrix[1, 1] = args.scale[1]
+    scale_matrix[2, 2] = args.scale[2]
+    combined_mesh.apply_transform(scale_matrix)
+    print(f"[INFO] Applied Scale: {args.scale}")
     
-    points, _ = trimesh.sample.sample_surface(combined_mesh, args.num_points)
+    # Apply Position (Translation)
+    translation_matrix = np.eye(4)
+    translation_matrix[:3, 3] = args.pos
+    combined_mesh.apply_transform(translation_matrix)
+    print(f"[INFO] Applied Position: {args.pos}")
+
     
+    print(f"[INFO] Combined and Transformed Mesh Area: {combined_mesh.area}")
+    print(f"[INFO] Sampling {args.num_points} points using Ray Casting (Virtual Scan)...")
+    
+    # --- Ray Casting Logic ---
+    # 1. Get bounds and center
+    bounds = combined_mesh.bounds
+    center = combined_mesh.centroid
+    extents = combined_mesh.extents
+    radius = np.max(extents) * 1.5
+    
+    # 2. Generate rays
+    # Sample points on a sphere around the object
+    num_rays = args.num_points * 2 
+    
+    # Fibonacci sphere sampling for even distribution
+    phi = np.pi * (3. - np.sqrt(5.))  # golden angle
+    i = np.arange(num_rays)
+    y = 1 - (i / float(num_rays - 1)) * 2  # y goes from 1 to -1
+    radius_at_y = np.sqrt(1 - y * y) # radius at y
+    theta = phi * i 
+    
+    x = np.cos(theta) * radius_at_y
+    z = np.sin(theta) * radius_at_y
+    
+    sphere_points = np.stack((x, y, z), axis=1) * radius + center
+    
+    # Directions towards center
+    ray_origins = sphere_points
+    ray_directions = center - ray_origins
+    
+    # Normalize
+    ray_directions = ray_directions / np.linalg.norm(ray_directions, axis=1)[:, np.newaxis]
+    
+    # 3. Cast rays
+    # Use trimesh ray intersector
+    locations, index_ray, index_tri = combined_mesh.ray.intersects_location(
+        ray_origins=ray_origins,
+        ray_directions=ray_directions,
+        multiple_hits=False # only first hit (exterior)
+    )
+    
+    print(f"[INFO] Ray casting hit {len(locations)} points on the exterior.")
+    
+    # If we have too many, downsample
+    if len(locations) > args.num_points:
+        indices = np.random.choice(len(locations), args.num_points, replace=False)
+        final_points = locations[indices]
+    else:
+        final_points = locations
+
+    # --- Optional Centering ---
+    if args.center:
+        centroid = np.mean(final_points, axis=0)
+        final_points -= centroid
+        print(f"[INFO] Centered point cloud. Subtracted centroid: {centroid}")
+
+    # Ensure output directory exists
+    output_dir = os.path.dirname(args.output)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
     # Save to ply
-    pcd = trimesh.points.PointCloud(points)
+    pcd = trimesh.points.PointCloud(final_points)
     pcd.export(args.output)
     
     print(f"[INFO] Point cloud saved to: {os.path.abspath(args.output)}")

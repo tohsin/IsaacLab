@@ -72,3 +72,7 @@ tests/
 
 data/test_3dgs_collection_v2
 
+# Point Clouds
+data/point_clouds
+data/recorded_point_clouds
+

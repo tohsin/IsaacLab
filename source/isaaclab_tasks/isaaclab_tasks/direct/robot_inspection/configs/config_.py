@@ -56,13 +56,19 @@ Env_params = {
         "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
         "env_prim_path": "/World/envs/env_.*/warehouse"
     },
+
+    # Currently using this
     'empty_room':{
-        "num_faces": 2100,
+        # Environment details
+        "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
+        "env_prim_path": "/World/envs/env_.*/warehouse" , 
+        # Object details
+        "inspection_goal_prim_path": "/World/envs/env_.*/rubiks_cube",
+        "inspection_goal_usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+        "inspection_goal_scale": (10.0, 10.0, 10.0),
+        "num_faces": 2200,
         "semantics_type": "class",
         "semantics_name": "inspection_goal",
-        "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
-        "env_prim_path": "/World/envs/env_.*/warehouse" ,
-        "inspection_goal_prim_path": "/World/envs/env_.*/rubiks_cube",
     }
 }
 

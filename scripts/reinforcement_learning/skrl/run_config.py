@@ -14,7 +14,7 @@ class TrainingConfig_1:
     entropy_coef = 3e-7
     learning_rate = 3e-5
     use_wandb = True
-    global_timesteps = 10_000_000
+    global_timesteps = 50_000_000
 
     scheduler_class = torch.optim.lr_scheduler.LinearLR
     scheduler_kwargs = {

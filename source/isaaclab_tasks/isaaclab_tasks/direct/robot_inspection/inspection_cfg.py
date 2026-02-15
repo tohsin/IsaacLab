@@ -46,7 +46,7 @@ class WarehouseSceneCfg(InteractiveSceneCfg):
 @configclass
 class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # env
-    env_parameters = env_parameters
+    env_parameters = inspection_goal_cfg = env_parameters
     use_camera_obs: bool = True
     inspection_objective_prim_path = env_parameters["inspection_goal_prim_path"]
 
@@ -54,7 +54,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     decimation = 6
     # semantic_config_path = "source/isaaclab_tasks/isaaclab_tasks/direct/robot_inspection/semantic_config_warehouse.json"
     episode_length_s = 42
-    action_scale = 0.75  # [N]
+    action_scale = 0.8  # [N]
     '''
         Action Space Discrete(5):
             - [v_high, ω_zero] (Go Straight Fast)

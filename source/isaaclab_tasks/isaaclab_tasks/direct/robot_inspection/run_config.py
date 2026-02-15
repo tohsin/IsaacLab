@@ -84,5 +84,30 @@ class record_Cfg:
     save_interval = 2
     nav_camera_modality = "rgb" # "rgb" or "depth"
 
-modes = [debug_Cfg, train_Cfg, eval_Cfg, record_Cfg]
-cfg_mode =   modes[1]
+class record_point_cloud_Cfg:
+    debug = False
+    min_episode_length: int = 1500
+    logging_interval: int = 100
+    max_episode_length: int = 1500
+    initaltion_pool_sz : int = 1
+    initaltion_pool_sz_goal : int = 1
+    inspection_goal =  1.2
+    visualisation_mode = None
+    display_ray_counts = False
+    visualise_point_cloud = False
+    visualise_face_ids = False
+    display_cameras = False
+    enable_voxel_visualization = False
+    visualise_all_objective_spawns = False
+    visualise_objective_spawns_count :int = 1
+    use_wandb =  False 
+    headless = False
+    num_envs = 1
+    data_recording_path = "data/recorded_point_clouds"
+    save_images = False
+    save_depth = True
+    save_interval = 5 # Save every 5 steps to avoid huge data
+    nav_camera_modality = "rgbd" 
+
+modes = [debug_Cfg, train_Cfg, eval_Cfg, record_Cfg, record_point_cloud_Cfg]
+cfg_mode =   modes[4]
