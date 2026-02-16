@@ -4,21 +4,26 @@ from collections import deque, defaultdict
 import wandb
 
 class InspectionLogger:
-    def __init__(self, cfg, use_wandb: bool = False, debug: bool = False):
+    def __init__(self, cfg, use_wandb: bool = False, debug: bool = False, window_size: int = None):
         self.cfg = cfg
         self.use_wandb = use_wandb
         self.debug = debug
         
+        # Determine buffer size
+        # Default to num_envs * 4 if not provided (old behavior)
+        if window_size is None:
+             window_size = self.cfg.scene.num_envs * 4
+        
         # Buffers
         self.episode_log_buffer = {
-            "coverage_percent": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "faces_discovered": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "mean_inspection_quality": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_map_entropy": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_unique_visible_cell_count": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "final_visited_cells_count": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "curriculum/current_threshold": deque(maxlen=self.cfg.scene.num_envs * 4),
-            "visible_faces_per_step": deque(maxlen=self.cfg.scene.num_envs * 100), # Track visible faces per step
+            "coverage_percent": deque(maxlen=window_size),
+            "faces_discovered": deque(maxlen=window_size),
+            "mean_inspection_quality": deque(maxlen=window_size),
+            "final_map_entropy": deque(maxlen=window_size),
+            "final_unique_visible_cell_count": deque(maxlen=window_size),
+            "final_visited_cells_count": deque(maxlen=window_size),
+            "curriculum/current_threshold": deque(maxlen=window_size),
+            "visible_faces_per_step": deque(maxlen=window_size), # Track visible faces per step (maybe keep this one dynamic/shorter? No, let's align.)
         }
         self.reward_logging_buffer = defaultdict(list)
         
@@ -130,3 +135,13 @@ class InspectionLogger:
 
     def log_visible_faces(self, count: float):
         self.episode_log_buffer["visible_faces_per_step"].append(count)
+
+    def clear_episode_buffers(self):
+        """
+        Clears all episode-level log buffers and cumulative rewards.
+        This is useful when the curriculum level changes, to avoid smoothing 
+        metrics across different difficulty levels.
+        """
+        for buffer in self.episode_log_buffer.values():
+            buffer.clear()
+        self.episode_cumulative_rewards.clear()

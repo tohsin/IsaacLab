@@ -26,7 +26,7 @@ class debug_Cfg:
 
 class train_Cfg:
     debug = False
-    min_episode_length: int = 850
+    min_episode_length: int = 800
     max_episode_length: int = 1500
     logging_interval: int = 1000
     initaltion_pool_sz : int = 6
@@ -110,4 +110,4 @@ class record_point_cloud_Cfg:
     nav_camera_modality = "rgbd" 
 
 modes = [debug_Cfg, train_Cfg, eval_Cfg, record_Cfg, record_point_cloud_Cfg]
-cfg_mode =   modes[4]
+cfg_mode =   modes[1]

@@ -83,6 +83,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 visualize_env_id=0 if (run_cfg.debug and getattr(run_cfg, 'enable_voxel_visualization', False)) else None
             )
          
+        self.curriculum = Curriculum(
+            num_envs=self.num_envs,
+            device=self.device,
+    
+        )
+
         self._setup_tensor_buffers()
         self._setup_camera_zoom()
         
@@ -92,10 +98,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             cfg = RAY_CASTER_MARKER_CFG.replace(prim_path="/Visuals/CameraPointCloud")
             cfg.markers["hit"].radius = 0.002
             self.pc_markers = VisualizationMarkers(cfg)
-        self.curriculum = Curriculum(
-            num_envs=self.num_envs,
-            device=self.device
-        )
       
         self.rewardscaler = NormalizeReward(device=self.device)
         self.last_log_step = 0
@@ -186,7 +188,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.previous_action_for_rewards = torch.zeros(action_shape, device=self.device)
         
         # Buffers are managed by the logger
-        self.logger = InspectionLogger(self.cfg, use_wandb=run_cfg.use_wandb, debug=run_cfg.debug)
+        self.logger = InspectionLogger(self.cfg, use_wandb=run_cfg.use_wandb, debug=run_cfg.debug, window_size=self.curriculum.success_buffer.maxlen)
         self.episode_log_buffer = self.logger.episode_log_buffer
         self.reward_logging_buffer = self.logger.reward_logging_buffer
 
@@ -1104,6 +1106,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             current_cov_goal = self.curriculum.get_current_coverage_goal()
             episode_successes = (achieved_coverage_ratios >= current_cov_goal) # & (mean_quality >= self.curriculum.get_current_quality_goal())
             self.curriculum.update_curriculum(episode_successes, mean_quality)
+
+            # Check if curriculum updated
+            new_cov_goal = self.curriculum.get_current_coverage_goal()
+            if new_cov_goal != current_cov_goal:
+                self.logger.clear_episode_buffers()
+
 
             # Logging
             for i, env_id in enumerate(env_ids):

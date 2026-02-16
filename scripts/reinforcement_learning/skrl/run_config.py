@@ -6,6 +6,7 @@ class TrainingConfig_1:
     is_eval = False
     headless = True
     checkpoint_path = None
+    # checkpoint_path = "/home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-02-13_17-46-14_ppo_gru_128/checkpoints/best_agent.pt"
     num_envs = 128 # 128
     # checkpoint_path = "/home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-02-09_04-38-32_ppo_gru_128/checkpoints/best_agent.pt"
     reset_std = True
@@ -13,8 +14,9 @@ class TrainingConfig_1:
     # reset_std = False
     entropy_coef = 3e-7
     learning_rate = 3e-5
+    
     use_wandb = True
-    global_timesteps = 50_000_000
+    global_timesteps = 30_000_000
 
     scheduler_class = torch.optim.lr_scheduler.LinearLR
     scheduler_kwargs = {
