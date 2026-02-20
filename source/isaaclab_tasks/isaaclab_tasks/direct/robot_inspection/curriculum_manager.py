@@ -20,8 +20,8 @@ class Curriculum:
                 # Asymmetric increments
                 coverage_increment_up: float = 0.05,
                 coverage_increment_down: float = 0.02,
-                success_rate_increase_thresh = 0.7,
-                success_rate_decrease_thresh = 0.6,
+                success_rate_increase_thresh = 0.67,
+                success_rate_decrease_thresh = 0.58,
 
                 start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
