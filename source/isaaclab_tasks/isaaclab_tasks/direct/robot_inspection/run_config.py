@@ -11,7 +11,7 @@ class debug_Cfg:
     initaltion_pool_sz : int = 6
     initaltion_pool_sz_goal : int = 6
     inspection_goal =  0.8
-    visualisation_mode = visualisation_mode.VISIBILITY
+    visualisation_mode = None
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -22,7 +22,7 @@ class debug_Cfg:
     use_wandb =  False #not debug
     headless = False
     num_envs = 1
-    nav_camera_modality = "rgb"
+    nav_camera_modality = "rgbd"
 
 class train_Cfg:
     debug = False

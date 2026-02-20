@@ -84,11 +84,12 @@ class Curriculum:
         # Sorted by distance from origin for spatial curriculum
         self.start_pos_robot = [ 
                     [0.0, 0],         # Dist: 0.0
-                    [1.15, 0],        # Dist: 1.15
-                    [0, -5],          # Dist: 5.0
-                    [1.15, -5.56],    # Dist: 5.68
-                    [-1.08, 6.32],    # Dist: 6.41
-                    [-4.47, -5],      # Dist: 6.70
+
+                    # [1.15, 0],        # Dist: 1.15
+                    # [0, -5],          # Dist: 5.0
+                    # [1.15, -5.56],    # Dist: 5.68
+                    # [-1.08, 6.32],    # Dist: 6.41
+                    # [-4.47, -5],      # Dist: 6.70
                     # Method
                     # [-7.0, 1.74],     # Dist: 7.21
                     # [3.63, 6.32],     # Dist: 7.29
@@ -102,11 +103,11 @@ class Curriculum:
         self.start_pos_objective = [ 
                     # [0.0, 0],         # Dist: 0.0 -> REMOVED to avoid collision with Robot at [0,0]
                     [0.0, -2.0],      # Dist: 2.0
-                    [0, -5],          # Dist: 5.0
-                    [1.15, -5.56],    # Dist: 5.68
-                    [-5.5, 1.74],     # Dist: 5.77
-                    [-4, -5],         # Dist: 6.40
-                    [-1.08, 6.32],    # Dist: 6.41
+                    # [0, -5],          # Dist: 5.0
+                    # [1.15, -5.56],    # Dist: 5.68
+                    # [-5.5, 1.74],     # Dist: 5.77
+                    # [-4, -5],         # Dist: 6.40
+                    # [-1.08, 6.32],    # Dist: 6.41
                     # stop here
                     # [3.63, 6.32],     # Dist: 7.29
                     # [5, -7.4 ],       # Dist: 8.93

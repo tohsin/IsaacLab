@@ -25,51 +25,80 @@ ROBOT_CONFIGS = {
         "action_space": 2  # 2 wheels
     },
 }
-Env_params = {
-    "Brick":{
-        "num_faces": 12_000,
-        "semantics_name": "Brick",
-        "file_name": "/home/tosin/Desktop/IsaacLab/environments/ware_house_semantic.usd",
-        "prim_path": "/World/ground/terrain/ware_house_brick/_61_foam_brick"
-    },
 
-    'Brick_default':{
-        "num_faces": 12_000,
-        "semantics_type": "class",
-        "semantics_name": "brick",
-        "file_name": "/home/tosin/IsaacLab_inspection/environments/ware_house_brick.usd",
-        "prim_path": "/World/ground/terrain/_61_foam_brick",
 
-    },
-    'complex_forklift':{
-        "num_faces": 21_000,
-        "semantics_type": "class",
-        "semantics_name": "forklift",
-        "file_name": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
-        "prim_path": "/World/ground/terrain/forklift"
-    },
-    'complex_forklift_2':{
-        "num_faces": 21_000,
-        "semantics_type": "class",
-        "semantics_name": "forklift",
-        "env_file_path": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
-        "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
-        "env_prim_path": "/World/envs/env_.*/warehouse"
-    },
 
-    # Currently using this
-    'empty_room':{
-        # Environment details
-        "env_file_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
-        "env_prim_path": "/World/envs/env_.*/warehouse" , 
-        # Object details
-        "inspection_goal_prim_path": "/World/envs/env_.*/rubiks_cube",
-        "inspection_goal_usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-        "inspection_goal_scale": (10.0, 10.0, 10.0),
-        "num_faces": 2000,
-        "semantics_type": "class",
-        "semantics_name": "inspection_goal",
-    }
-}
+# Env_params = {
+#     "Brick":{
+#         "num_faces": 12_000,
+#         "semantics_name": "Brick",
+#         "file_name": "/home/tosin/Desktop/IsaacLab/environments/ware_house_semantic.usd",
+#         "prim_path": "/World/ground/terrain/ware_house_brick/_61_foam_brick"
+#     },
 
-env_parameters = Env_params['empty_room']
+#     'Brick_default':{
+#         "num_faces": 12_000,
+#         "semantics_type": "class",
+#         "semantics_name": "brick",
+#         "file_name": "/home/tosin/IsaacLab_inspection/environments/ware_house_brick.usd",
+#         "prim_path": "/World/ground/terrain/_61_foam_brick",
+
+#     },
+#     'complex_forklift':{
+#         "num_faces": 21_000,
+#         "semantics_type": "class",
+#         "semantics_name": "forklift",
+#         "file_name": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
+#         "prim_path": "/World/ground/terrain/forklift"
+#     },
+#     'complex_forklift_2':{
+#         "num_faces": 21_000,
+#         "semantics_type": "class",
+#         "semantics_name": "forklift",
+#         "env_file_path": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
+#         "inspection_goal_prim_path": "/World/envs/env_.*/warehouse/forklift",
+#         "env_prim_path": "/World/envs/env_.*/warehouse"
+#     },
+
+#     # Currently using this
+    
+# }
+
+class Inpsection_Target:
+    def __init__(self, custom_name, num_faces, usd_path, prim_path, scale,
+                semantics_type = "class", semantics_name = "inspection_goal", ):
+        self.custom_name = custom_name
+        self.num_faces = num_faces
+        self.semantics_type = semantics_type
+        self.semantics_name = semantics_name
+        self.usd_path = usd_path
+        self.prim_path = prim_path
+        self.scale = scale
+
+class Environment:
+    def __init__(self, custom_name, usd_path, prim_path, inspection_targets=None, scale=None):
+        self.custom_name = custom_name
+        self.usd_path = usd_path
+        self.prim_path = prim_path
+        self.inspection_targets = inspection_targets
+        self.scale = scale
+
+inspection_datasets = [
+    Inpsection_Target(
+        custom_name="rubiks_cube",
+        num_faces=2000,
+        usd_path= f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+        prim_path="/World/envs/env_.*/rubiks_cube",
+        scale=(10.0, 10.0, 10.0),
+        semantics_type="class",
+        semantics_name="inspection_goal",
+    )
+]
+
+inspection_environment = Environment(
+        custom_name="empty_room",
+        # usd_path= f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
+        usd_path= f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse.usd",
+        prim_path="/World/envs/env_.*/warehouse",
+        inspection_targets=inspection_datasets[0],
+    )

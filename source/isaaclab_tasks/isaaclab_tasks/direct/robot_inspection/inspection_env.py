@@ -228,16 +228,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         rubiks_cfg = sim_utils.UsdFileCfg(
             # usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
             #scale=(10.0, 10.0, 10.0),
-            usd_path= self.cfg.inspection_goal_cfg["inspection_goal_usd_path"],
-            scale=self.cfg.inspection_goal_cfg["inspection_goal_scale"],
+            usd_path= self.cfg.inspection_goal_cfg.usd_path,
+            scale=self.cfg.inspection_goal_cfg.scale,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True),
             mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            semantic_tags=[(self.cfg.inspection_goal_cfg["semantics_type"],
-                            self.cfg.inspection_goal_cfg["semantics_name"])]
+            semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type,
+                            self.cfg.inspection_goal_cfg.semantics_name)]
             )
         rubiks_cfg.func(
-            self.cfg.inspection_goal_cfg["inspection_goal_prim_path"], 
+            self.cfg.inspection_goal_cfg.prim_path, 
             rubiks_cfg, 
             translation=(2.0, 0.0, 0.4), 
             orientation=(1, 0.0, 0.0, 0.0),
@@ -750,7 +750,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Retrieve label mapping
         info = camera.data.info.get("semantic_segmentation", {})
         id_to_labels = info.get("idToLabels", {})
-        target_class_name = self.cfg.env_parameters["semantics_name"]
+        target_class_name = self.cfg.inspection_goal_cfg.semantics_name
 
         # Find the ID associated with the class name
         target_id = None
