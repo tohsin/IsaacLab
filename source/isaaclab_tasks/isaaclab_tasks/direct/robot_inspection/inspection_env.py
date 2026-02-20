@@ -123,6 +123,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if hasattr(run_cfg, "data_recording_path") and getattr(run_cfg, "save_depth", False):
              self.pc_collector = PointCloudCollector(run_cfg, device=self.device)
 
+
+
     def _debug_visualize_objective_spawns(self):
         """Visualises all possible spawn positions for the inspection objective."""
         # Get all positions from curriculum
@@ -406,6 +408,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(ptz_targets, joint_ids=self._ptz_joint_indices)
 
     def _update_zoom(self, zoom_cmd: torch.Tensor):
+        # if hasattr(self, "_ptz_camera"):
+        #     print(f"[DEBUG] PTZ Camera Intrinsics fx Initial: {self._ptz_camera.data.intrinsic_matrices[0, 0, 0]:.2f}")
         delta_zoom = zoom_cmd * self.cfg.robot_phys_cfg.zoom_speed
         self.current_focal_lengths += delta_zoom
 
@@ -421,7 +425,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             cam_api.GetFocalLengthAttr().Set(float(focal_lengths_cpu[i]))
 
         self._zoom_ray_caster()
+        
+        # Explicitly update the PTZ camera's cached intrinsics because it doesn't auto-update
+        # This is CRITICAL for correct 3D reconstruction        when zooming
 
+        if hasattr(self, "_ptz_camera"):
+            # print(f"[DEBUG] PTZ Camera Intrinsics fx Before Forced Update: {self._ptz_camera.data.intrinsic_matrices[0, 0, 0]:.2f}")
+            self._ptz_camera._update_intrinsic_matrices(self._ptz_camera._ALL_INDICES)
+        #     # DEBUG: Print the first environment's fx (focal length in pixels) to verify update
+        #     print(f"[DEBUG] PTZ Camera Intrinsics fx After: {self._ptz_camera.data.intrinsic_matrices[0, 0, 0]:.2f}")
+        
     def _zoom_ray_caster(self):
         pcfg = self._raycaster_camera.cfg.pattern_cfg
         w, h = pcfg.width, pcfg.height
@@ -513,8 +526,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         intrinsic_matrices_insp = self._ptz_camera.data.intrinsic_matrices
 
         point_clouds_list_insp = []        
-        intrinsic_matrices_insp = self._ptz_camera.data.intrinsic_matrices
-
         for i in range(self.num_envs):
             pointcloud_insp = create_pointcloud_from_depth(
                     intrinsic_matrix=intrinsic_matrices_insp[i],
@@ -532,6 +543,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                  perm = torch.randperm(pointcloud_insp.shape[0], device=self.device)
                  pointcloud_insp = pointcloud_insp[perm[:1024]]
             point_clouds_list_insp.append(pointcloud_insp.cpu().numpy())
+        
+
+
         self.occupancy_mapper.update_visibility(
             sensor_origins=insp_cam_pos.cpu().numpy(),
             point_clouds=point_clouds_list_insp,
@@ -818,6 +832,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         k = self.cfg.reward_cfg.face_quality_k
 
+        # Distance Masking (Disabled - Relying on Optic Limits)
+        # distance_mask = (depth < self.cfg.reward_cfg.max_inspection_distance)
+        # distance_mask = torch.ones(self.num_envs, device=self.device, dtype=torch.bool)
+
         # --- New Logic for Angle-Weighted Reward ---
         if self.cfg.reward_cfg.use_angle_weighted_reward:
             # Get normals: (Num_Envs, H, W, 3)
@@ -837,6 +855,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         else:
             # Fallback to pure counts (weight = 1.0)
             weights = torch.ones_like(face_ids, dtype=torch.float32).squeeze(-1)
+
+        # Apply Distance Mask to Weights
+        # weights = weights * distance_mask.float()
 
         visible_faces_counts = []
 
@@ -1096,6 +1117,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             current_q_values = self.best_q_per_face[env_ids]
             num_faces_inspected = (current_q_values > 0.0).sum(dim=1)
+            # Add to extras for external logging
+            if "log" not in self.extras:
+                self.extras["log"] = {}
+            self.extras["log"]["faces_discovered"] = num_faces_inspected
+            
+
+            
             total_quality = current_q_values.sum(dim=1)
 
             mean_quality = torch.zeros_like(total_quality)

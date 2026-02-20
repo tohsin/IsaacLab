@@ -15,13 +15,13 @@ class Curriculum:
                 self,
 
                 start_coverage_ratio: float = cfg_mode.inspection_goal,
-                max_coverage_ratio: float = 0.99,
+                max_coverage_ratio: float = 0.95,
                 
                 # Asymmetric increments
                 coverage_increment_up: float = 0.05,
                 coverage_increment_down: float = 0.02,
-                success_rate_increase_thresh = 0.67,
-                success_rate_decrease_thresh = 0.57,
+                success_rate_increase_thresh = 0.7,
+                success_rate_decrease_thresh = 0.6,
 
                 start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
@@ -57,8 +57,8 @@ class Curriculum:
         # self.quality_buffer = deque(maxlen=50 * self.num_envs) #6400
         # self.min_episodes_for_update = 20 * self.num_envs # 2560
 
-        self.success_buffer = deque(maxlen=3000) # Buffer ~20 resets per env
-        self.quality_buffer = deque(maxlen=3000)
+        self.success_buffer = deque(maxlen=2500) # Buffer ~20 resets per env
+        self.quality_buffer = deque(maxlen=2500)
         self.min_episodes_for_update = 1600 # 2560
 
         # Hysteresis Thresholds
@@ -89,6 +89,7 @@ class Curriculum:
                     [1.15, -5.56],    # Dist: 5.68
                     [-1.08, 6.32],    # Dist: 6.41
                     [-4.47, -5],      # Dist: 6.70
+                    # Method
                     # [-7.0, 1.74],     # Dist: 7.21
                     # [3.63, 6.32],     # Dist: 7.29
                     # [6.7, -8.81 ],    # Dist: 11.07
@@ -99,7 +100,7 @@ class Curriculum:
 
         # Sorted by distance from origin for spatial curriculum
         self.start_pos_objective = [ 
-                    [0.0, 0],         # Dist: 0.0
+                    # [0.0, 0],         # Dist: 0.0 -> REMOVED to avoid collision with Robot at [0,0]
                     [0.0, -2.0],      # Dist: 2.0
                     [0, -5],          # Dist: 5.0
                     [1.15, -5.56],    # Dist: 5.68

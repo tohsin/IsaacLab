@@ -23,6 +23,7 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
+parser.add_argument("--max_episodes", type=int, default=50, help="Maximum number of episodes to run in evaluation mode.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -321,7 +322,7 @@ cfg["learning_rate_scheduler"] = CONFIG.scheduler_class
 cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs.copy()
 
 if "total_iters" in cfg["learning_rate_scheduler_kwargs"]:
-        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps/2
+        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps # Delayed decay
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
@@ -336,17 +337,7 @@ cfg["state_preprocessor"] = RunningStandardScaler
 cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
 cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
-# logging to TensorBoard and write checkpoints (in timesteps)
 
-# cfg["learning_rate"] = 1.5e-5 # Reduced from 3e-4 for stability
-
-# cfg["learning_rate_scheduler"]  = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
-# cfg["learning_rate_scheduler_kwargs"] = {
-#     "T_0": 2500, # Tuned based on observed frequency (~3 restarts per run)
-#     "T_mult": 1,
-#     "eta_min": 1e-6,
-# }
-# cfg["optimizer_class"] = ForeachMuon
 script_dir = os.path.dirname(os.path.abspath(__file__))
 log_root_path = os.path.join(script_dir, "logs", "skrl", "3DInspection_direct")
 log_root_path = os.path.abspath(log_root_path)
@@ -363,9 +354,9 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 1000
+cfg["experiment"]["write_interval"] = 1000 if not is_eval else 0
 cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
-cfg["experiment"]["checkpoint_interval"] = 5_000
+cfg["experiment"]["checkpoint_interval"] = 5_000 if not is_eval else 0
 cfg["experiment"]["directory"] = log_root_path
 cfg["experiment"]["experiment_name"] = experiment_name
 cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
@@ -451,7 +442,7 @@ if is_eval:
     print("[INFO] Starting custom evaluation loop with RNN state management...")
     
     # Initialize agent for evaluation
-    agent.set_running_mode("eval")
+    # agent.set_running_mode("eval")
     
     # Reset environment
     states, _ = env.reset()
@@ -464,7 +455,14 @@ if is_eval:
         if agent.policy is not agent.value:
             for rnn_state in agent._rnn_initial_states["value"]:
                 rnn_state.zero_()
-                
+
+    episode_count = 0
+    faces_discovered_list = []
+    max_faces_discovered = 0
+    eval_dir = os.path.join(os.path.dirname(CONFIG.checkpoint_path), "eval_results")
+    os.makedirs(eval_dir, exist_ok=True)
+    print(f"[INFO] Evaluation results will be saved to: {eval_dir}")
+    
     with torch.no_grad():
         while simulation_app.is_running():
             # Get actions using the agent (handles RNN state internally via _rnn_initial_states)
@@ -473,6 +471,59 @@ if is_eval:
             
             # Step environment
             next_states, rewards, terminated, truncated, infos = env.step(actions)
+
+            # if torch.any(terminated | truncated):
+            #     episode_count += torch.sum(terminated | truncated).item()
+                
+            #     # Collect stats
+            #     if "log" in infos:
+            #         if "faces_discovered" in infos["log"]:
+            #             # Assuming infos["log"]["faces_discovered"] is a tensor matching num_envs or similar
+            #             # We need to extract the value for the terminated env(s)
+            #             # For single env eval, it's straightforward.
+            #             val = infos["log"]["faces_discovered"]
+            #             if isinstance(val, torch.Tensor):
+            #                  if val.numel() > 1:
+            #                      faces_discovered_list.extend(val.tolist())
+            #                      current_faces = val.max().item() # Approximate best in batch
+            #                      # Print summary for batch if desired, or skip to avoid spam
+            #                      print(f"[INFO] Batch of {val.numel()} episodes finished. Faces: {val.tolist()}")
+            #                  else:
+            #                      faces_discovered_list.append(val.item())
+            #                      current_faces = val.item()
+            #                      print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}")
+            #             else:
+            #                  faces_discovered_list.append(val)
+            #                  current_faces = val
+            #                  print(f"[INFO] Episode {episode_count} Faces Discovered: {val}")
+
+            #             # Check for point cloud
+            #             if "point_cloud" in infos["log"]:
+            #                 pc = infos["log"]["point_cloud"]
+            #                 if isinstance(pc, torch.Tensor):
+            #                     pc = pc.cpu().numpy()
+                            
+            #                 if current_faces > max_faces_discovered:
+            #                     max_faces_discovered = current_faces
+            #                     print(f"[INFO] New Best Episode! Faces: {current_faces}. Saving Point Cloud...")
+            #                     filename = os.path.join(eval_dir, f"best_cloud_faces_{current_faces}.ply")
+            #                     try:
+            #                         with open(filename, 'w') as f:
+            #                             f.write("ply\n")
+            #                             f.write("format ascii 1.0\n")
+            #                             f.write(f"element vertex {len(pc)}\n")
+            #                             f.write("property float x\n")
+            #                             f.write("property float y\n")
+            #                             f.write("property float z\n")
+            #                             f.write("end_header\n")
+            #                             np.savetxt(f, pc, fmt="%.6f")
+            #                         print(f"[SUCCESS] Saved point cloud to {filename}")
+            #                     except Exception as e:
+            #                         print(f"[ERROR] Failed to save point cloud: {e}")
+
+            #     if args_cli.max_episodes is not None and episode_count >= args_cli.max_episodes:
+            #         print(f"[INFO] strict max_episodes reached: {episode_count}")
+            #         break
             
             # Update RNN states for next step
             if agent._rnn:
@@ -493,6 +544,21 @@ if is_eval:
 
             # Update current state
             states = next_states
+
+    # Print Final Statistics
+    if len(faces_discovered_list) > 0:
+        faces_array = np.array(faces_discovered_list)
+        print("\n" + "="*50)
+        print(f"EVALUATION RESULTS ({len(faces_discovered_list)} Episodes)")
+        print("="*50)
+        print(f"Mean Faces Discovered: {np.mean(faces_array):.2f}")
+        print(f"Std Deviation:         {np.std(faces_array):.2f}")
+        print(f"Min Faces:             {np.min(faces_array)}")
+        print(f"Max Faces:             {np.max(faces_array)}")
+        print("="*50 + "\n")
+    else:
+        print("[WARNING] No episodes completed to calculate statistics.")
+
 else:
     # path = "/home/tosin/IsaacLab_inspection/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2025-09-07_11-42-53_ppo_gru_128/checkpoints/agent_450000.pt"
     # agent.load(path)

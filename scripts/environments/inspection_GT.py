@@ -39,9 +39,9 @@ from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab_tasks.direct.robot_inspection import run_config
 
 # Force Recording Mode
-# run_config.cfg_mode = run_config.modes[34] 
-# run_config.cfg_mode.data_recording_path = "data/test_3dgs_collection_v2"
-# run_config.cfg_mode.use_wandb = False
+run_config.cfg_mode = run_config.modes[4] # record_point_cloud_Cfg
+# run_config.cfg_mode.data_recording_path = "data/recorded_point_clouds"
+# run_config.cfg_mode.save_depth = True
 # step = 0.0465sec/step
 
 
@@ -134,13 +134,45 @@ def main():
                         actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
 
                     obs, rewards, terminated, truncated, info  = env.step(actions)
+                    
+                    if terminated.any() or truncated.any():
+                        print("[INFO] Episode terminated/truncated. Checking for Point Cloud in info...")
+                        if "log" in info and "point_cloud" in info["log"]:
+                            pc = info["log"]["point_cloud"]
+                            # Retrieve single env point cloud (might be in a list or tensor depending on impl)
+                            # In _reset_idx it's assigned directly: self.extras["log"]["point_cloud"] = full_cloud
+                            if isinstance(pc, torch.Tensor):
+                                pc = pc.cpu().numpy()
+                            
+                            print(f"[INFO] Found Point Cloud in info with {pc.shape[0]} points. Saving...")
+                            filename = "inspection_GT_cloud_reset.ply"
+                            import numpy as np
+                            with open(filename, 'w') as f:
+                                f.write("ply\n")
+                                f.write("format ascii 1.0\n")
+                                f.write(f"element vertex {len(pc)}\n")
+                                f.write("property float x\n")
+                                f.write("property float y\n")
+                                f.write("property float z\n")
+                                f.write("end_header\n")
+                                np.savetxt(f, pc, fmt="%.6f")
+                            print(f"[SUCCESS] Saved to {filename}")
+                            # Optional: Break if we just wanted one episode
+                            break
+                        else:
+                            print("[WARNING] Terminated but 'point_cloud' not found in info['log'].")
+
                     obs_v = obs['policy']
                 #now 
+            print("[INFO] Episode actions completed. Exiting simulation to process recorded data.")
+            break
+            
     except KeyboardInterrupt:
         print("\n[INFO] KeyboardInterrupt received. Closing environment...")
     finally:
-        print("[INFO] Finalizing and saving data...")
+        print("[INFO] Finalizing...")
         env.close()
+        print("[INFO] Data collection complete. Run the generation script to create the point cloud.")
 
 
 if __name__ == "__main__":

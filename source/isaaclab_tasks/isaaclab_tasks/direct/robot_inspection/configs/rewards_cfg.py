@@ -24,3 +24,7 @@ class RewardsCfg:
     # Visitation penalties to encourage exploration. a * e^N_of_visits
     visibility_decay_factor : float = 0.5
     visitation_decay_factor: float = 0.9
+    
+    # Depth-Based Reward Params
+    max_inspection_distance: float = 6.0 # Target distance for peak reward (1.0)
+    depth_sigma: float = 0.5    # Width of the "sweet spot"

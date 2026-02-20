@@ -18,11 +18,11 @@ def view_with_trimesh(filepath):
     print(f"Loading {filepath} with Trimesh...")
     pcd = trimesh.load(filepath)
     pcd.show()
-
+path_ = "/home/tosin/inspection_GT_cloud.ply"
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="View a PLY point cloud file.")
     # parser.add_argument("file", nargs="?", default="data/point_clouds/reconstructed_object.ply", help="Path to the PLY file.")
-    parser.add_argument("file", nargs="?", default="data/point_clouds/comparison_vis.ply", help="Path to the PLY file.")
+    parser.add_argument("file", nargs="?", default=path_, help="Path to the PLY file.")
 
     # parser.add_argument("file", nargs="?", default="data/point_clouds/inspection_object_baseline.ply", help="Path to the PLY file.")
     parser.add_argument("--backend", type=str, default="auto", choices=["auto", "open3d", "trimesh"], help="Visualization backend.")

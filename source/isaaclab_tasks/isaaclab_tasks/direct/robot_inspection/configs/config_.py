@@ -66,7 +66,7 @@ Env_params = {
         "inspection_goal_prim_path": "/World/envs/env_.*/rubiks_cube",
         "inspection_goal_usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
         "inspection_goal_scale": (10.0, 10.0, 10.0),
-        "num_faces": 2200,
+        "num_faces": 2000,
         "semantics_type": "class",
         "semantics_name": "inspection_goal",
     }

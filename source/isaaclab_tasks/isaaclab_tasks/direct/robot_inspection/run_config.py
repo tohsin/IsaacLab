@@ -8,15 +8,15 @@ class debug_Cfg:
     min_episode_length: int = 1200
     logging_interval: int = 1500
     max_episode_length: int = 1500
-    initaltion_pool_sz : int = 1
-    initaltion_pool_sz_goal : int = 1
+    initaltion_pool_sz : int = 6
+    initaltion_pool_sz_goal : int = 6
     inspection_goal =  0.8
-    visualisation_mode = None
+    visualisation_mode = visualisation_mode.VISIBILITY
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
     display_cameras = False
-    enable_voxel_visualization = False
+    enable_voxel_visualization = True
     visualise_all_objective_spawns = True # Visualise all spawn positions for debug
     visualise_objective_spawns_count :int = 9
     use_wandb =  False #not debug
@@ -30,7 +30,7 @@ class train_Cfg:
     max_episode_length: int = 1500
     logging_interval: int = 1000
     initaltion_pool_sz : int = 6
-    initaltion_pool_sz_goal : int =6
+    initaltion_pool_sz_goal : int =7
     inspection_goal =  0.1
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
@@ -46,8 +46,10 @@ class train_Cfg:
 class eval_Cfg:
     debug = True
     max_episode_length: int = 1500
+    min_episode_length: int = 1500
     logging_interval: int = 1500
-    initaltion_pool_sz : int = 7
+    initaltion_pool_sz : int = 1
+    initaltion_pool_sz_goal : int = 1
     inspection_goal =  0.99
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
@@ -57,7 +59,7 @@ class eval_Cfg:
     use_wandb =  False #not debug
     headless = True
     num_envs = 1
-    nav_camera_modality = "rgb"
+    nav_camera_modality = "rgbd"
 
 class record_Cfg:
     debug = False
