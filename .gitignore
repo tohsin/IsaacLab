@@ -76,3 +76,5 @@ data/test_3dgs_collection_v2
 data/point_clouds
 data/recorded_point_clouds
 
+*.npy
+generated_data

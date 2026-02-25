@@ -4,7 +4,7 @@ import numpy as np
 from isaaclab.sensors.camera.utils import create_pointcloud_from_depth
 from isaaclab.utils.math import quat_mul
 
-class EvalPointCloudCollector:
+class EvalReconstructionDataCollector:
     """
     A lightweight collector for accumulating point clouds during an evaluation episode.
     Designed to work in-memory for single-environment evaluation to produce a fused point cloud
@@ -55,10 +55,10 @@ class EvalPointCloudCollector:
 
             if semantic_mask.sum() == 0:
                  pass
-                 # print("[EvalPointCloudCollector] WARNING: Semantic Mask provided but has 0 target pixels!")
+                 # print("[EvalReconstructionDataCollector] WARNING: Semantic Mask provided but has 0 target pixels!")
         else:
              pass
-             # print("[EvalPointCloudCollector] WARNING: No Semantic Mask provided! Full scene will be reconstructed.")
+             # print("[EvalReconstructionDataCollector] WARNING: No Semantic Mask provided! Full scene will be reconstructed.")
 
         # Adjust Orientation:
         # The camera orientation from Isaac Lab text is typically in the ROS frame (X-forward).
@@ -124,5 +124,5 @@ class EvalPointCloudCollector:
         try:
             return np.concatenate(self.episode_points, axis=0)
         except Exception as e:
-            print(f"[EvalPointCloudCollector] Error enforcing concatenation: {e}")
+            print(f"[EvalReconstructionDataCollector] Error enforcing concatenation: {e}")
             return None

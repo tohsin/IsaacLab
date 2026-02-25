@@ -1,6 +1,7 @@
 import numpy as np
 import warp as wp
 import open3d as o3d
+import torch
 from scipy.spatial.transform import Rotation
 
 from .kernels.reset_kernel import reset_maps_kernel
@@ -194,29 +195,29 @@ class OccupancyGridMapper:
             world_coords += (self.voxel_size / 2.0)
         return world_coords.squeeze()
 
-    def update_occupancy(self, sensor_origins: np.ndarray, point_clouds: list[np.ndarray]):
+    def update_occupancy(self, sensor_origins: torch.Tensor, point_clouds: list[torch.Tensor]):
         """
         Updates the occupancy grid with a new point cloud measurement.
 
         Args:
-            sensor_origins (np.ndarray): A (N, 3) array for the sensor's positions.
-            point_cloud (np.ndarray): An (N, 3) array of point cloud data.
+            sensor_origins (torch.Tensor): A (N, 3) tensor for the sensor's positions.
+            point_clouds (list[torch.Tensor]): A list of point cloud data.
         """
         valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
 
         if not valid_indices:
             return
-        concatenated_pc = np.vstack([point_clouds[i] for i in valid_indices])
-        env_indices_list = [np.full(point_clouds[i].shape[0], i, dtype=np.int32) for i in valid_indices]
-        env_indices = np.concatenate(env_indices_list)
+        concatenated_pc = torch.cat([point_clouds[i] for i in valid_indices], dim=0)
+        env_indices_list = [torch.full((point_clouds[i].shape[0],), i, dtype=torch.int32, device=self.device) for i in valid_indices]
+        env_indices = torch.cat(env_indices_list, dim=0)
         num_total_points = concatenated_pc.shape[0]
 
         if num_total_points == 0:
             return
-        wp_point_cloud = wp.array(concatenated_pc, dtype=wp.vec3, device=self.device)
-        wp_sensor_origins = wp.array(sensor_origins, dtype=wp.vec3, device=self.device)
+        wp_point_cloud = wp.from_torch(concatenated_pc.contiguous(), dtype=wp.vec3)
+        wp_sensor_origins = wp.from_torch(sensor_origins.contiguous(), dtype=wp.vec3)
         wp_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
-        wp_env_indices = wp.array(env_indices, dtype=int, device=self.device)
+        wp_env_indices = wp.from_torch(env_indices.contiguous(), dtype=wp.int32)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
         wp.launch(
@@ -245,21 +246,21 @@ class OccupancyGridMapper:
         
         wp.synchronize()
 
-    def update_visibility(self, sensor_origins: np.ndarray, point_clouds: list[np.ndarray]):
+    def update_visibility(self, sensor_origins: torch.Tensor, point_clouds: list[torch.Tensor]):
         valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
         if not valid_indices:
             return
         
-        concatenated_pc = np.vstack([point_clouds[i] for i in valid_indices])
-        env_indices_list = [np.full(point_clouds[i].shape[0], i, dtype=np.int32) for i in valid_indices]
-        env_indices = np.concatenate(env_indices_list)
+        concatenated_pc = torch.cat([point_clouds[i] for i in valid_indices], dim=0)
+        env_indices_list = [torch.full((point_clouds[i].shape[0],), i, dtype=torch.int32, device=self.device) for i in valid_indices]
+        env_indices = torch.cat(env_indices_list, dim=0)
         num_total_points = concatenated_pc.shape[0]
         if num_total_points == 0:
             return        
-        wp_point_cloud = wp.array(concatenated_pc, dtype=wp.vec3, device=self.device)
-        wp_sensor_origins = wp.array(sensor_origins, dtype=wp.vec3, device=self.device)
+        wp_point_cloud = wp.from_torch(concatenated_pc.contiguous(), dtype=wp.vec3)
+        wp_sensor_origins = wp.from_torch(sensor_origins.contiguous(), dtype=wp.vec3)
         wp_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
-        wp_env_indices = wp.array(env_indices, dtype=int, device=self.device)
+        wp_env_indices = wp.from_torch(env_indices.contiguous(), dtype=wp.int32)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
         wp.launch(
@@ -287,11 +288,11 @@ class OccupancyGridMapper:
             device=self.device
         )
     
-    def update_visitation(self, robot_positions: np.ndarray):
+    def update_visitation(self, robot_positions: torch.Tensor):
         num_envs = robot_positions.shape[0]
         if num_envs == 0:
             return
-        wp_robot_positions = wp.array(robot_positions, dtype=wp.vec3, device=self.device)
+        wp_robot_positions = wp.from_torch(robot_positions.contiguous(), dtype=wp.vec3)
         wp_world_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
@@ -442,7 +443,7 @@ class OccupancyGridMapper:
 
         return world_points, colors
 
-    def get_local_maps(self, robot_positions_w: np.ndarray):
+    def get_local_maps(self, robot_positions_w: torch.Tensor):
         
         num_req_envs = robot_positions_w.shape[0]
         if num_req_envs != self.num_envs:
@@ -454,7 +455,7 @@ class OccupancyGridMapper:
         total_local_voxels = num_req_envs * num_voxels_per_local_map
 
         # Prepare inputs for the kernel
-        wp_robot_pos = wp.array(robot_positions_w, dtype=wp.vec3, device=self.device)
+        wp_robot_pos = wp.from_torch(robot_positions_w.contiguous(), dtype=wp.vec3)
         wp_world_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
         wp_global_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
@@ -497,7 +498,7 @@ class OccupancyGridMapper:
 
         return local_occ_torch, local_vis_torch, local_visit_torch
     
-    def update_visualization(self, robot_pos: np.ndarray, robot_quat: np.ndarray):
+    def update_visualization(self, robot_pos: torch.Tensor, robot_quat: torch.Tensor):
         """Updates the interactive visualization for the configured environment."""
         # This method is now called internally by update()
         if self.visualizer is None or self.visualization_mode == None:
@@ -506,4 +507,4 @@ class OccupancyGridMapper:
         points, colors = self.get_voxel_states_as_points(self.vis_env_id)
         self.visualizer.update_grid(points, colors)
 
-        self.visualizer.update_robot_pose(robot_pos, robot_quat)
+        self.visualizer.update_robot_pose(robot_pos.cpu().numpy(), robot_quat.cpu().numpy())

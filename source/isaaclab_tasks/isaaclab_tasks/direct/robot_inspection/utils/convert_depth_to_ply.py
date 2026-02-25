@@ -87,8 +87,8 @@ def create_pointcloud_from_depth(intrinsic_matrix, depth, position=None, orienta
 
 def main():
     parser = argparse.ArgumentParser(description="Convert recorded depth to point cloud.")
-    parser.add_argument("--data_path", type=str, default="data/recorded_point_clouds", help="Path to recording directory.")
-    parser.add_argument("--output", type=str, default="data/point_clouds/reconstructed_object.ply", help="Output file.")
+    parser.add_argument("--data_path", type=str, default="data/recorded_depth_data_eval", help="Path to recording directory.")
+    parser.add_argument("--output", type=str, default="data/point_clouds/SEEIR_eval_point_cloud.ply", help="Output file.")
     parser.add_argument("--center", action="store_true", help="Center the final cloud.")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="Device for torch operations.")
     parser.add_argument("--downsample", type=float, default=0.005, help="Voxel downsample size (meters). 0 to disable.")

@@ -70,7 +70,9 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 device,
                 cfg,
                 clip_actions=False,
-                clip_log_std=True, min_log_std=-20, max_log_std=2,
+                # clip_log_std=True, min_log_std=-20, max_log_std=2,
+                init_log_std = getattr(CONFIG, "init_log_std", 0.0),
+                clip_log_std=True, min_log_std=-20, max_log_std=getattr(CONFIG, "max_log_std", 2.0),
                 num_envs=1,
                 sequence_length=32,
                 _hidden_size=128,
@@ -78,6 +80,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         DeterministicMixin.__init__(self, False)
+        self.init_log_std = init_log_std
         self.cfg = cfg
         self.num_envs = num_envs
         self.sequence_length = sequence_length
@@ -156,6 +159,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         )
         # Action Head, MU and STD
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
+        self.log_std_parameter = nn.Parameter(self.init_log_std * torch.ones(self.num_actions))
 
 
     def get_specification(self) -> dict:
@@ -313,7 +317,7 @@ cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
 
-cfg["optimizer_class"] = torch.optim.AdamW
+cfg["optimizer_class"] = torch.optim.Adam
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
 
 
@@ -322,7 +326,7 @@ cfg["learning_rate_scheduler"] = CONFIG.scheduler_class
 cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs.copy()
 
 if "total_iters" in cfg["learning_rate_scheduler_kwargs"]:
-        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps # Delayed decay
+        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps/2 # Delayed decay # 50 mil steps we do 3/10
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
@@ -353,13 +357,14 @@ os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
 os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
+if not is_eval:
+    cfg["experiment"]["write_interval"] = 1000 if not is_eval else 0
+    cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
+    cfg["experiment"]["checkpoint_interval"] = 5_000 if not is_eval else 0
+    cfg["experiment"]["directory"] = log_root_path
+    cfg["experiment"]["experiment_name"] = experiment_name
+    cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
 
-cfg["experiment"]["write_interval"] = 1000 if not is_eval else 0
-cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
-cfg["experiment"]["checkpoint_interval"] = 5_000 if not is_eval else 0
-cfg["experiment"]["directory"] = log_root_path
-cfg["experiment"]["experiment_name"] = experiment_name
-cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
 if _use_wandb:
     cfg["experiment"]["wandb_kwargs"] = {
         "project": "3DInspection_NoRNN",  # Name of the project in WandB dashboard
@@ -418,7 +423,7 @@ if args_cli.checkpoint:
         with torch.no_grad():
              # Assuming shared model or separate policy has this specific parameter name
              if hasattr(agent.policy, "log_std_parameter"):
-                 agent.policy.log_std_parameter.fill_(0.0) # Reset to initial 0.0 (std=1.0)
+                 agent.policy.log_std_parameter.fill_(getattr(CONFIG, "init_log_std", 0.0)) # Reset to initial configured value
              else:
                  print("[WARNING] Could not find log_std_parameter to reset.")
 cfg_trainer ={"timesteps": total_timesteps,  # total timesteps to train the agent
@@ -442,7 +447,7 @@ if is_eval:
     print("[INFO] Starting custom evaluation loop with RNN state management...")
     
     # Initialize agent for evaluation
-    # agent.set_running_mode("eval")
+    agent.set_running_mode("eval")
     
     # Reset environment
     states, _ = env.reset()
@@ -458,92 +463,84 @@ if is_eval:
 
     episode_count = 0
     faces_discovered_list = []
-    max_faces_discovered = 0
     eval_dir = os.path.join(os.path.dirname(CONFIG.checkpoint_path), "eval_results")
     os.makedirs(eval_dir, exist_ok=True)
     print(f"[INFO] Evaluation results will be saved to: {eval_dir}")
-    
+
     with torch.no_grad():
-        while simulation_app.is_running():
-            # Get actions using the agent (handles RNN state internally via _rnn_initial_states)
-            # The agent.act() method uses _rnn_initial_states, computes output, and populates _rnn_final_states
-            actions, _, _ = agent.act(states, timestep=0, timesteps=0)
-            
-            # Step environment
-            next_states, rewards, terminated, truncated, infos = env.step(actions)
-
-            # if torch.any(terminated | truncated):
-            #     episode_count += torch.sum(terminated | truncated).item()
+        try:
+            while simulation_app.is_running():
+                # Get actions using the agent (handles RNN state internally via _rnn_initial_states)
+                # The agent.act() method uses _rnn_initial_states, computes output, and populates _rnn_final_states
+                actions, _, _ = agent.act(states, timestep=0, timesteps=0)
                 
-            #     # Collect stats
-            #     if "log" in infos:
-            #         if "faces_discovered" in infos["log"]:
-            #             # Assuming infos["log"]["faces_discovered"] is a tensor matching num_envs or similar
-            #             # We need to extract the value for the terminated env(s)
-            #             # For single env eval, it's straightforward.
-            #             val = infos["log"]["faces_discovered"]
-            #             if isinstance(val, torch.Tensor):
-            #                  if val.numel() > 1:
-            #                      faces_discovered_list.extend(val.tolist())
-            #                      current_faces = val.max().item() # Approximate best in batch
-            #                      # Print summary for batch if desired, or skip to avoid spam
-            #                      print(f"[INFO] Batch of {val.numel()} episodes finished. Faces: {val.tolist()}")
-            #                  else:
-            #                      faces_discovered_list.append(val.item())
-            #                      current_faces = val.item()
-            #                      print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}")
-            #             else:
-            #                  faces_discovered_list.append(val)
-            #                  current_faces = val
-            #                  print(f"[INFO] Episode {episode_count} Faces Discovered: {val}")
+                # Step environment
+                next_states, rewards, terminated, truncated, infos = env.step(actions)
 
-            #             # Check for point cloud
-            #             if "point_cloud" in infos["log"]:
-            #                 pc = infos["log"]["point_cloud"]
-            #                 if isinstance(pc, torch.Tensor):
-            #                     pc = pc.cpu().numpy()
-                            
-            #                 if current_faces > max_faces_discovered:
-            #                     max_faces_discovered = current_faces
-            #                     print(f"[INFO] New Best Episode! Faces: {current_faces}. Saving Point Cloud...")
-            #                     filename = os.path.join(eval_dir, f"best_cloud_faces_{current_faces}.ply")
-            #                     try:
-            #                         with open(filename, 'w') as f:
-            #                             f.write("ply\n")
-            #                             f.write("format ascii 1.0\n")
-            #                             f.write(f"element vertex {len(pc)}\n")
-            #                             f.write("property float x\n")
-            #                             f.write("property float y\n")
-            #                             f.write("property float z\n")
-            #                             f.write("end_header\n")
-            #                             np.savetxt(f, pc, fmt="%.6f")
-            #                         print(f"[SUCCESS] Saved point cloud to {filename}")
-            #                     except Exception as e:
-            #                         print(f"[ERROR] Failed to save point cloud: {e}")
+                if torch.any(terminated | truncated):
+                    episode_count += torch.sum(terminated | truncated).item()
+                    
+                    # Collect stats
+                    if "log" in infos:
+                        if "faces_discovered" in infos["log"]:
+                            # Assuming infos["log"]["faces_discovered"] is a tensor matching num_envs or similar
+                            # We need to extract the value for the terminated env(s)
+                            # For single env eval, it's straightforward.
+                            val = infos["log"]["faces_discovered"]
+                            val_dist = infos["log"].get("max_distance", None)
 
-            #     if args_cli.max_episodes is not None and episode_count >= args_cli.max_episodes:
-            #         print(f"[INFO] strict max_episodes reached: {episode_count}")
-            #         break
-            
-            # Update RNN states for next step
-            if agent._rnn:
-                # Move final states to initial states for next step
-                # Note: agent._rnn_final_states is updated inside agent.act()
-                agent._rnn_initial_states = agent._rnn_final_states
+                            if isinstance(val, torch.Tensor):
+                                 if val.numel() > 1:
+                                     faces_discovered_list.extend(val.tolist())
+                                     current_faces = val.max().item() # Approximate best in batch
+                                     # Print summary for batch if desired, or skip to avoid spam
+                                     print(f"[INFO] Batch of {val.numel()} episodes finished. Faces: {val.tolist()}")
+                                 else:
+                                     faces_discovered_list.append(val.item())
+                                     current_faces = val.item()
+                                     
+                                     dist_str = ""
+                                     if val_dist is not None:
+                                         d_val = val_dist.item() if isinstance(val_dist, torch.Tensor) else val_dist
+                                         dist_str = f" | Max Distance: {d_val:.2f}"
+                                     print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}{dist_str}")
+                            else:
+                                 faces_discovered_list.append(val)
+                                 current_faces = val
+                                 
+                                 dist_str = ""
+                                 if val_dist is not None:
+                                     dist_str = f" | Max Distance: {val_dist:.2f}"
+                                 print(f"[INFO] Episode {episode_count} Faces Discovered: {val}{dist_str}")
+
+                    if args_cli.max_episodes is not None and episode_count >= args_cli.max_episodes:
+                        print(f"[INFO] strict max_episodes reached: {episode_count}")
+                        break
                 
-                # Reset RNN states for terminated episodes
-                # The agent.record_transition method usually does this, but we are skipping it in eval
-                # so we must do it manually
-                finished_episodes = (terminated | truncated).nonzero(as_tuple=False)
-                if finished_episodes.numel():
-                    for rnn_state in agent._rnn_initial_states["policy"]:
-                        rnn_state[:, finished_episodes[:, 0]] = 0
-                    if agent.policy is not agent.value:
-                        for rnn_state in agent._rnn_initial_states["value"]:
+                # Update RNN states for next step
+                if agent._rnn:
+                    # Move final states to initial states for next step
+                    # Note: agent._rnn_final_states is updated inside agent.act()
+                    agent._rnn_initial_states = agent._rnn_final_states
+                    
+                    # Reset RNN states for terminated episodes
+                    # The agent.record_transition method usually does this, but we are skipping it in eval
+                    # so we must do it manually
+                    finished_episodes = (terminated | truncated).nonzero(as_tuple=False)
+                    if finished_episodes.numel():
+                        for rnn_state in agent._rnn_initial_states["policy"]:
                             rnn_state[:, finished_episodes[:, 0]] = 0
+                        if agent.policy is not agent.value:
+                            for rnn_state in agent._rnn_initial_states["value"]:
+                                rnn_state[:, finished_episodes[:, 0]] = 0
 
-            # Update current state
-            states = next_states
+                # Update current state
+                states = next_states
+        except KeyboardInterrupt:
+            print("[INFO] Keyboard interrupt detected. Exiting evaluation loop early.")
+        finally:
+            print("[INFO] Closing environment, ensuring data is saved...")
+            env.close()
 
     # Print Final Statistics
     if len(faces_discovered_list) > 0:

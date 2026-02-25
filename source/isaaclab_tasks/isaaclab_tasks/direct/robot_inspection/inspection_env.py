@@ -44,7 +44,7 @@ from pxr import Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema, Gf
 from isaaclab.sim.utils import get_current_stage
 from .run_config import cfg_mode
 from .utils.data_collector import DataCollector
-from .utils.point_cloud_collector import PointCloudCollector
+from .utils.reconstruction_data_collector import ReconstructionDataCollector
 
 # congfig_mode = run_Config
 run_cfg = cfg_mode
@@ -103,12 +103,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.last_log_step = 0
         self.visualization_timer = 0
         self.visualization_interval = 10
-        self.face_max_counts = defaultdict(int)
-        self.global_max_ray_count = 0
+        self.visualization_interval = 10
+        self.face_max_counts = torch.zeros(self.q_capacity, dtype=torch.long, device=self.device)
+        self.global_max_ray_count = torch.zeros(1, dtype=torch.long, device=self.device)
         
         self.spawn_markers = None
-        if run_cfg.debug and getattr(run_cfg, "visualise_all_objective_spawns", False):
-            self._debug_visualize_objective_spawns()
 
 
 
@@ -121,36 +120,29 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.pc_collector = None
         
         if hasattr(run_cfg, "data_recording_path") and getattr(run_cfg, "save_depth", False):
-             self.pc_collector = PointCloudCollector(run_cfg, device=self.device)
+             self.pc_collector = ReconstructionDataCollector(run_cfg, device=self.device)
 
-
-
-    def _debug_visualize_objective_spawns(self):
-        """Visualises all possible spawn positions for the inspection objective."""
-        # Get all positions from curriculum
-        all_positions = self.curriculum.objective_positions_tensor.clone()[:run_cfg.visualise_objective_spawns_count]
-        
-        # Create markers configuration
-        cfg = CUBOID_MARKER_CFG.replace(prim_path="/Visuals/SpawnMarkers")
-        cfg.markers["cuboid"].scale = (3, 3, 3) # Small cubes
-        cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 1.0, 1.0) # Cyan color
-        
-        # Initialize markers
-        self.spawn_markers = VisualizationMarkers(cfg)
-        
-        # Set markers at all positions (Num_Envs x Num_Positions is not needed, just world positions)
-        # But VisualizationMarkers usually expects (N, 3). We can just visualize them once or replicate.
-        # Since Visualizer handles batching, we can visualze all unique positions.
-        
-        # The positions are (N_candidates, 3).
-        self.spawn_markers.visualize(translations=all_positions)
 
     def close(self):
         """Cleanup for the environment."""
         if self.cfg.mapping_cfg.use_occupancy_map and self.occupancy_mapper.visualizer:
             self.occupancy_mapper.visualizer.close()
             
-        if self.data_collector:
+        if hasattr(self, 'pc_collector') and self.pc_collector:
+            try:
+                # Try to safely get the latest max distance / faces for Env 0
+                max_dist = self.max_distance_reached[0].item() if hasattr(self, 'max_distance_reached') else 0.0
+                
+                # Best attempt at getting the max faces discovered so far in this current episode
+                faces = 0
+                if hasattr(self, 'best_q_per_face'):
+                    faces = (self.best_q_per_face[0] > 0.0).sum().item()
+                    
+                self.pc_collector.flush_if_best(faces, max_dist)
+            except Exception as e:
+                print(f"[ERROR] Could not save summary during close: {e}")
+
+        if hasattr(self, 'data_collector') and self.data_collector:
             self.data_collector.save() # Just prints final stats now
             
         super().close()
@@ -176,7 +168,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
-        self.q_capacity = 5000
+        
+        # Allocate enough capacity to avoid re-allocating dynamically on the CPU
+        self.q_capacity = max(50000, self.total_mesh_faces + 1000)
         self.best_q_per_face = torch.zeros((self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32)
 
         self.episode_goal_achieved = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
@@ -210,6 +204,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if hasattr(self.cfg.mapping_cfg, 'compute_global_map_entropy') and self.cfg.mapping_cfg.compute_global_map_entropy:
             self.prev_global_map_entropy = torch.zeros(self.num_envs, device=self.device)
+        if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+            self.max_distance_reached = torch.zeros(self.num_envs, device=self.device)
 
     def _setup_scene(self):
         #Add robot, camera and terain to the scene
@@ -461,7 +457,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         chassis_min_dist_sq = 0.4 ** 2
         # Update Visitation Map
-        self.occupancy_mapper.update_visitation(self.robot.data.root_pos_w.cpu().numpy())
+        self.occupancy_mapper.update_visitation(self.robot.data.root_pos_w)
 
         # Update Occupancy Map
         # ---------------------------------------------------------
@@ -509,10 +505,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             else:
                 # Ensure pointcloud is an empty tensor if it was empty to begin with
                 pointcloud = torch.empty((0, 3), device=self.device)
-            point_clouds_list.append(pointcloud.cpu().numpy())
+            point_clouds_list.append(pointcloud)
         
         self.occupancy_mapper.update_occupancy(
-            sensor_origins= nav_cam_pos.cpu().numpy(),
+            sensor_origins=nav_cam_pos,
             point_clouds=point_clouds_list,
         )
 
@@ -542,12 +538,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             if pointcloud_insp.shape[0] > 1024:
                  perm = torch.randperm(pointcloud_insp.shape[0], device=self.device)
                  pointcloud_insp = pointcloud_insp[perm[:1024]]
-            point_clouds_list_insp.append(pointcloud_insp.cpu().numpy())
+            point_clouds_list_insp.append(pointcloud_insp)
         
 
-
         self.occupancy_mapper.update_visibility(
-            sensor_origins=insp_cam_pos.cpu().numpy(),
+            sensor_origins=insp_cam_pos,
             point_clouds=point_clouds_list_insp,
         )
 
@@ -556,8 +551,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             vis_env_id = self.occupancy_mapper.vis_env_id
 
             # Get the world pose for that specific robot
-            robot_pos_for_vis = self.robot.data.root_pos_w[vis_env_id].cpu().numpy()
-            robot_quat_for_vis = self.robot.data.root_quat_w[vis_env_id].cpu().numpy()
+            robot_pos_for_vis = self.robot.data.root_pos_w[vis_env_id]
+            robot_quat_for_vis = self.robot.data.root_quat_w[vis_env_id]
             
             # Call the updated visualization method with the pose data
             self.occupancy_mapper.update_visualization(robot_pos_for_vis, robot_quat_for_vis)
@@ -625,7 +620,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if not self.cfg.mapping_cfg.use_occupancy_map:
             raise ValueError("Occupancy map is not enabled in the configuration.")
         robot_pos_w = self.robot.data.root_pos_w
-        local_occ_map, local_vis_map, local_visit = self.occupancy_mapper.get_local_maps(robot_pos_w.cpu().numpy())
+        local_occ_map, local_vis_map, local_visit = self.occupancy_mapper.get_local_maps(robot_pos_w)
         for name, tensor in {"occ": local_occ_map, "vis": local_vis_map, "visit": local_visit}.items():
             if torch.isnan(tensor).any() or torch.isinf(tensor).any():
                 msg = f"Invalid value (NaN or Inf) in Local Map: {name}"
@@ -735,7 +730,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if self.pc_collector:
              target_mask = self._get_semantic_mask(self._ptz_camera)
              if target_mask is not None:
-                 self.pc_collector.collect(self._ptz_camera, self.common_step_counter, semantic_mask=target_mask)
+                 if hasattr(self, '_nav_camera'):
+                     self.pc_collector.collect(self._ptz_camera, self.common_step_counter, semantic_mask=target_mask, nav_camera=self._nav_camera)
+                 else:
+                     self.pc_collector.collect(self._ptz_camera, self.common_step_counter, semantic_mask=target_mask)
+
+        # Record max distance from origin taking into account X and Y
+        current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self.scene.env_origins[:, :2], dim=-1)
+        if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+            self.max_distance_reached = torch.maximum(self.max_distance_reached, current_dist)
 
         return super().step(action)
       
@@ -773,33 +776,26 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Count how many rays are hitting each unique face in this specific frame
         unique_ids, counts = torch.unique(valid_faces_tensor, return_counts=True)
 
-        # Move to CPU for standard dictionary updates
-        ids_cpu = unique_ids.tolist()
-        counts_cpu = counts.tolist()
+        # Ensure we don't index out of bounds
+        valid_mask = unique_ids < self.q_capacity
+        unique_ids = unique_ids[valid_mask]
+        counts = counts[valid_mask]
 
-        for fid, count in zip(ids_cpu, counts_cpu):
-            # If this count is higher than our previous best for this face, update it
-            if count > self.face_max_counts[fid]:
-                self.face_max_counts[fid] = count
-                # Optional: Print to verify it's working
-
-            
-                # print(f"New Max Zoom for Face {fid}: {count} rays")
-            if count > self.global_max_ray_count:
-                self.global_max_ray_count = count
-                print(f"!!! New Global Max Zoom Record: {count} rays (Face {fid}) !!!")
-
-    def _ensure_q_capacity(self, required_capacity: int):
-        """
-        Ensure that the discovered faces buffer can hold the required capacity.
-        """
-        if required_capacity <= self.q_capacity:
+        if unique_ids.numel() == 0:
             return
-        new_capacity = max(required_capacity, 2 * self.q_capacity)
-        new_buf = torch.zeros((self.num_envs, new_capacity), dtype=torch.float32, device=self.device)
-        new_buf[:, :self.q_capacity] = self.best_q_per_face
-        self.best_q_per_face = new_buf
-        self.q_capacity = new_capacity
+
+        # Update maximums on the GPU
+        current_maxes = self.face_max_counts[unique_ids]
+        new_maxes = torch.maximum(current_maxes, counts)
+        self.face_max_counts[unique_ids] = new_maxes
+        
+        # Update global max and only sync to CPU to print if a new global max is found (rare)
+        batch_max = counts.max()
+        if batch_max > self.global_max_ray_count[0]:
+            self.global_max_ray_count[0] = batch_max
+            max_idx = counts.argmax()
+            print(f"!!! New Global Max Zoom Record: {batch_max.item()} rays (Face {unique_ids[max_idx].item()}) !!!")
+
 
     def _compute_face_discovery_reward_fast(self):
         """
@@ -832,11 +828,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         k = self.cfg.reward_cfg.face_quality_k
 
-        # Distance Masking (Disabled - Relying on Optic Limits)
-        # distance_mask = (depth < self.cfg.reward_cfg.max_inspection_distance)
-        # distance_mask = torch.ones(self.num_envs, device=self.device, dtype=torch.bool)
-
-        # --- New Logic for Angle-Weighted Reward ---
         if self.cfg.reward_cfg.use_angle_weighted_reward:
             # Get normals: (Num_Envs, H, W, 3)
             normals = self._raycaster_camera.data.output["normals"]
@@ -857,7 +848,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             weights = torch.ones_like(face_ids, dtype=torch.float32).squeeze(-1)
 
         # Apply Distance Mask to Weights
-        # weights = weights * distance_mask.float()
+        if getattr(run_cfg, "use_depth_mask", False):
+            depth = self._raycaster_camera.data.output["distance_to_image_plane"].squeeze(-1)
+            max_dist = self.cfg.reward_cfg.max_inspection_distance
+            sigma = self.cfg.reward_cfg.depth_sigma
+            
+            depth_mask = torch.where(
+                depth <= max_dist,
+                torch.ones_like(depth),
+                torch.exp(-0.5 * torch.square((depth - max_dist) / sigma))
+            )
+            weights = weights * depth_mask
 
         visible_faces_counts = []
 
@@ -897,8 +898,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Add weights: index=inverse_indices adds valid_weights to weighted_counts
             weighted_counts.scatter_add_(0, inverse_indices, valid_weights)
 
-            max_id = int(unique_ids.max().item())
-            self._ensure_q_capacity(max_id + 1)
+            # Capacity ensures we don't go out of bounds. The max_id is safely accommodated.
+            if unique_ids.max() >= self.q_capacity:
+                print(f"[WARNING] Face ID {unique_ids.max()} exceeds capacity {self.q_capacity}! Ignoring out of bounds faces.")
+                valid_bound = unique_ids < self.q_capacity
+                unique_ids = unique_ids[valid_bound]
+                weighted_counts = weighted_counts[valid_bound]
 
             # Calculate Quality: Q = 1 - exp(-WeightedCount / k)
             q_now = 1.0 - torch.exp(-weighted_counts / k)
@@ -1121,8 +1126,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             if "log" not in self.extras:
                 self.extras["log"] = {}
             self.extras["log"]["faces_discovered"] = num_faces_inspected
-            
-
+            if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+                self.extras["log"]["max_distance"] = self.max_distance_reached[env_ids]
             
             total_quality = current_q_values.sum(dim=1)
 
@@ -1143,9 +1148,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             # Logging
             for i, env_id in enumerate(env_ids):
-                if run_cfg.debug and env_id == 0:
+                if env_id == 0:
                     final_face_count = num_faces_inspected[i].item()
-                    print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {final_face_count} ---")
+                    if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+                        max_dist = self.max_distance_reached[i].item()
+                        if hasattr(self, 'pc_collector') and self.pc_collector is not None:
+                            self.pc_collector.flush_if_best(final_face_count, max_dist)
+                            
+                    if getattr(run_cfg, 'debug', False):
+                        print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {final_face_count} ---")
 
                 self.episode_log_buffer["coverage_percent"].append(achieved_coverage_ratios[i].item() * 100)
                 self.episode_log_buffer["faces_discovered"].append(num_faces_inspected[i].item())
@@ -1198,6 +1209,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0
+                if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+                    self.max_distance_reached[env_ids] = 0.0
 
 
         super()._reset_idx(env_ids)

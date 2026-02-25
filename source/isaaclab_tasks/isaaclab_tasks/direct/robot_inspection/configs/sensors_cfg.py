@@ -66,7 +66,7 @@ class SensorsCfg:
         # prim_path="/World/envs/env_.*/Robot/base_link",
         prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link",
         update_period=0.24,
-        data_types=["face_ids", "normals"],
+        data_types=["face_ids", "normals", "distance_to_image_plane"],
         offset=RayCasterCameraCfg.OffsetCfg(
             pos=(0.3, 0.0, 0.15),
             #rot=(0, 0, -0.7071068, 0.7071068),
@@ -86,5 +86,5 @@ class SensorsCfg:
             )
         ],
         update_mesh_ids=True,
-        debug_vis=cfg_mode.debug
+        debug_vis=False
     )

@@ -38,8 +38,6 @@ class Curriculum:
         self.coverage_increment_up = coverage_increment_up
         self.coverage_increment_down = coverage_increment_down
         
-        self.initaltion_pool_sz_goal = cfg_mode.initaltion_pool_sz_goal
-
         self.current_quality_treshold = start_quality_threshold
         self.max_quality_threshold = max_quality_threshold
         self.quality_increment = quality_increment
@@ -59,7 +57,7 @@ class Curriculum:
 
         self.success_buffer = deque(maxlen=2500) # Buffer ~20 resets per env
         self.quality_buffer = deque(maxlen=2500)
-        self.min_episodes_for_update = 1600 # 2560
+        self.min_episodes_for_update = 1400 # 2560
 
         # Hysteresis Thresholds
         self.success_rate_increase_thresh = success_rate_increase_thresh
@@ -81,40 +79,12 @@ class Curriculum:
         self.init_z = 0.06
         self.init_z_goal = 0.3
         
-        # Sorted by distance from origin for spatial curriculum
-        self.start_pos_robot = [ 
-                    [0.0, 0],         # Dist: 0.0
-                    [1.15, 0],        # Dist: 1.15
-                    [0, -5],          # Dist: 5.0
-                    [1.15, -5.56],    # Dist: 5.68
-                    [-1.08, 6.32],    # Dist: 6.41
-                    [-4.47, -5],      # Dist: 6.70
-                    # Method
-                    # [-7.0, 1.74],     # Dist: 7.21
-                    # [3.63, 6.32],     # Dist: 7.29
-                    # [6.7, -8.81 ],    # Dist: 11.07
-                    # [-7.0, -8.81],    # Dist: 11.25
-                    # [0.83, 15.10],    # Dist: 15.12
-                    # [-6.73, 15.10],   # Dist: 16.53
-                    ]
+        # Fixed room coordinates for continuous randomized spawning
+        self.spawn_min_x = -4.0
+        self.spawn_max_x = -self.spawn_min_x 
+        self.spawn_min_y = -4.0
+        self.spawn_max_y = -self.spawn_min_y
 
-        # Sorted by distance from origin for spatial curriculum
-        self.start_pos_objective = [ 
-                    # [0.0, 0],         # Dist: 0.0 -> REMOVED to avoid collision with Robot at [0,0]
-                    [0.0, -2.0],      # Dist: 2.0
-                    [0, -5],          # Dist: 5.0
-                    [1.15, -5.56],    # Dist: 5.68
-                    [-5.5, 1.74],     # Dist: 5.77
-                    [-4, -5],         # Dist: 6.40
-                    [-1.08, 6.32],    # Dist: 6.41
-                    # stop here
-                    # [3.63, 6.32],     # Dist: 7.29
-                    # [5, -7.4 ],       # Dist: 8.93
-                    # [-4.7, 10.2],     # Dist: 11.23
-                    # [-7.0, -8.8],     # Dist: 11.24
-                    # [5.7, 13.67],     # Dist: 14.83
-                    # [0.83, 15.10],    # Dist: 15.12
-                    ]
         self.allowed_orientations = torch.tensor([
             DEG_0, 
             DEG_UNIQ, 
@@ -125,14 +95,6 @@ class Curriculum:
             DEG_NEG_205, 
             DEG_NEG_105
         ], device=self.device, dtype=torch.float32)
-        self.start_positions_tensor  = torch.tensor(
-            [[item[0], item[1], self.init_z] for item in self.start_pos_robot],
-            device=self.device
-        )
-        self.objective_positions_tensor = torch.tensor(
-            [[item[0], item[1], self.init_z_goal] for item in self.start_pos_objective],
-            device=self.device
-        )
 
     #Task curriculum
     def get_current_coverage_goal(self) -> float:
@@ -202,9 +164,9 @@ class Curriculum:
         return episode_length
 
     def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Gets random start positions from the pool based on progress."""
-        # --- Hardcoded Spawn for Data Recording ---
-        if hasattr(cfg_mode, "data_recording_path"):
+        """Gets random start positions from bounding boxes."""
+        # --- Hardcoded Spawn for Data Recording or Debugging ---
+        if getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False):
             # Robot at [0, 0, z]
             pos = torch.zeros((num_resets, 3), device=self.device)
             pos[:, 0] = 0.0
@@ -216,25 +178,15 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
             
-        total_items = len(self.start_positions_tensor)
-        # Ensure min_items does not exceed total_items
-        min_items = min(cfg_mode.initaltion_pool_sz, total_items)
+        pos_x = self.spawn_min_x + torch.rand((num_resets,), device=self.device) * (self.spawn_max_x - self.spawn_min_x)
+        pos_y = self.spawn_min_y + torch.rand((num_resets,), device=self.device) * (self.spawn_max_y - self.spawn_min_y)
         
-        progress = self.get_progress()
-        
-        # Current active pool size
-        pool_size = int(min_items + (total_items - min_items) * progress)
-        # Clamp pool_size to be within [min_items, total_items]
-        pool_size = max(min_items, min(total_items, pool_size))
-        
-        if pool_size != self.last_robot_pool_size:
-             print(f"[Curriculum] Robot Spawn Pool Size: {pool_size}/{total_items} (Progress: {progress:.2f})")
-             self.last_robot_pool_size = pool_size
+        selected_pos = torch.zeros((num_resets, 3), device=self.device)
+        selected_pos[:, 0] = pos_x
+        selected_pos[:, 1] = pos_y
+        selected_pos[:, 2] = self.init_z
 
-        random_pos_indices = torch.randint(0, pool_size, (num_resets,), device=self.device)
-        selected_pos = self.start_positions_tensor[random_pos_indices]
-
-        self.allowed_orientations = self.allowed_orientations[:1] if cfg_mode.debug else self.allowed_orientations
+        self.allowed_orientations = self.allowed_orientations[:1] if getattr(cfg_mode, "debug", False) else self.allowed_orientations
 
         # Random orientations
         num_orientations = len(self.allowed_orientations)
@@ -245,44 +197,21 @@ class Curriculum:
 
     def get_objective_start_pos(self, num_resets: int, robot_pos: torch.Tensor) -> torch.Tensor:
         """
-        Gets random start positions for the inspection object.
+        Gets random start positions for the inspection object within bounds.
         Ensures the object is not placed too close to the robot.
-        Pool of textends as coverage threshold increases.
         """
-        # --- Hardcoded Spawn for Data Recording ---
-        if hasattr(cfg_mode, "data_recording_path"):
+        # --- Hardcoded Spawn for Data Recording or Debugging ---
+        if getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False):
             # Objective at [0, -2.0, z_goal]
             pos = torch.zeros((num_resets, 3), device=self.device)
             pos[:, 0] = 0.0
             pos[:, 1] = -2.0
             pos[:, 2] = self.init_z_goal
             return pos
-
-        # Determine pool size based on coverage threshold or success rate
-        # Scale pool size linearly from min items to all items based on progress
-        total_items = len(self.objective_positions_tensor)
-        # Ensure min_items does not exceed total_items
-        min_items = min(self.initaltion_pool_sz_goal, total_items)
         
-        progress = self.get_progress()
-        
-        # Current active pool size
-        pool_size = int(min_items + (total_items - min_items) * progress)
-        # Clamp pool_size to be within [min_items, total_items]
-        pool_size = max(min_items, min(total_items, pool_size))
-        
-        if pool_size != self.last_objective_pool_size:
-            print(f"[Curriculum] Objective Spawn Pool Size: {pool_size}/{total_items} (Progress: {progress:.2f})")
-            self.last_objective_pool_size = pool_size
-
-        # Slice the tensor to get available positions
-        available_positions = self.objective_positions_tensor[:pool_size]
-        
-        # Sample positions
-        # We need to ensure we don't pick a position too close to the robot
-        min_dist_sq = 1.5**2 # Minimum 1.5m distance
-        
+        min_dist_sq = 1.5**2 # Minimum 2m distance
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
+        selected_positions[:, 2] = self.init_z_goal
         
         # Naive rejection sampling per environment
         for i in range(num_resets):
@@ -290,32 +219,22 @@ class Curriculum:
             attempts = 0
             curr_robot_pos = robot_pos[i, :2]
             
-            # 1. Try Random Sampling first
-            while not valid and attempts < 20:
-                idx = torch.randint(0, pool_size, (1,), device=self.device)
-                candidate = available_positions[idx].squeeze(0)
+            while not valid and attempts < 100:
+                pos_x = self.spawn_min_x + torch.rand(1, device=self.device).item() * (self.spawn_max_x - self.spawn_min_x)
+                pos_y = self.spawn_min_y + torch.rand(1, device=self.device).item() * (self.spawn_max_y - self.spawn_min_y)
                 
-                dist_sq = torch.sum((candidate[:2] - curr_robot_pos)**2)
+                dist_sq = (pos_x - curr_robot_pos[0].item())**2 + (pos_y - curr_robot_pos[1].item())**2
                 
                 if dist_sq > min_dist_sq:
-                    selected_positions[i] = candidate
+                    selected_positions[i, 0] = pos_x
+                    selected_positions[i, 1] = pos_y
                     valid = True
                 attempts += 1
-            
-            # 2. If Random failed, exhaustive search through available pool
-            if not valid:
-                # Iterate through all available positions
-                for j in range(pool_size):
-                    candidate = available_positions[j]
-                    dist_sq = torch.sum((candidate[:2] - curr_robot_pos)**2)
-                    if dist_sq > min_dist_sq:
-                        selected_positions[i] = candidate
-                        valid = True
-                        break # Found one
-            
-            # 3. Last Resort: Just take the candidate (should ideally error or warn, but returning candidate prevents crash)
+                
+            # Last Resort: If we exhaust 100 attempts, just place it far enough deterministically
             if not valid:
                 print(f"[Curriculum WARN] Could not find valid spawn for env {i} far enough from robot. Using fallback.")
-                selected_positions[i] = candidate
+                selected_positions[i, 0] = self.spawn_min_x
+                selected_positions[i, 1] = self.spawn_max_y
                 
         return selected_positions

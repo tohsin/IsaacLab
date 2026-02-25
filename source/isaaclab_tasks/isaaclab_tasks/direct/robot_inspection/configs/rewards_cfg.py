@@ -5,7 +5,7 @@ class RewardsCfg:
     """Configuration for all reward function terms."""
     alpha = 0.5
     mesh_coverage_reward_scale: float = 0.5
-    face_quality_k = 60.0
+    face_quality_k = 60 #60
     use_angle_weighted_reward: bool = True
     coverage_reward: float = 5.0
     information_gain_reward_scale: float =    0.3e-4 # in expopnent    
@@ -26,5 +26,5 @@ class RewardsCfg:
     visitation_decay_factor: float = 0.9
     
     # Depth-Based Reward Params
-    max_inspection_distance: float = 6.0 # Target distance for peak reward (1.0)
-    depth_sigma: float = 0.5    # Width of the "sweet spot"
+    max_inspection_distance: float = 2.0
+    depth_sigma: float = 1.5   # Width of the "sweet spot"

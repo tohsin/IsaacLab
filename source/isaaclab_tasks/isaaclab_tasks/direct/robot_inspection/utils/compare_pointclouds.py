@@ -57,7 +57,7 @@ def compute_metrics(source_points, target_points):
 def main():
     parser = argparse.ArgumentParser(description="Compare two point clouds.")
     parser.add_argument("--source", type=str, default="data/point_clouds/inspection_object_baseline.ply", help="Path to source PLY (e.g. reconstructed).")
-    parser.add_argument("--target", type=str, default="data/point_clouds/reconstructed_object.ply", help="Path to target PLY (e.g. baseline/GT).")
+    parser.add_argument("--target", type=str, default="data/point_clouds/SEEIR_eval_point_cloud.ply", help="Path to target PLY (e.g. baseline/GT).")
     parser.add_argument("--visualize", action="store_true", help="Visualize error (requires Open3D/matplotlib - simpler just prints).")
     
     args = parser.parse_args()
