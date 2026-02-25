@@ -158,7 +158,6 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Linear(256, 1)
         )
         # Action Head, MU and STD
-        self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
         self.log_std_parameter = nn.Parameter(self.init_log_std * torch.ones(self.num_actions))
 
 
