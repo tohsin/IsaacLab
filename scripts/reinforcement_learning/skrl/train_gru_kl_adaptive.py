@@ -58,6 +58,8 @@ import gymnasium as gym
 import isaaclab_tasks
 from encoder import ResnetEncoder, Resnet3DEncoder
 from isaaclab_tasks.utils import parse_env_cfg
+from muon import Muon
+
 # sys.argv.append("--headless")
 sys.argv.append("--enable_cameras")
 
@@ -76,7 +78,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 num_envs=1,
                 sequence_length=32,
                 _hidden_size=128,
-                _hidden_size_gru=256):
+                _hidden_size_gru=256,
+                use_attention_fusion=False):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         DeterministicMixin.__init__(self, False)
@@ -86,6 +89,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         self.sequence_length = sequence_length
         self._hidden_size = _hidden_size
         self._hidden_size_gru = _hidden_size_gru
+        self.use_attention_fusion = use_attention_fusion
 
         camera_space = observation_space.spaces["cameras"]
         self.camera_shape = camera_space.shape
@@ -116,17 +120,54 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         map_features_size = self.map_encoder.get_out_size()
         self.combined_features_size = camera_features_size + self.robot_pose_dim + map_features_size
         
-        # New MLP for feature fusion
-        self.feature_mlp = nn.Sequential(
-            nn.Linear(self.combined_features_size, 2048),
-            nn.ELU(),
-            nn.Linear(2048, 1024),
-            nn.ELU(),
-            nn.Linear(1024, 512),
-            nn.ELU()
-        )
-        
-        self.gru_input_size = 512 # Output of the feature MLP
+        if self.use_attention_fusion:
+            # --- ATTENTION-BASED FUSION ---
+            print("[INFO] Using Attention-Based Fusion")
+            self.d_model = 256  # Hidden dimension for tokens
+            
+            # Projectors
+            self.camera_proj = nn.Linear(camera_features_size, self.d_model)
+            self.map_proj = nn.Linear(map_features_size, self.d_model)
+            self.pose_proj = nn.Linear(self.robot_pose_dim, self.d_model)
+            
+            # Token Normalization (avoids clamping and stabilizes attention)
+            self.token_norm = nn.LayerNorm(self.d_model)
+            
+            # Modality embeddings
+            # self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model))
+            self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model) * 0.02)
+            
+            # Transformer Encoder
+            # We add norm_first=True (Pre-LN) which is much more stable for RL
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=self.d_model, 
+                nhead=4, 
+                dim_feedforward=512, 
+                batch_first=True,
+                activation='gelu',
+                dropout=0.1,
+                norm_first=True
+            )
+            self.sensor_attention = nn.TransformerEncoder(
+                encoder_layer, 
+                num_layers=2,
+                norm=nn.LayerNorm(self.d_model) # Final layer norm
+            )
+            
+            # Output is flattened attended tokens
+            self.gru_input_size = 3 * self.d_model
+        else:
+            # --- MLP-BASED FUSION (Original) ---
+            self.feature_mlp = nn.Sequential(
+                nn.Linear(self.combined_features_size, 2048),
+                nn.ELU(),
+                nn.Linear(2048, 1024),
+                nn.ELU(),
+                nn.Linear(1024, 512),
+                nn.ELU()
+            )
+            
+            self.gru_input_size = 512 # Output of the feature MLP
         self.gru_hidden_size = 512 #H output size of GRU
         self.gru_num_layers = 1
         # print(f"DEBUG: gru_input_size: {self.gru_input_size}")
@@ -228,14 +269,55 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         camera_features = self.camera_encoder(camera_obs_permuted)
         map_features = self.map_encoder(local_map_permuted)
         
-        combined_features = torch.cat((camera_features, map_features, robot_pose), dim=1)
-        
-        mlp_features = self.feature_mlp(combined_features)
+        if self.use_attention_fusion:
+            # Sanity checks before projection
+            assert torch.isfinite(camera_features).all(), "NaN/Inf in camera_features"
+            assert torch.isfinite(map_features).all(), "NaN/Inf in map_features"
+            assert torch.isfinite(robot_pose).all(), "NaN/Inf in robot_pose"
+
+            # Project to d_model and shape into tokens: [batch_size, 1, d_model]
+            cam_tok = self.camera_proj(camera_features).unsqueeze(1)
+            map_tok = self.map_proj(map_features).unsqueeze(1)
+            pose_tok = self.pose_proj(robot_pose).unsqueeze(1)
+            
+            # Sequence of tokens: [batch_size, 3, d_model]
+            tokens = torch.cat([cam_tok, map_tok, pose_tok], dim=1)
+            
+            assert torch.isfinite(tokens).all(), "NaN/Inf right after proj+cat"
+
+            # Apply LayerNorm to stabilize values before adding embeddings
+            tokens = self.token_norm(tokens)
+
+            # Add modality embeddings so it knows which token is which
+            tokens = tokens + self.modality_embeddings
+            assert torch.isfinite(tokens).all(), "NaN/Inf after adding modality embeddings"
+            
+            # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
+            tokens = torch.clamp(tokens, min=-20.0, max=20.0)
+            assert torch.isfinite(tokens).all(), "NaN/Inf after clamp"
+            
+            # Cross-Sensor Attention
+            # Use a deterministic context to avoid SDPA (FlashAttention) NaN bugs on certain GPUs
+            import torch.nn.attention as attn
+            if hasattr(attn, 'sdpa_kernel'):
+                with attn.sdpa_kernel(attn.SDPBackend.MATH):
+                    attended_tokens = self.sensor_attention(tokens)
+            else:
+                with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
+                    attended_tokens = self.sensor_attention(tokens)
+            
+            assert torch.isfinite(attended_tokens).all(), "NaN/Inf after sensor_attention"
+            
+            # Flatten for the GRU: [batch_size, 3 * d_model]
+            fusion_features = attended_tokens.reshape(tokens.shape[0], -1)
+        else:
+            combined_features = torch.cat((camera_features, map_features, robot_pose), dim=1)
+            fusion_features = self.feature_mlp(combined_features)
 
         if self.training:
             # just return dummy action to debug sim
             # return torch.zeros((self.num_envs, self.num_actions), device=self.device), {"rnn": [hidden_states]}
-            rnn_input = mlp_features.view(-1, self.sequence_length, mlp_features.shape[-1])
+            rnn_input = fusion_features.view(-1, self.sequence_length, fusion_features.shape[-1])
             hidden_states = hidden_states.view(self.gru_num_layers, -1, self.sequence_length, self.gru_hidden_size)
             # get the hidden states corresponding to the initial sequence
             hidden_states = hidden_states[:, :, 0, :].contiguous()
@@ -257,7 +339,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             else:
                 rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
         else:
-            rnn_input = mlp_features.unsqueeze(1)
+            rnn_input = fusion_features.unsqueeze(1)
             rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
 
 
@@ -303,7 +385,8 @@ models['policy'] = Shared(env.observation_space,
                             env.device,
                             cfg=model_config,
                             num_envs=env.num_envs,
-                            sequence_length=sequence_length)
+                            sequence_length=sequence_length,
+                            use_attention_fusion=getattr(CONFIG, "use_attention_fusion", False))
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
 total_timesteps = CONFIG.global_timesteps // env.num_envs
 
@@ -312,11 +395,17 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
 cfg["learning_epochs"] = 4 #8
-cfg["mini_batches"] = 32  # horizon_length * num_actors / minibatch_size  : 4096 * 16
+cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
 cfg["discount_factor"] = 0.99
-cfg["lambda"] = 0.95
+cfg["lambda"] = 0.97 #0.95 0.97
 
-cfg["optimizer_class"] = torch.optim.Adam
+if getattr(CONFIG, "optimizer_class", "adam").lower() == "muon":
+    print("[INFO] Using Muon optimizer")
+    cfg["optimizer_class"] = Muon
+else:
+    print("[INFO] Using Adam optimizer")
+    cfg["optimizer_class"] = torch.optim.Adam
+
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
 
 
@@ -325,7 +414,9 @@ cfg["learning_rate_scheduler"] = CONFIG.scheduler_class
 cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs.copy()
 
 if "total_iters" in cfg["learning_rate_scheduler_kwargs"]:
-        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps/2 # Delayed decay # 50 mil steps we do 3/10
+        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps # Delayed decay # 50 mil steps we do 3/10
+elif "T_max" in cfg["learning_rate_scheduler_kwargs"]:
+        cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_max_steps
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
@@ -333,7 +424,7 @@ cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef # Reduced to 1e-4 to stop std from climbing
 cfg["value_loss_scale"] = 1.0
-cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 0.1
+cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 1.0
 cfg["time_limit_bootstrap"] = True
 
 cfg["state_preprocessor"] = RunningStandardScaler
@@ -359,7 +450,7 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 if not is_eval:
     cfg["experiment"]["write_interval"] = 1000 if not is_eval else 0
     cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
-    cfg["experiment"]["checkpoint_interval"] = 5_000 if not is_eval else 0
+    cfg["experiment"]["checkpoint_interval"] = 3_000 if not is_eval else 0
     cfg["experiment"]["directory"] = log_root_path
     cfg["experiment"]["experiment_name"] = experiment_name
     cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode

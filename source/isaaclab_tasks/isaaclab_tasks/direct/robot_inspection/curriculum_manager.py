@@ -1,12 +1,3 @@
-#View logs
-DEG_0 = [1.0, 0.0, 0.0, 0.0]
-DEG_UNIQ =[9.9791e-01, 5.4488e-07, 2.1990e-06, 6.4633e-02]
-DEG_90 = [0.7071068, 0.0, 0.0, 0.7071068]
-DEG_75 = [0.7933533,  0, 0, 0.6087614]
-DEG_NEG_90 = [0.7071068, 0.0, 0.0, -0.7071068]
-DEG_NEG_180 = [0.0, 0.0, 0.0, -1.0]
-DEG_NEG_205 = [ -0.2164396 , 0, 0, -0.976296]
-DEG_NEG_105 = [ 0.6087614,  0, 0, -0.7933533]
 import torch
 from collections import deque
 from .run_config import cfg_mode
@@ -47,17 +38,10 @@ class Curriculum:
 
         self.num_envs = num_envs 
         self.device = device
-        # self.success_buffer = deque(maxlen= 70 * self.num_envs) # Buffer ~20 resets per env
-        # self.quality_buffer = deque(maxlen= 70 * self.num_envs) #2240
-        # self.min_episodes_for_update = 50 * self.num_envs # 
-        
-        # self.success_buffer = deque(maxlen=50 * self.num_envs) # Buffer ~20 resets per env
-        # self.quality_buffer = deque(maxlen=50 * self.num_envs) #6400
-        # self.min_episodes_for_update = 20 * self.num_envs # 2560
 
         self.success_buffer = deque(maxlen=2500) # Buffer ~20 resets per env
         self.quality_buffer = deque(maxlen=2500)
-        self.min_episodes_for_update = 1400 # 2560
+        self.min_episodes_for_update = 1500 # 2560
 
         # Hysteresis Thresholds
         self.success_rate_increase_thresh = success_rate_increase_thresh
@@ -80,21 +64,12 @@ class Curriculum:
         self.init_z_goal = 0.3
         
         # Fixed room coordinates for continuous randomized spawning
-        self.spawn_min_x = -4.0
+        self.spawn_min_x = -5.0
         self.spawn_max_x = -self.spawn_min_x 
-        self.spawn_min_y = -4.0
-        self.spawn_max_y = -self.spawn_min_y
+        self.spawn_min_y = -6.0
+        self.spawn_max_y_init = -self.spawn_min_y
+        self.spawn_max_y_final = 8.0
 
-        self.allowed_orientations = torch.tensor([
-            DEG_0, 
-            DEG_UNIQ, 
-            DEG_90, 
-            DEG_75, 
-            DEG_NEG_90, 
-            DEG_NEG_180, 
-            DEG_NEG_205, 
-            DEG_NEG_105
-        ], device=self.device, dtype=torch.float32)
 
     #Task curriculum
     def get_current_coverage_goal(self) -> float:
@@ -163,6 +138,11 @@ class Curriculum:
         episode_length = int(self.min_episode_length_limit + (self.max_episode_length_limit - self.min_episode_length_limit) * progress)
         return episode_length
 
+    def get_current_spawn_max_y(self) -> float:
+        """Returns the current maximum Y spawn coordinate based on curriculum progress."""
+        progress = self.get_progress()
+        return self.spawn_max_y_init + (self.spawn_max_y_final - self.spawn_max_y_init) * progress
+
     def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Gets random start positions from bounding boxes."""
         # --- Hardcoded Spawn for Data Recording or Debugging ---
@@ -178,24 +158,27 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
             
+        current_spawn_max_y = self.get_current_spawn_max_y()
         pos_x = self.spawn_min_x + torch.rand((num_resets,), device=self.device) * (self.spawn_max_x - self.spawn_min_x)
-        pos_y = self.spawn_min_y + torch.rand((num_resets,), device=self.device) * (self.spawn_max_y - self.spawn_min_y)
+        pos_y = self.spawn_min_y + torch.rand((num_resets,), device=self.device) * (current_spawn_max_y - self.spawn_min_y)
         
         selected_pos = torch.zeros((num_resets, 3), device=self.device)
         selected_pos[:, 0] = pos_x
         selected_pos[:, 1] = pos_y
         selected_pos[:, 2] = self.init_z
 
-        self.allowed_orientations = self.allowed_orientations[:1] if getattr(cfg_mode, "debug", False) else self.allowed_orientations
-
-        # Random orientations
-        num_orientations = len(self.allowed_orientations)
-        random_ori_indices = torch.randint(0, num_orientations, (num_resets,), device=self.device)
-        selected_ori = self.allowed_orientations[random_ori_indices]
+        # Random orientations (uniform yaw around Z-axis)
+        yaw = torch.rand((num_resets,), device=self.device) * 2 * torch.pi
+        if getattr(cfg_mode, "debug", False):
+            yaw = torch.zeros_like(yaw)  # Face forward in debug mode
+            
+        selected_ori = torch.zeros((num_resets, 4), device=self.device)
+        selected_ori[:, 0] = torch.cos(yaw / 2)  # w
+        selected_ori[:, 3] = torch.sin(yaw / 2)  # z
 
         return selected_pos, selected_ori
 
-    def get_objective_start_pos(self, num_resets: int, robot_pos: torch.Tensor) -> torch.Tensor:
+    def get_objective_start_pos(self, num_resets: int, robot_pos: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Gets random start positions for the inspection object within bounds.
         Ensures the object is not placed too close to the robot.
@@ -207,12 +190,16 @@ class Curriculum:
             pos[:, 0] = 0.0
             pos[:, 1] = -2.0
             pos[:, 2] = self.init_z_goal
-            return pos
+            
+            ori = torch.zeros((num_resets, 4), device=self.device)
+            ori[:, 0] = 1.0 
+            return pos, ori
         
         min_dist_sq = 1.5**2 # Minimum 2m distance
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         
+        current_spawn_max_y = self.get_current_spawn_max_y()
         # Naive rejection sampling per environment
         for i in range(num_resets):
             valid = False
@@ -221,7 +208,7 @@ class Curriculum:
             
             while not valid and attempts < 100:
                 pos_x = self.spawn_min_x + torch.rand(1, device=self.device).item() * (self.spawn_max_x - self.spawn_min_x)
-                pos_y = self.spawn_min_y + torch.rand(1, device=self.device).item() * (self.spawn_max_y - self.spawn_min_y)
+                pos_y = self.spawn_min_y + torch.rand(1, device=self.device).item() * (current_spawn_max_y - self.spawn_min_y)
                 
                 dist_sq = (pos_x - curr_robot_pos[0].item())**2 + (pos_y - curr_robot_pos[1].item())**2
                 
@@ -235,6 +222,76 @@ class Curriculum:
             if not valid:
                 print(f"[Curriculum WARN] Could not find valid spawn for env {i} far enough from robot. Using fallback.")
                 selected_positions[i, 0] = self.spawn_min_x
-                selected_positions[i, 1] = self.spawn_max_y
+                selected_positions[i, 1] = current_spawn_max_y
+
+        # For the object, we use identity quaternion to not break the raycaster
+        selected_ori = torch.zeros((num_resets, 4), device=self.device)
+        selected_ori[:, 0] = 1.0  # w
                 
-        return selected_positions
+        return selected_positions, selected_ori
+
+    def get_obstacle_start_pos(self, num_resets: int, existing_positions: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Gets random start positions for an obstacle within bounds using batched sampling.
+        Ensures the obstacle is not placed too close to existing positions.
+        """
+        if getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False):
+            pos = torch.zeros((num_resets, 3), device=self.device)
+            pos[:, 0] = 2.0
+            pos[:, 1] = 2.0
+            pos[:, 2] = self.init_z_goal
+            
+            ori = torch.zeros((num_resets, 4), device=self.device)
+            ori[:, 0] = 1.0 
+            return pos, ori
+
+        min_dist = 1.5 # Minimum 1m distance from any other object
+        selected_positions = torch.zeros((num_resets, 3), device=self.device)
+        selected_positions[:, 2] = self.init_z_goal
+        current_spawn_max_y = self.get_current_spawn_max_y()
+        
+        # Track which environments still need a valid position
+        needs_spawn = torch.ones(num_resets, dtype=torch.bool, device=self.device)
+        
+        max_attempts = 100
+        for _ in range(max_attempts):
+            if not needs_spawn.any():
+                break
+                
+            num_needed = needs_spawn.sum().item()
+            
+            # Batch generate proposals
+            proposal_x = self.spawn_min_x + torch.rand(num_needed, device=self.device) * (self.spawn_max_x - self.spawn_min_x)
+            proposal_y = self.spawn_min_y + torch.rand(num_needed, device=self.device) * (current_spawn_max_y - self.spawn_min_y)
+            proposals = torch.stack([proposal_x, proposal_y], dim=-1)
+            
+            # Check collisions with all existing entities
+            valid = torch.ones(num_needed, dtype=torch.bool, device=self.device)
+            for existing_pos in existing_positions:
+                # Get the relevant existing pos for the envs that need spawn
+                relevant_existing = existing_pos[needs_spawn, :2]
+                dists = torch.norm(proposals - relevant_existing, dim=-1)
+                valid &= (dists > min_dist)
+            
+            # For the ones that are valid, assign them
+            valid_indices_in_needed = valid.nonzero().squeeze(-1)
+            # Map back to original env indices
+            needed_indices = needs_spawn.nonzero().squeeze(-1)
+            actual_valid_indices = needed_indices[valid_indices_in_needed]
+            
+            selected_positions[actual_valid_indices, 0] = proposals[valid_indices_in_needed, 0]
+            selected_positions[actual_valid_indices, 1] = proposals[valid_indices_in_needed, 1]
+            needs_spawn[actual_valid_indices] = False
+            
+        # Fallback for any that didn't find a spot
+        if needs_spawn.any():
+            fallback_indices = needs_spawn.nonzero().squeeze(-1)
+            print(f"[Curriculum WARN] Could not find valid spawn for {len(fallback_indices)} obstacles. Using fallback.")
+            selected_positions[fallback_indices, 0] = self.spawn_min_x
+            selected_positions[fallback_indices, 1] = current_spawn_max_y
+            
+        # For obstacles, we use identity quaternion (w=1) since they are symmetric or fine in default pose
+        selected_ori = torch.zeros((num_resets, 4), device=self.device)
+        selected_ori[:, 0] = 1.0  # w
+        
+        return selected_positions, selected_ori

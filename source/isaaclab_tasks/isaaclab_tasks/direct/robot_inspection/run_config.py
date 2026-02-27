@@ -23,10 +23,10 @@ class debug_Cfg:
 
 class train_Cfg:
     debug = False
-    min_episode_length: int = 500
-    max_episode_length: int = 900
+    min_episode_length: int = 800
+    max_episode_length: int = 1700
     logging_interval: int = 1000
-    inspection_goal =  0.1
+    inspection_goal =  0.05
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False

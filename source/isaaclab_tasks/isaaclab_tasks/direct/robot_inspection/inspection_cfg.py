@@ -93,7 +93,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.SphereCfg(
             radius=0.3,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
+            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
         ),
@@ -105,7 +105,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             radius=0.3,
             height=1.0,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=100.0),
+            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
         ),

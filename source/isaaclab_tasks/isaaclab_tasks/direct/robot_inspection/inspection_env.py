@@ -292,7 +292,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             else:
                 print(f"[WARNING] Goal prim not found at {cube_prim_path}")
                 self.goal_prims.append(None)
-        
+        # Spawn obstcles
         self.cone = RigidObject(self.cfg.cone_cfg)
         self.scene.rigid_objects["cone"] = self.cone
 
@@ -1063,8 +1063,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print("NaN or Inf detected in total reward calculation!")
             raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
         # return total_reward
-        # normalized_reward = self.rewardscaler(total_reward)
-        return total_reward
+        normalized_reward = self.rewardscaler(total_reward)
+        return normalized_reward
     
     def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled, current_face_reward_scale):
         # Construct dictionary for logging (both accumulation and per-step means)
@@ -1234,11 +1234,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # --- Update Information Object Position ---
         # Get new objective positions based on curriculum and robot position
         # We pass the robot's *local* position (new_pos) to the curriculum manager
-        obj_pos = self.curriculum.get_objective_start_pos(num_resets, new_pos[:, :3])
+        obj_pos, obj_quat = self.curriculum.get_objective_start_pos(num_resets, new_pos[:, :3])
         
         obj_state = torch.zeros((num_resets, 13), device=self.device)
         obj_state[:, :3] = obj_pos + self.scene.env_origins[env_ids]
-        obj_state[:, 3] = 1.0 # Identity quaternion (w)
+        obj_state[:, 3:7] = obj_quat
         
         self.inspection_goal.write_root_pose_to_sim(obj_state[:, :7], env_ids)
         self.inspection_goal.write_root_velocity_to_sim(obj_state[:, 7:], env_ids)
@@ -1266,6 +1266,28 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 if not found_translate:
                     xf.AddTranslateOp().Set(Gf.Vec3d(*obj_pos_cpu[i]))
         # ------------------------------------------
+
+        # --- Base Spawning Logic ---
+        existing_positions = [new_pos]
+        existing_positions.append(obj_state[:, :3])
+
+        # Spawn Cone
+        cone_pos, cone_quat = self.curriculum.get_obstacle_start_pos(num_resets, existing_positions)
+        cone_state = torch.zeros((num_resets, 13), device=self.device)
+        cone_state[:, :3] = cone_pos + self.scene.env_origins[env_ids]
+        cone_state[:, 3:7] = cone_quat
+        self.cone.write_root_pose_to_sim(cone_state[:, :7], env_ids)
+        self.cone.write_root_velocity_to_sim(cone_state[:, 7:], env_ids)
+        existing_positions.append(cone_state[:, :3])
+
+        # Spawn Sphere
+        sphere_pos, sphere_quat = self.curriculum.get_obstacle_start_pos(num_resets, existing_positions)
+        sphere_state = torch.zeros((num_resets, 13), device=self.device)
+        sphere_state[:, :3] = sphere_pos + self.scene.env_origins[env_ids]
+        sphere_state[:, 3:7] = sphere_quat
+        self.sphere.write_root_pose_to_sim(sphere_state[:, :7], env_ids)
+        self.sphere.write_root_velocity_to_sim(sphere_state[:, 7:], env_ids)
+        existing_positions.append(sphere_state[:, :3])
         
         # Reset joint positions and velocities to default
         joint_pos = self.robot.data.default_joint_pos[env_ids]
