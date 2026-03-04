@@ -78,3 +78,5 @@ data/recorded_point_clouds
 
 *.npy
 generated_data
+data/recorded_depth_data_eval
+.miniconda.exe

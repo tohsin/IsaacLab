@@ -1,3 +1,7 @@
+import os
+
+ISAACLAB_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.."))
+
 # data class for configurations
 class visualisation_mode:
     OCCUPANCY = "occupancy"
@@ -5,11 +9,11 @@ class visualisation_mode:
 
 class debug_Cfg:
     debug = True
-    min_episode_length: int = 1200
+    min_episode_length: int = 1700
     logging_interval: int = 1500
-    max_episode_length: int = 1500
-    inspection_goal =  0.8
-    visualisation_mode = visualisation_mode.VISIBILITY
+    max_episode_length: int = 1700
+    inspection_goal =  0.95
+    visualisation_mode = visualisation_mode.OCCUPANCY
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -18,13 +22,16 @@ class debug_Cfg:
     use_wandb =  False #not debug
     headless = False
     num_envs = 1
-    nav_camera_modality = "rgb"
+    nav_camera_modality = "rgbd"
     use_depth_mask = True
+    fixed_spawns = False
+    randomize_spawns = True
+    use_hardest_curriculum = True
 
 class train_Cfg:
     debug = False
-    min_episode_length: int = 800
-    max_episode_length: int = 1700
+    min_episode_length: int = 1000
+    max_episode_length: int = 2500
     logging_interval: int = 1000
     inspection_goal =  0.05
     visualisation_mode = None
@@ -37,6 +44,9 @@ class train_Cfg:
     num_envs = 128
     nav_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
     use_depth_mask = False
+    fixed_spawns = False
+    randomize_spawns = True
+    use_hardest_curriculum = False
 
 
 class eval_Cfg:
@@ -55,6 +65,8 @@ class eval_Cfg:
     num_envs = 1
     nav_camera_modality = "rgbd"
     use_depth_mask = True
+    randomize_spawns = True
+    use_hardest_curriculum = True
 
 class record_Cfg:
     debug = False
@@ -71,34 +83,38 @@ class record_Cfg:
     use_wandb =  False 
     headless = False
     num_envs = 32
-    data_recording_path = "data/recorded_trajectory"
+    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_trajectory")
     save_images = True
     save_depth = False
     save_interval = 2
     nav_camera_modality = "rgb" # "rgb" or "depth"
     use_depth_mask = True
+    randomize_spawns = True
+    use_hardest_curriculum = True
 
-class record_point_cloud_Cfg:
+class record_depth_Cfg:
     debug = False
-    min_episode_length: int = 1500
+    min_episode_length: int = 1700
     logging_interval: int = 100
-    max_episode_length: int = 1500
-    inspection_goal =  2.0
+    max_episode_length: int = 1700
+    inspection_goal =  0.97
     visualisation_mode = None
     display_ray_counts = False
     visualise_point_cloud = False
     visualise_face_ids = False
     display_cameras = False
-    enable_voxel_visualization = False
+    enable_voxel_visualization = True
     use_wandb =  False 
     headless = False
     num_envs = 1
-    data_recording_path = "data/recorded_depth_data_eval"
+    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval")
     save_images = False
     save_depth = True
     save_interval = 5 # Save every 5 steps to avoid huge data
     nav_camera_modality = "rgbd" 
     use_depth_mask = True
+    randomize_spawns = False
+    use_hardest_curriculum = False
 
-modes = [debug_Cfg, train_Cfg, eval_Cfg, record_Cfg, record_point_cloud_Cfg]
+modes = [debug_Cfg, train_Cfg, eval_Cfg, record_Cfg, record_depth_Cfg]
 cfg_mode = modes[1]

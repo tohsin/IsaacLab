@@ -145,7 +145,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 dim_feedforward=512, 
                 batch_first=True,
                 activation='gelu',
-                dropout=0.1,
+                dropout=0.0,
                 norm_first=True
             )
             self.sensor_attention = nn.TransformerEncoder(
@@ -154,8 +154,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 norm=nn.LayerNorm(self.d_model) # Final layer norm
             )
             
-            # Output is flattened attended tokens
-            self.gru_input_size = 3 * self.d_model
+            # Output is merged attended tokens via mean pooling
+            self.gru_input_size = self.d_model
         else:
             # --- MLP-BASED FUSION (Original) ---
             self.feature_mlp = nn.Sequential(
@@ -271,9 +271,9 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         
         if self.use_attention_fusion:
             # Sanity checks before projection
-            assert torch.isfinite(camera_features).all(), "NaN/Inf in camera_features"
-            assert torch.isfinite(map_features).all(), "NaN/Inf in map_features"
-            assert torch.isfinite(robot_pose).all(), "NaN/Inf in robot_pose"
+            # assert torch.isfinite(camera_features).all(), "NaN/Inf in camera_features"
+            # assert torch.isfinite(map_features).all(), "NaN/Inf in map_features"
+            # assert torch.isfinite(robot_pose).all(), "NaN/Inf in robot_pose"
 
             # Project to d_model and shape into tokens: [batch_size, 1, d_model]
             cam_tok = self.camera_proj(camera_features).unsqueeze(1)
@@ -283,18 +283,18 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # Sequence of tokens: [batch_size, 3, d_model]
             tokens = torch.cat([cam_tok, map_tok, pose_tok], dim=1)
             
-            assert torch.isfinite(tokens).all(), "NaN/Inf right after proj+cat"
+            # assert torch.isfinite(tokens).all(), "NaN/Inf right after proj+cat"
 
             # Apply LayerNorm to stabilize values before adding embeddings
             tokens = self.token_norm(tokens)
 
             # Add modality embeddings so it knows which token is which
             tokens = tokens + self.modality_embeddings
-            assert torch.isfinite(tokens).all(), "NaN/Inf after adding modality embeddings"
+            # assert torch.isfinite(tokens).all(), "NaN/Inf after adding modality embeddings"
             
             # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
-            tokens = torch.clamp(tokens, min=-20.0, max=20.0)
-            assert torch.isfinite(tokens).all(), "NaN/Inf after clamp"
+            # tokens = torch.clamp(tokens, min=-20.0, max=20.0)
+            # assert torch.isfinite(tokens).all(), "NaN/Inf after clamp"
             
             # Cross-Sensor Attention
             # Use a deterministic context to avoid SDPA (FlashAttention) NaN bugs on certain GPUs
@@ -306,10 +306,10 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
                     attended_tokens = self.sensor_attention(tokens)
             
-            assert torch.isfinite(attended_tokens).all(), "NaN/Inf after sensor_attention"
+            # assert torch.isfinite(attended_tokens).all(), "NaN/Inf after sensor_attention"
             
-            # Flatten for the GRU: [batch_size, 3 * d_model]
-            fusion_features = attended_tokens.reshape(tokens.shape[0], -1)
+            # Mean pool tokens along sequence dim: [batch_size, d_model]
+            fusion_features = attended_tokens.mean(dim=1)
         else:
             combined_features = torch.cat((camera_features, map_features, robot_pose), dim=1)
             fusion_features = self.feature_mlp(combined_features)
@@ -447,7 +447,7 @@ os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
 os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
-if not is_eval:
+if not is_eval and _use_wandb:
     cfg["experiment"]["write_interval"] = 1000 if not is_eval else 0
     cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
     cfg["experiment"]["checkpoint_interval"] = 3_000 if not is_eval else 0

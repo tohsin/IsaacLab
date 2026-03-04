@@ -24,6 +24,9 @@ class InspectionLogger:
             "final_visited_cells_count": deque(maxlen=window_size),
             "curriculum/current_threshold": deque(maxlen=window_size),
             "visible_faces_per_step": deque(maxlen=window_size), # Track visible faces per step (maybe keep this one dynamic/shorter? No, let's align.)
+            "curriculum/active_obstacles": deque(maxlen=window_size),
+            "episode_summary/final_map_entropy_percent": deque(maxlen=window_size),
+            "curriculum/task_area": deque(maxlen=window_size),
         }
         self.reward_logging_buffer = defaultdict(list)
         
@@ -45,6 +48,9 @@ class InspectionLogger:
             mean_current_threshold = np.mean(self.episode_log_buffer["curriculum/current_threshold"]) if self.episode_log_buffer["curriculum/current_threshold"] else 0.0            
             mean_visible_faces = np.mean(self.episode_log_buffer["visible_faces_per_step"]) if self.episode_log_buffer["visible_faces_per_step"] else 0.0
             
+            mean_final_map_entropy_percent = np.mean(self.episode_log_buffer["episode_summary/final_map_entropy_percent"]) if self.episode_log_buffer["episode_summary/final_map_entropy_percent"] else 0.0
+            mean_task_area = np.mean(self.episode_log_buffer["curriculum/task_area"]) if self.episode_log_buffer["curriculum/task_area"] else 0.0
+            
             # Calculate means for reward sums
             reward_sum_metrics = {}
             for k, buffer in self.episode_log_buffer.items():
@@ -61,8 +67,11 @@ class InspectionLogger:
                 "episode_summary/mean_final_map_entropy": mean_final_map_entropy,
                 "episode_summary/mean_final_unique_visible_cell_count": mean_final_unique_visible_cell_count,
                 "episode_summary/mean_final_visited_cells_count": mean_final_visited_cells_count,
+                "episode_summary/mean_final_map_entropy_percent": mean_final_map_entropy_percent,
                 "episode_summary/max_faces_discovered_so_far": self.global_max_faces_discovered,
                 "episode_summary/avg_faces_visible_per_step": mean_visible_faces,
+                "curriculum/active_obstacles": np.mean(self.episode_log_buffer["curriculum/active_obstacles"]) if self.episode_log_buffer.get("curriculum/active_obstacles") else 0.0,
+                "curriculum/task_area": mean_task_area,
             }
             
             # Add reward sum metrics

@@ -87,6 +87,13 @@ class ReconstructionDataCollector:
         # Get Transform
         mat = self._get_matrix(cam_pos_w.cpu().numpy(), cam_quat_w.cpu().numpy())
         
+        # Extract per-frame intrinsics for zooming
+        K_np_frame = intrinsic_matrix.cpu().numpy()
+        fl_x_frame = float(K_np_frame[0, 0])
+        fl_y_frame = float(K_np_frame[1, 1])
+        cx_frame = float(K_np_frame[0, 2])
+        cy_frame = float(K_np_frame[1, 2])
+        
         # Buffer the data
         rgb_np = None
         if "rgb" in camera.data.output:
@@ -119,7 +126,11 @@ class ReconstructionDataCollector:
             "depth": depth_np,
             "mask": mask_np,
             "rgb": rgb_np,
-            "transform_matrix": mat.tolist()
+            "transform_matrix": mat.tolist(),
+            "fl_x": fl_x_frame,
+            "fl_y": fl_y_frame,
+            "cx": cx_frame,
+            "cy": cy_frame
         })
         self.frame_idx += 1
         
@@ -221,7 +232,11 @@ class ReconstructionDataCollector:
                 # Add Entry
                 frame_entry = {
                     "file_path": f"depth/{depth_filename}",
-                    "transform_matrix": frame["transform_matrix"]
+                    "transform_matrix": frame["transform_matrix"],
+                    "fl_x": frame.get("fl_x", data_copy.get("fl_x")),
+                    "fl_y": frame.get("fl_y", data_copy.get("fl_y")),
+                    "cx": frame.get("cx", data_copy.get("cx")),
+                    "cy": frame.get("cy", data_copy.get("cy"))
                 }
                 if mask_filename:
                     frame_entry["mask_path"] = f"masks/{mask_filename}"

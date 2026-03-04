@@ -156,6 +156,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             device=self.device,
             dtype=torch.float32
         )
+        self.committed_focal_lengths = self.current_focal_lengths.clone()
 
         for i in range(self.num_envs):
             cam_prim_path = self.cfg.sensor_cfg.ptz_camera.prim_path.replace("env_.*", f"env_{i}")
@@ -292,12 +293,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             else:
                 print(f"[WARNING] Goal prim not found at {cube_prim_path}")
                 self.goal_prims.append(None)
-        # Spawn obstcles
-        self.cone = RigidObject(self.cfg.cone_cfg)
-        self.scene.rigid_objects["cone"] = self.cone
-
-        self.sphere = RigidObject(self.cfg.sphere_cfg)
-        self.scene.rigid_objects["sphere"] = self.sphere
+        # Spawn obstacles dynamically
+        from .utils.dataset_handler import ObstacleDatasetHandler
+        handler = ObstacleDatasetHandler(max_obstacles=self.cfg.max_obstacles)
+        obstacle_cfgs = handler.get_obstacle_configs()
+        
+        self.obstacles = []
+        for i, obs_cfg in enumerate(obstacle_cfgs):
+            obs = RigidObject(obs_cfg)
+            self.obstacles.append(obs)
+            self.scene.rigid_objects[f"obstacle_{i}"] = obs
 
         self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.face_raycaster)
         self.scene.sensors["raycaster_camera"] = self._raycaster_camera
@@ -404,8 +409,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(ptz_targets, joint_ids=self._ptz_joint_indices)
 
     def _update_zoom(self, zoom_cmd: torch.Tensor):
-        # if hasattr(self, "_ptz_camera"):
-        #     print(f"[DEBUG] PTZ Camera Intrinsics fx Initial: {self._ptz_camera.data.intrinsic_matrices[0, 0, 0]:.2f}")
         delta_zoom = zoom_cmd * self.cfg.robot_phys_cfg.zoom_speed
         self.current_focal_lengths += delta_zoom
 
@@ -414,41 +417,52 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.cfg.robot_phys_cfg.min_focal_length,
             self.cfg.robot_phys_cfg.max_focal_length
         )
-        focal_lengths_cpu = self.current_focal_lengths.cpu().numpy()
-        for i, cam_api in enumerate(self.camera_prims):
-            # Set the focalLength attribute directly
-            # UsdGeom.Camera.GetFocalLengthAttr().Set(value)
-            cam_api.GetFocalLengthAttr().Set(float(focal_lengths_cpu[i]))
-
-        self._zoom_ray_caster()
         
-        # Explicitly update the PTZ camera's cached intrinsics because it doesn't auto-update
-        # This is CRITICAL for correct 3D reconstruction        when zooming
+        # Only update RayCaster and USD if focal length changed by > 0.05
+        diff = torch.abs(self.current_focal_lengths - self.committed_focal_lengths)
+        update_mask = diff > 0.05
+        
+        if not torch.any(update_mask):
+            return
+            
+        update_indices = update_mask.nonzero(as_tuple=False).squeeze(-1)
+        
+        focal_lengths_cpu_to_update = self.current_focal_lengths[update_indices].cpu().numpy()
+        for idx_idx, env_idx in enumerate(update_indices.tolist()):
+            self.camera_prims[env_idx].GetFocalLengthAttr().Set(float(focal_lengths_cpu_to_update[idx_idx]))
 
+        self.committed_focal_lengths[update_mask] = self.current_focal_lengths[update_mask].clone()
+
+        self._zoom_ray_caster(update_indices)
+        
         if hasattr(self, "_ptz_camera"):
-            # print(f"[DEBUG] PTZ Camera Intrinsics fx Before Forced Update: {self._ptz_camera.data.intrinsic_matrices[0, 0, 0]:.2f}")
-            self._ptz_camera._update_intrinsic_matrices(self._ptz_camera._ALL_INDICES)
-        #     # DEBUG: Print the first environment's fx (focal length in pixels) to verify update
-        #     print(f"[DEBUG] PTZ Camera Intrinsics fx After: {self._ptz_camera.data.intrinsic_matrices[0, 0, 0]:.2f}")
+            self._ptz_camera._update_intrinsic_matrices(update_indices)
         
-    def _zoom_ray_caster(self):
+    def _zoom_ray_caster(self, env_ids=None):
+        if env_ids is None:
+            f = self.committed_focal_lengths.to(self.device)
+            num_updates = self.num_envs
+        else:
+            f = self.committed_focal_lengths[env_ids].to(self.device)
+            num_updates = len(env_ids)
+            
         pcfg = self._raycaster_camera.cfg.pattern_cfg
         w, h = pcfg.width, pcfg.height
         ha = pcfg.horizontal_aperture
         va = pcfg.vertical_aperture if pcfg.vertical_aperture is not None else ha * (h / w)
 
-        f = self.current_focal_lengths.to(self.device)
         fx = w * f / ha
         fy = h * f / va
         cx = pcfg.horizontal_aperture_offset * fx + (w / 2.0)
         cy = pcfg.vertical_aperture_offset * fy + (h / 2.0)
-        K = torch.zeros((self.num_envs, 3, 3), device=self.device, dtype=torch.float32)
+        
+        K = torch.zeros((num_updates, 3, 3), device=self.device, dtype=torch.float32)
         K[:, 0, 0] = fx
         K[:, 1, 1] = fy
         K[:, 0, 2] = cx
         K[:, 1, 2] = cy
         K[:, 2, 2] = 1.0
-        self._raycaster_camera.set_intrinsic_matrices(K) 
+        self._raycaster_camera.set_intrinsic_matrices(K, env_ids=env_ids) 
 
     def _update_maps(self, visualise: bool = False):
         
@@ -469,17 +483,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         nav_depth_data = self._nav_camera.data.output["distance_to_image_plane"]
         intrinsic_matrices = self._nav_camera.data.intrinsic_matrices   
+        # Batched unprojection for navigation camera
+        pointclouds_batch = create_pointcloud_from_depth(
+                intrinsic_matrix=intrinsic_matrices,
+                depth=nav_depth_data,
+                keep_invalid=True,  # Ensure we return full shape (N, P, 3)
+                position=nav_cam_pos,
+                orientation=nav_cam_quat,
+                device=self.device,
+        )
+        
         point_clouds_list  = []
-
         for i in range(self.num_envs):
-            pointcloud = create_pointcloud_from_depth(
-                    intrinsic_matrix=intrinsic_matrices[i],
-                    depth=nav_depth_data[i],
-                    position=nav_cam_pos[i],
-                    orientation= nav_cam_quat[i],
-                    device=self.device,
-            )
+            pointcloud = pointclouds_batch[i]
             
+            # Remove NaN/Inf natively since keep_invalid=True left them in
+            valid_depth_mask = torch.logical_and(~torch.isnan(pointcloud[:, 2]), ~torch.isinf(pointcloud[:, 2]))
+            pointcloud = pointcloud[valid_depth_mask]
+
             # To visualise the point cloud in my Scene
             if i ==0 and run_cfg.visualise_point_cloud and visualise and self.pc_markers is not None:
                 if pointcloud.size()[0] > 0:
@@ -521,15 +542,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         depth_data_insp = self._ptz_camera.data.output["distance_to_image_plane"]
         intrinsic_matrices_insp = self._ptz_camera.data.intrinsic_matrices
 
+        # Batched unprojection for inspection camera
+        pointclouds_insp_batch = create_pointcloud_from_depth(
+                intrinsic_matrix=intrinsic_matrices_insp,
+                depth=depth_data_insp,
+                keep_invalid=True,  # Ensure we return full shape (N, P, 3)
+                position=insp_cam_pos,
+                orientation=insp_cam_quat,
+                device=self.device,
+        )
+
         point_clouds_list_insp = []        
         for i in range(self.num_envs):
-            pointcloud_insp = create_pointcloud_from_depth(
-                    intrinsic_matrix=intrinsic_matrices_insp[i],
-                    depth=depth_data_insp[i],
-                    position=insp_cam_pos[i],
-                    orientation=insp_cam_quat[i],
-                    device=self.device,
-            )
+            pointcloud_insp = pointclouds_insp_batch[i]
+            
+            # Remove NaN/Inf natively since keep_invalid=True left them in
+            valid_depth_mask = torch.logical_and(~torch.isnan(pointcloud_insp[:, 2]), ~torch.isinf(pointcloud_insp[:, 2]))
+            pointcloud_insp = pointcloud_insp[valid_depth_mask]
+
             if pointcloud_insp.shape[0] > 0:
                 # Filter out chassis points
                 dist_sq_insp = torch.sum((pointcloud_insp - insp_cam_pos[i])**2, dim=1)
@@ -1146,6 +1176,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.logger.clear_episode_buffers()
 
 
+            num_active_obstacles = self.curriculum.get_num_active_obstacles(self.cfg.max_obstacles)
+
             # Logging
             for i, env_id in enumerate(env_ids):
                 if env_id == 0:
@@ -1163,6 +1195,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.logger.update_episode_stats(num_faces_inspected[i].item()) # Update global stats
                 self.episode_log_buffer["mean_inspection_quality"].append(mean_quality[i].item())
                 self.episode_log_buffer["curriculum/current_threshold"].append(current_cov_goal)
+                self.episode_log_buffer["curriculum/active_obstacles"].append(num_active_obstacles)
+                self.episode_log_buffer["curriculum/task_area"].append(self.curriculum.get_total_task_area())
                 
             # Log and Reset Reward Sums
             self.logger.log_and_reset_episode_rewards(env_ids)
@@ -1174,6 +1208,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.prev_coverage_ratio[env_id] = 0.0
 
             self.best_q_per_face[env_ids] = 0.0
+                
             # Map Logging and Reset
             if self.cfg.mapping_cfg.use_occupancy_map:
 
@@ -1193,6 +1228,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     self.episode_log_buffer["final_unique_visible_cell_count"].append(final_unique_visible_cells[env_id].item())
                     # Map Entropy
                     self.episode_log_buffer["final_map_entropy"].append(final_entropies[env_id].item())
+                    
+                    # Entropy % against Max Theoretical Entropy
+                    # max entropy per cell = 1.0. Therefore max theoretically possible is just num_cells.
+                    num_total_cells = all_occ_maps_torch.shape[1]
+                    entropy_percent = (final_entropies[env_id].item() / num_total_cells) * 100.0
+                    self.episode_log_buffer["episode_summary/final_map_entropy_percent"].append(entropy_percent)
                     if run_cfg.debug and env_id == 0:
                         print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[env_id].item()} ---")
                         print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[env_id].item()} ---")
@@ -1269,25 +1310,27 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # --- Base Spawning Logic ---
         existing_positions = [new_pos]
-        existing_positions.append(obj_state[:, :3])
+        existing_positions.append(obj_pos)
 
-        # Spawn Cone
-        cone_pos, cone_quat = self.curriculum.get_obstacle_start_pos(num_resets, existing_positions)
-        cone_state = torch.zeros((num_resets, 13), device=self.device)
-        cone_state[:, :3] = cone_pos + self.scene.env_origins[env_ids]
-        cone_state[:, 3:7] = cone_quat
-        self.cone.write_root_pose_to_sim(cone_state[:, :7], env_ids)
-        self.cone.write_root_velocity_to_sim(cone_state[:, 7:], env_ids)
-        existing_positions.append(cone_state[:, :3])
-
-        # Spawn Sphere
-        sphere_pos, sphere_quat = self.curriculum.get_obstacle_start_pos(num_resets, existing_positions)
-        sphere_state = torch.zeros((num_resets, 13), device=self.device)
-        sphere_state[:, :3] = sphere_pos + self.scene.env_origins[env_ids]
-        sphere_state[:, 3:7] = sphere_quat
-        self.sphere.write_root_pose_to_sim(sphere_state[:, :7], env_ids)
-        self.sphere.write_root_velocity_to_sim(sphere_state[:, 7:], env_ids)
-        existing_positions.append(sphere_state[:, :3])
+        # Spawn obstacles dynamically
+        num_active_obstacles = self.curriculum.get_num_active_obstacles(self.cfg.max_obstacles)
+        
+        for i, obstacle in enumerate(self.obstacles):
+            obstacle_state = torch.zeros((num_resets, 13), device=self.device)
+            if i < num_active_obstacles:
+                obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(num_resets, existing_positions)
+                obstacle_state[:, :3] = obs_pos + self.scene.env_origins[env_ids]
+                obstacle_state[:, 3:7] = obs_quat
+                existing_positions.append(obs_pos)
+            else:
+                # Place inactive obstacles far below the ground plane
+                hidden_pos = torch.zeros((num_resets, 3), device=self.device)
+                hidden_pos[:, 2] = -100.0
+                obstacle_state[:, :3] = hidden_pos + self.scene.env_origins[env_ids]
+                obstacle_state[:, 3] = 1.0 # identity quat w=1
+            
+            obstacle.write_root_pose_to_sim(obstacle_state[:, :7], env_ids)
+            obstacle.write_root_velocity_to_sim(obstacle_state[:, 7:], env_ids)
         
         # Reset joint positions and velocities to default
         joint_pos = self.robot.data.default_joint_pos[env_ids]

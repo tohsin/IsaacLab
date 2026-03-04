@@ -103,35 +103,38 @@ def main():
                 fwd_speed = 0.7
                 turn_speed = -0.8
                 for i in range(800):
+                    # original sine wave
+                    zoom_val = math.sin(i * 0.05)
+                    # zoom_val = math.sin(i * 0.02) * 0.5
                     # spend some time tilting to the side
                     if i < Tilt_T:
-                        actions = torch.tensor([[0.0, 0.0, -1.0, 0.03, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, 0.0, -1.0, 0.03, zoom_val]], device=env.unwrapped.device)
                     # forward
                     elif i >= Tilt_T and i < T_1:
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, zoom_val]], device=env.unwrapped.device)
                     # Turn in Place
                     elif i >= T_1 and i < T_2: 
-                        actions = torch.tensor([[0.0, turn_speed, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, turn_speed, 0.0, 0.0, zoom_val]], device=env.unwrapped.device)
                     # Forward
                     elif i >= T_2 and i < T_3:
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, zoom_val]], device=env.unwrapped.device)
                     # Turn in Place
                     elif i >= T_3 and i < T_4:
-                        actions = torch.tensor([[0.0, turn_speed, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, turn_speed, 0.0, 0.0, zoom_val]], device=env.unwrapped.device)
                     # Forward
                     elif i >= T_4 and i < T_5:
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, zoom_val]], device=env.unwrapped.device)
                     elif i >= T_5 and i < T_6:
                         # Turn
-                        actions = torch.tensor([[0.0, turn_speed, 0.0,  0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, turn_speed, 0.0,  0, zoom_val]], device=env.unwrapped.device)
                     elif i >= T_6 and i < T_7:
                         # Forward
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0, zoom_val]], device=env.unwrapped.device)
                     elif i >= T_7 and i < T_8:
                         # Turn
-                        actions = torch.tensor([[0.0, turn_speed, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, turn_speed, 0.0, 0.0, zoom_val]], device=env.unwrapped.device)
                     else:
-                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0, zoom_val]], device=env.unwrapped.device)
 
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     

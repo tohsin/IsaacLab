@@ -107,19 +107,17 @@ def main():
         
     print(f"[INFO] Loaded {len(data['frames'])} frames.")
     
-    # Intrinsics
-    K = np.eye(3)
-    K[0, 0] = data['fl_x']
-    K[1, 1] = data['fl_y']
-    K[0, 2] = data['cx']
-    K[1, 2] = data['cy']
-    
-    intrinsic_matrix = torch.tensor(K, dtype=torch.float32, device=device)
-    
     all_points = []
     
     print("[INFO] Processing frames...")
     for frame in tqdm(data['frames']):
+        # Per-frame Intrinsics (supports dynamic zoom)
+        K = np.eye(3)
+        K[0, 0] = frame.get('fl_x', data['fl_x'])
+        K[1, 1] = frame.get('fl_y', data['fl_y'])
+        K[0, 2] = frame.get('cx', data['cx'])
+        K[1, 2] = frame.get('cy', data['cy'])
+        intrinsic_matrix = torch.tensor(K, dtype=torch.float32, device=device)
         # Load Depth
         depth_path = os.path.join(args.data_path, frame["file_path"])
         if not os.path.exists(depth_path):

@@ -68,7 +68,7 @@ class Curriculum:
         self.spawn_max_x = -self.spawn_min_x 
         self.spawn_min_y = -6.0
         self.spawn_max_y_init = -self.spawn_min_y
-        self.spawn_max_y_final = 8.0
+        self.spawn_max_y_final = 11.0
 
 
     #Task curriculum
@@ -126,6 +126,8 @@ class Curriculum:
 
     def get_progress(self) -> float:
         """Returns the curriculum progress from 0.0 to 1.0."""
+        if getattr(cfg_mode, "use_hardest_curriculum", False):
+            return 1.0
         if self.max_coverage_threshold == self.start_coverage_ratio:
             return 0.0
         progress = (self.current_coverage_threshold - self.start_coverage_ratio) / (self.max_coverage_threshold - self.start_coverage_ratio)
@@ -143,10 +145,28 @@ class Curriculum:
         progress = self.get_progress()
         return self.spawn_max_y_init + (self.spawn_max_y_final - self.spawn_max_y_init) * progress
 
+    def get_total_task_area(self) -> float:
+        """Returns the total square meters of the current valid spawn area bounds."""
+        max_y = self.get_current_spawn_max_y()
+        width_x = self.spawn_max_x - self.spawn_min_x
+        height_y = max_y - self.spawn_min_y
+        return float(width_x * height_y)
+
+    def get_num_active_obstacles(self, max_obstacles: int) -> int:
+        """Returns the number of active obstacles based on progress (0.0 to 1.0)"""
+        # If we are using fixed spawns or hardest curriculum, show all obstacles
+        if getattr(cfg_mode, "use_hardest_curriculum", False) or getattr(cfg_mode, "fixed_spawns", False):
+            return max_obstacles
+            
+        progress = self.get_progress()
+        # Scale up faster, starting with a base of 1 obstacle at 0.0 progress, which makes it 2 at 0.1, up to max_obstacles
+        num = int(progress * max_obstacles) + 1
+        return max(2, min(num, max_obstacles))
+
     def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Gets random start positions from bounding boxes."""
         # --- Hardcoded Spawn for Data Recording or Debugging ---
-        if getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False):
+        if (getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False)) and not getattr(cfg_mode, "randomize_spawns", False):
             # Robot at [0, 0, z]
             pos = torch.zeros((num_resets, 3), device=self.device)
             pos[:, 0] = 0.0
@@ -184,7 +204,7 @@ class Curriculum:
         Ensures the object is not placed too close to the robot.
         """
         # --- Hardcoded Spawn for Data Recording or Debugging ---
-        if getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False):
+        if (getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False)) and not getattr(cfg_mode, "randomize_spawns", False):
             # Objective at [0, -2.0, z_goal]
             pos = torch.zeros((num_resets, 3), device=self.device)
             pos[:, 0] = 0.0
@@ -235,17 +255,32 @@ class Curriculum:
         Gets random start positions for an obstacle within bounds using batched sampling.
         Ensures the obstacle is not placed too close to existing positions.
         """
-        if getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False):
+        if (getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False)) and not getattr(cfg_mode, "randomize_spawns", False):
             pos = torch.zeros((num_resets, 3), device=self.device)
-            pos[:, 0] = 2.0
-            pos[:, 1] = 2.0
+            # When we have many obstacles (like 10 in our dynamic dataset), spawning them all around (2,2) with a tiny jitter overlaps them heavily or hides them inside each other.
+            # Instead, let's distribute them in a grid or circle reliably.
+            idx = len(existing_positions) - 2 # Offset by 2 since existing_positions has [robot_pos, objective_pos] already
+            
+            # Grid layout distributing evenly across the highest area
+            num_cols = 4
+            num_rows = 3
+            row = idx // num_cols
+            col = idx % num_cols
+            
+            margin_x = 1.5
+            margin_y = 1.5
+            span_x = (self.spawn_max_x - margin_x) - (self.spawn_min_x + margin_x)
+            span_y = (self.spawn_max_y_final - margin_y) - (self.spawn_min_y + margin_y)
+            
+            pos[:, 0] = self.spawn_min_x + margin_x + col * (span_x / max(1, num_cols - 1))
+            pos[:, 1] = self.spawn_min_y + margin_y + row * (span_y / max(1, num_rows - 1))
             pos[:, 2] = self.init_z_goal
             
             ori = torch.zeros((num_resets, 4), device=self.device)
             ori[:, 0] = 1.0 
             return pos, ori
 
-        min_dist = 1.5 # Minimum 1m distance from any other object
+        min_dist = 2 # Minimum 1m distance from any other object
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         current_spawn_max_y = self.get_current_spawn_max_y()

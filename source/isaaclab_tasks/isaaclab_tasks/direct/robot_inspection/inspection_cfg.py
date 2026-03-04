@@ -42,7 +42,6 @@ class WarehouseSceneCfg(InteractiveSceneCfg):
         debug_vis=cfg_mode.debug
     )
 
-
 @configclass
 class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # env
@@ -88,29 +87,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         ))
 
 
-    sphere_cfg = RigidObjectCfg( 
-        prim_path="/World/envs/env_.*/Sphere",
-        spawn=sim_utils.SphereCfg(
-            radius=0.3,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(3.0, 5.0, 0.05))
-    )
-    cone_cfg = RigidObjectCfg( 
-        prim_path="/World/envs/env_.*/Cone",
-        spawn=sim_utils.ConeCfg(
-            radius=0.3,
-            height=1.0,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(-3.0, 15.0, 0.05))
-    )
+    max_obstacles: int = 8     # Cap obstacles around 10 depending on the environment scale
 
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
