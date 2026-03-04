@@ -39,7 +39,7 @@ from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab_tasks.direct.robot_inspection import run_config
 
 # Force Recording Mode
-run_config.cfg_mode = run_config.modes[4] # record_point_cloud_Cfg
+# run_config.cfg_mode = run_config.modes[4] # record_point_cloud_Cfg
 # run_config.cfg_mode.data_recording_path = "data/recorded_point_clouds"
 # run_config.cfg_mode.save_depth = True
 # step = 0.0465sec/step
@@ -102,7 +102,7 @@ def main():
                 
                 fwd_speed = 0.7
                 turn_speed = -0.8
-                for i in range(800):
+                for i in range(1000):
                     # spend some time tilting to the side
                     if i < Tilt_T:
                         actions = torch.tensor([[0.0, 0.0, -1.0, 0.03, 0.0]], device=env.unwrapped.device)

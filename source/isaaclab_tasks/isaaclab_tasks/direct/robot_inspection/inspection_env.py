@@ -225,7 +225,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # --- RESTORED MANUAL SPAWN LOGIC ---
         # Spawning manually as per original implementation which works with the USD assets
 
-        rubiks_cfg = sim_utils.UsdFileCfg(
+        semantic_target_cfg = sim_utils.UsdFileCfg(
             # usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
             #scale=(10.0, 10.0, 10.0),
             usd_path= self.cfg.inspection_goal_cfg.usd_path,
@@ -236,18 +236,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type,
                             self.cfg.inspection_goal_cfg.semantics_name)]
             )
-        rubiks_cfg.func(
+        semantic_target_cfg.func(
             self.cfg.inspection_goal_cfg.prim_path, 
-            rubiks_cfg, 
+            semantic_target_cfg, 
             translation=(2.0, 0.0, 0.4), 
-            orientation=(1, 0.0, 0.0, 0.0),
+            orientation=self.cfg.inspection_goal_cfg.orientation,
         )
 
          # Force collision on Rubik's cube meshes to fix pass-through issue
         stage = get_current_stage()
         import re
         # Get the template path from config, e.g. "/World/envs/env_.*/rubiks_cube"
-        prim_path_template = self.cfg.inspection_objective_prim_path
+        prim_path_template = self.cfg.inspection_goal_cfg.prim_path
         
         for i in range(self.num_envs):
             # Resolve the specific path for this environment
@@ -278,7 +278,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             RigidObjectCfg(
                 prim_path=self.cfg.inspection_objective_prim_path,
                 spawn=None,
-                init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
+                init_state=RigidObjectCfg.InitialStateCfg(
+                    pos=(2.0, 0.0, 0.4), 
+                    rot=self.cfg.inspection_goal_cfg.orientation
+                )
             )
         )
         self.scene.rigid_objects["inspection_goal"] = self.inspection_goal
@@ -907,6 +910,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             dq = torch.relu(q_now - q_best)
             face_rewards[env_idx] = dq.sum()
+            # face_rewards[env_idx] = dq.sum() / self.total_mesh_faces
 
             # Update best q values
             self.best_q_per_face[env_idx, unique_ids] = torch.maximum(q_best, q_now)
@@ -1225,7 +1229,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         obj_state = torch.zeros((num_resets, 13), device=self.device)
         obj_state[:, :3] = obj_pos + self.scene.env_origins[env_ids]
-        obj_state[:, 3] = 1.0 # Identity quaternion (w)
+        obj_state[:, 3:7] = self.inspection_goal.data.default_root_state[env_ids, 3:7] # Use spawn orientation
         
         self.inspection_goal.write_root_pose_to_sim(obj_state[:, :7], env_ids)
         self.inspection_goal.write_root_velocity_to_sim(obj_state[:, 7:], env_ids)

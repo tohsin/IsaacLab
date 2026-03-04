@@ -79,7 +79,7 @@ class Curriculum:
 
     def _setup_spawn_points(self):
         self.init_z = 0.06
-        self.init_z_goal = 0.3
+        self.init_z_goal = 0.2
         
         # Sorted by distance from origin for spatial curriculum
         self.start_pos_robot = [ 

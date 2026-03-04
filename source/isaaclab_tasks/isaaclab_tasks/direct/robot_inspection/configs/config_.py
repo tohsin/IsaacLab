@@ -65,8 +65,8 @@ ROBOT_CONFIGS = {
 # }
 
 class Inpsection_Target:
-    def __init__(self, custom_name, num_faces, usd_path, prim_path, scale,
-                semantics_type = "class", semantics_name = "inspection_goal", ):
+    def __init__(self, custom_name, num_faces, usd_path, prim_path, scale=(10.0, 10.0, 10.0),
+                semantics_type = "class", semantics_name = "inspection_goal", orientation=(1.0, 0.0, 0.0, 0.0)):
         self.custom_name = custom_name
         self.num_faces = num_faces
         self.semantics_type = semantics_type
@@ -74,31 +74,37 @@ class Inpsection_Target:
         self.usd_path = usd_path
         self.prim_path = prim_path
         self.scale = scale
+        self.orientation = orientation
 
 class Environment:
-    def __init__(self, custom_name, usd_path, prim_path, inspection_targets=None, scale=None):
+    def __init__(self, custom_name, usd_path, prim_path, 
+                 semantics_type="class", semantics_name="inspection_goal", 
+                 inspection_targets=None, scale=None):
         self.custom_name = custom_name
+        self.semantics_type = semantics_type
+        self.semantics_name = semantics_name
         self.usd_path = usd_path
         self.prim_path = prim_path
         self.inspection_targets = inspection_targets
         self.scale = scale
-
-inspection_datasets = [
-    Inpsection_Target(
-        custom_name="rubiks_cube",
-        num_faces=2000,
-        usd_path= f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-        prim_path="/World/envs/env_.*/rubiks_cube",
-        scale=(10.0, 10.0, 10.0),
-        semantics_type="class",
-        semantics_name="inspection_goal",
+inspection_datasets= {}
+from .data_set import usd_data_set
+for key, value in usd_data_set.items():
+    inspection_datasets[key] = Inpsection_Target(
+        custom_name=key,
+        num_faces=value["num_faces"],
+        usd_path=value["usd_path"],
+        prim_path=value["prim_path"],
+        scale=value["scale"] if "scale" in value else (10.0, 1.0, 01.0),
+        orientation=value["orientation"] if "orientation" in value else (1.0, 0.0, 0.0, 0.0)
     )
-]
-
 inspection_environment = Environment(
         custom_name="empty_room",
         # usd_path= f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse_with_forklifts.usd",
+        # These would be global even if we randomize the inspection goal
+        semantics_type="class",
+        semantics_name="inspection_goal",
         usd_path= f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse.usd",
         prim_path="/World/envs/env_.*/warehouse",
-        inspection_targets=inspection_datasets[0],
+        inspection_targets=inspection_datasets["red_cup"],
     )

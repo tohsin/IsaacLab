@@ -1,6 +1,6 @@
 import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
-from .config_ import env_parameters
+from .config_ import inspection_environment
 from isaaclab.sensors import TiledCameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg
 from ..run_config import cfg_mode, record_Cfg
 @configclass
@@ -56,7 +56,7 @@ class SensorsCfg:
             convention="ros"
         ),
         colorize_semantic_segmentation=False,
-        semantic_filter=f'class:{env_parameters["semantics_name"]}',
+        semantic_filter=f'class:{inspection_environment.inspection_targets.semantics_name}',
         update_latest_camera_pose=True,
         debug_vis=cfg_mode.debug
     )
@@ -81,7 +81,7 @@ class SensorsCfg:
         ),
         mesh_prim_paths=[
             MultiMeshRayCasterCameraCfg.RaycastTargetCfg(
-                target_prim_expr=env_parameters["inspection_goal_prim_path"],
+                target_prim_expr=inspection_environment.inspection_targets.prim_path,
                 track_mesh_transforms=True
             )
         ],
