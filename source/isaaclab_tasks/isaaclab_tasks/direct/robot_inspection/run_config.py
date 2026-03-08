@@ -24,6 +24,7 @@ class debug_Cfg:
     num_envs = 1
     nav_camera_modality = "rgbd"
     use_depth_mask = True
+    use_optical_flow_penalty = True
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = True
@@ -33,7 +34,7 @@ class train_Cfg:
     min_episode_length: int = 1000
     max_episode_length: int = 2500
     logging_interval: int = 1000
-    inspection_goal =  0.05
+    inspection_goal =  0.20
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -44,10 +45,32 @@ class train_Cfg:
     num_envs = 128
     nav_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
     use_depth_mask = False
+    use_optical_flow_penalty = True
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = False
 
+class train_Cfg_simplified:
+    debug = False
+    min_episode_length: int = 800
+    max_episode_length: int = 1500
+    logging_interval: int = 600
+    inspection_goal =  0.10
+    visualisation_mode = None
+    visualise_point_cloud = False
+    visualise_face_ids = False
+    display_ray_counts = False
+    display_cameras = False
+    use_wandb =  True
+    headless = True
+    num_envs = 128
+    nav_camera_modality = "rgbd"
+    use_depth_mask = False
+    use_optical_flow_penalty = True
+    fixed_spawns = False
+    randomize_spawns = True
+    use_hardest_curriculum = False
+    is_simplified = True
 
 class eval_Cfg:
     debug = True
@@ -65,6 +88,7 @@ class eval_Cfg:
     num_envs = 1
     nav_camera_modality = "rgbd"
     use_depth_mask = True
+    use_optical_flow_penalty = False
     randomize_spawns = True
     use_hardest_curriculum = True
 
@@ -89,6 +113,7 @@ class record_Cfg:
     save_interval = 2
     nav_camera_modality = "rgb" # "rgb" or "depth"
     use_depth_mask = True
+    use_optical_flow_penalty = False
     randomize_spawns = True
     use_hardest_curriculum = True
 
@@ -97,7 +122,7 @@ class record_depth_Cfg:
     min_episode_length: int = 1700
     logging_interval: int = 100
     max_episode_length: int = 1700
-    inspection_goal =  0.97
+    inspection_goal =  0.95
     visualisation_mode = None
     display_ray_counts = False
     visualise_point_cloud = False
@@ -113,8 +138,10 @@ class record_depth_Cfg:
     save_interval = 5 # Save every 5 steps to avoid huge data
     nav_camera_modality = "rgbd" 
     use_depth_mask = True
-    randomize_spawns = False
-    use_hardest_curriculum = False
+    use_optical_flow_penalty = True
+    fixed_spawns = False
+    randomize_spawns = True
+    use_hardest_curriculum = True
 
-modes = [debug_Cfg, train_Cfg, eval_Cfg, record_Cfg, record_depth_Cfg]
-cfg_mode = modes[1]
+modes = [debug_Cfg, train_Cfg, train_Cfg_simplified, eval_Cfg, record_Cfg, record_depth_Cfg]
+cfg_mode = modes[2]

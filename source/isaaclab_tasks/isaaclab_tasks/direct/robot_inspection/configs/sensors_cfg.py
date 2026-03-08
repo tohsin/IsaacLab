@@ -11,7 +11,7 @@ class SensorsCfg:
         camera_width: int = 512
     else:
         camera_height: int = 128
-        camera_width: int = 256
+        camera_width: int = 128
 
     nav_data_types = ["distance_to_image_plane"]
     if getattr(cfg_mode, "nav_camera_modality", "rgb") in ["rgb", "rgbd"]:
@@ -38,12 +38,16 @@ class SensorsCfg:
         ),
         debug_vis=cfg_mode.debug
     )
+    ptz_data_types = ["rgb", "distance_to_image_plane", "semantic_segmentation"]
+    if getattr(cfg_mode, "use_optical_flow_penalty", False):
+        ptz_data_types.append("motion_vectors")
+
     ptz_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link/ptz_camera",
         update_period=0.24,
         height=camera_height,
         width=camera_width,
-        data_types=["rgb", "distance_to_image_plane", "semantic_segmentation" ],
+        data_types=ptz_data_types,
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,

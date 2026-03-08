@@ -9,7 +9,7 @@ class Curriculum:
                 max_coverage_ratio: float = 0.95,
                 
                 # Asymmetric increments
-                coverage_increment_up: float = 0.05,
+                coverage_increment_up: float = 0.1,
                 coverage_increment_down: float = 0.02,
                 success_rate_increase_thresh = 0.67,
                 success_rate_decrease_thresh = 0.58,
@@ -41,7 +41,7 @@ class Curriculum:
 
         self.success_buffer = deque(maxlen=2500) # Buffer ~20 resets per env
         self.quality_buffer = deque(maxlen=2500)
-        self.min_episodes_for_update = 1500 # 2560
+        self.min_episodes_for_update = 1000 # 2560
 
         # Hysteresis Thresholds
         self.success_rate_increase_thresh = success_rate_increase_thresh
@@ -68,7 +68,10 @@ class Curriculum:
         self.spawn_max_x = -self.spawn_min_x 
         self.spawn_min_y = -6.0
         self.spawn_max_y_init = -self.spawn_min_y
-        self.spawn_max_y_final = 11.0
+        if getattr(cfg_mode, "is_simplified", False):
+            self.spawn_max_y_final = self.spawn_max_y_init
+        else:
+            self.spawn_max_y_final = 11.0
 
 
     #Task curriculum
@@ -154,6 +157,9 @@ class Curriculum:
 
     def get_num_active_obstacles(self, max_obstacles: int) -> int:
         """Returns the number of active obstacles based on progress (0.0 to 1.0)"""
+        if getattr(cfg_mode, "is_simplified", False):
+            return 0
+            
         # If we are using fixed spawns or hardest curriculum, show all obstacles
         if getattr(cfg_mode, "use_hardest_curriculum", False) or getattr(cfg_mode, "fixed_spawns", False):
             return max_obstacles
@@ -161,6 +167,7 @@ class Curriculum:
         progress = self.get_progress()
         # Scale up faster, starting with a base of 1 obstacle at 0.0 progress, which makes it 2 at 0.1, up to max_obstacles
         num = int(progress * max_obstacles) + 1
+        
         return max(2, min(num, max_obstacles))
 
     def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:

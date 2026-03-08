@@ -125,7 +125,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "robot-pose": spaces.Box(
             low=float("-inf"), 
             high=float("inf"),
-            shape=(13 + action_dim + 2,), # Plus ptz joint position
+            shape=(13 + action_dim + 5,), # Plus ptz joint position (2), velocity (2), and zoom level (1)
             dtype=np.float32
         ),
         "cameras": spaces.Box(

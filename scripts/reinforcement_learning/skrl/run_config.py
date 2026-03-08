@@ -13,11 +13,12 @@ class TrainingConfig_1:
     reset_std = True
     batch_size = 8192 # 8192
     use_attention_fusion = True
-    entropy_coef = 3e-4
-    learning_rate = 2e-5 #3e-5
+    entropy_coef = 3e-4 # 3e-4 With obstacles
+    # Attention LR : 2e-5
+    learning_rate = 2e-5 #3e-5 
     init_log_std = 0.0 #0.3 0.0
     use_wandb = True
-    global_timesteps = 50_000_000
+    global_timesteps = 20_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -63,10 +64,11 @@ class EvaluationConfig:
     is_eval = True
     headless = False
     # Example path, user should update
-    checkpoint_path = "/home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-02-27_21-52-56_ppo_gru_128/checkpoints/agent_234000.pt"
+    checkpoint_path = "/home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-05_10-16-44_ppo_gru_128/checkpoints/agent_228000.pt"
     num_envs = 1
     use_wandb = False
     reset_std = False
+    use_attention_fusion = True
     batch_size = 8192
     entropy_coef = 3e-7
     learning_rate = 3e-5
@@ -79,7 +81,6 @@ class EvaluationConfig:
         "end_factor": 0.01,
         "total_iters": -1,
     }
-    use_attention_fusion = True
     data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval")
     save_depth = True
 
