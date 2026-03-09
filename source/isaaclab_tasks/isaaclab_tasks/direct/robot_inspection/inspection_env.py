@@ -295,7 +295,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.goal_prims.append(None)
         # Spawn obstacles dynamically
         from .utils.dataset_handler import ObstacleDatasetHandler
-        handler = ObstacleDatasetHandler(max_obstacles=self.cfg.max_obstacles)
+        max_obstacles = self.cfg.max_obstacles
+        if getattr(run_cfg, "is_simplified", False):
+            max_obstacles = 0
+            
+        handler = ObstacleDatasetHandler(max_obstacles=max_obstacles)
         obstacle_cfgs = handler.get_obstacle_configs()
         
         self.obstacles = []

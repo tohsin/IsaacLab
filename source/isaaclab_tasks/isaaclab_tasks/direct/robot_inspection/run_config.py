@@ -143,5 +143,37 @@ class record_depth_Cfg:
     randomize_spawns = True
     use_hardest_curriculum = True
 
-modes = [debug_Cfg, train_Cfg, train_Cfg_simplified, eval_Cfg, record_Cfg, record_depth_Cfg]
-cfg_mode = modes[2]
+class record_depth_Cfg_simplified:
+    debug = False
+    min_episode_length: int = 1500
+    logging_interval: int = 100
+    max_episode_length: int = 1500
+    inspection_goal =  0.95
+    visualisation_mode = None
+    display_ray_counts = False
+    visualise_point_cloud = False
+    visualise_face_ids = False
+    display_cameras = False
+    enable_voxel_visualization = True
+    use_wandb =  False 
+    headless = False
+    num_envs = 1
+    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval")
+    save_images = False
+    save_depth = True
+    save_interval = 5 # Save every 5 steps to avoid huge data
+    nav_camera_modality = "rgbd" 
+    use_depth_mask = True
+    use_optical_flow_penalty = True
+    fixed_spawns = False
+    randomize_spawns = True
+    use_hardest_curriculum = True
+    is_simplified = True
+modes = [debug_Cfg, #0
+    train_Cfg, #1
+    train_Cfg_simplified, #2
+    eval_Cfg, #3
+    record_Cfg, #4
+    record_depth_Cfg, #5
+    record_depth_Cfg_simplified] #6
+cfg_mode = modes[6]

@@ -14,7 +14,7 @@ class RewardsCfg:
 
     action_penalty_scale: float = 0.3e-5 # original: 1e-5
     ptz_penalty_scale: float = 0.3e-5 # original: 1e-5
-    optical_flow_penalty_scale: float = 0.0 # 1e-3
+    optical_flow_penalty_scale: float = 1e-2 # 1e-3
     optical_flow_threshold: float = 12.5
 
     # Penalties

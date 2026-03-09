@@ -58,13 +58,13 @@ class TrainingConfig_2:
         "max_lr": 3e-3,
         "lr_factor": 1.15
     }
-
+path_local = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-08_21-53-29_ppo_gru_128/checkpoints/agent_156000.pt"
 class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
     headless = False
     # Example path, user should update
-    checkpoint_path = "/home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-05_10-16-44_ppo_gru_128/checkpoints/agent_228000.pt"
+    checkpoint_path = os.path.join(ISAACLAB_ROOT, path_local)
     num_envs = 1
     use_wandb = False
     reset_std = False
@@ -86,4 +86,4 @@ class EvaluationConfig:
 
 # Select the configuration to use
 configs_ = [TrainingConfig_1(), TrainingConfig_2(), EvaluationConfig()]   
-CONFIG = configs_[0]
+CONFIG = configs_[2]

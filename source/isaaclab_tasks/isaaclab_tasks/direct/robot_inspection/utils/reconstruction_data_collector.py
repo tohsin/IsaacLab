@@ -255,9 +255,10 @@ class ReconstructionDataCollector:
                     import imageio
                     video_path = os.path.join(self.output_path, "best_episode.mp4")
                     # fps calculation: 1 / (dt * decimation * save_interval). 
-                    # Assuming standard Isaac Sim (0.0083 * 6 = ~0.05 step). save_interval=5 gives ~0.25s per frame (4fps)
-                    fps = 10 
-                    print(f"[ReconstructionDataCollector] Generating RGB Video with {len(rgb_frames)} frames...")
+                    # Assuming standard Isaac Sim (0.0083 * 6 = ~0.05 step).
+                    playback_speed = getattr(self.cfg, "video_playback_speed", 1.2)
+                    fps = (1.0 / (0.05 * self.save_interval)) * playback_speed
+                    print(f"[ReconstructionDataCollector] Generating RGB Video with {len(rgb_frames)} frames at {fps:.2f} FPS (x{playback_speed:.2f} speed)...")
                     writer = imageio.get_writer(video_path, fps=fps)
                     for rgb in rgb_frames:
                         writer.append_data(rgb)
