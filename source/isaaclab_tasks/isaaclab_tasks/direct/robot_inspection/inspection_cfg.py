@@ -114,9 +114,6 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     robot_phys_cfg: RobotPhysicsCfg = RobotPhysicsCfg()
     mapping_cfg: MappingCfg = MappingCfg()
     
-    policy_camera_width: int = 128
-    policy_camera_height: int = 128
-    
     action_dim = NotImplementedError
     if isinstance(action_space, spaces.Discrete):
         action_dim = action_space.n 
@@ -128,13 +125,13 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "robot-pose": spaces.Box(
             low=float("-inf"), 
             high=float("inf"),
-            shape=(13 + action_dim + 5,), # Plus ptz joint position (2), velocity (2), and zoom level (1)
+            shape=(13 + action_dim + 2,), # Plus ptz joint position
             dtype=np.float32
         ),
         "cameras": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
-            shape=(policy_camera_width, policy_camera_height, 8 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgbd" else (7 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgb" else 5))
+            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, 8 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgbd" else (7 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgb" else 5))
         ),
         "local-map": spaces.Box(
             low=float("-inf"),

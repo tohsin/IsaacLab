@@ -38,14 +38,13 @@ class SensorsCfg:
         ),
         debug_vis=cfg_mode.debug
     )
-    ptz_data_types = ["rgb", "distance_to_image_plane", "semantic_segmentation", "motion_vectors"]
-
+    
     ptz_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link/ptz_camera",
         update_period=0.24,
         height=camera_height,
         width=camera_width,
-        data_types=ptz_data_types,
+        data_types=["rgb", "distance_to_image_plane", "semantic_segmentation" ],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,

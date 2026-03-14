@@ -9,10 +9,10 @@ class Curriculum:
                 max_coverage_ratio: float = 0.95,
                 
                 # Asymmetric increments
-                coverage_increment_up: float = 0.1,
+                coverage_increment_up: float = 0.05,
                 coverage_increment_down: float = 0.02,
-                success_rate_increase_thresh = 0.70,
-                success_rate_decrease_thresh = 0.6,
+                success_rate_increase_thresh = 0.67,
+                success_rate_decrease_thresh = 0.58,
 
                 start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
@@ -41,7 +41,7 @@ class Curriculum:
 
         self.success_buffer = deque(maxlen=2500) # Buffer ~20 resets per env
         self.quality_buffer = deque(maxlen=2500)
-        self.min_episodes_for_update = 1000 # 2560
+        self.min_episodes_for_update = 1500 # 2560
 
         # Hysteresis Thresholds
         self.success_rate_increase_thresh = success_rate_increase_thresh
@@ -68,10 +68,7 @@ class Curriculum:
         self.spawn_max_x = -self.spawn_min_x 
         self.spawn_min_y = -6.0
         self.spawn_max_y_init = -self.spawn_min_y
-        if getattr(cfg_mode, "is_simplified", False):
-            self.spawn_max_y_final = self.spawn_max_y_init
-        else:
-            self.spawn_max_y_final = 9.0
+        self.spawn_max_y_final = 9.0
 
 
     #Task curriculum

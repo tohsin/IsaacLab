@@ -184,10 +184,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.last_action = torch.zeros(action_shape, device=self.device)
         self.previous_action_for_rewards = torch.zeros(action_shape, device=self.device)
         
-        # EMA Buffers for PTZ
-        self.current_pan_vel = torch.zeros(self.num_envs, device=self.device)
-        self.current_tilt_vel = torch.zeros(self.num_envs, device=self.device)
-        
         # Buffers are managed by the logger
         self.logger = InspectionLogger(self.cfg, use_wandb=run_cfg.use_wandb, debug=run_cfg.debug, window_size=self.curriculum.success_buffer.maxlen)
         self.episode_log_buffer = self.logger.episode_log_buffer
@@ -356,15 +352,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             #tilt_cmd = self.actions[:, 3] * 0.698132
             #ptz_targets = torch.stack([pan_cmd, tilt_cmd], dim=1)
 
-            # Velocity Control for PTZ Camera with EMA Smoothing
-            target_pan_vel = self.actions[:, 2] * self.cfg.robot_phys_cfg.pan_speed
-            target_tilt_vel = self.actions[:, 3] * self.cfg.robot_phys_cfg.tilt_speed
+            # Velocity Control for PTZ Camera
+            pan_vel_cmd = self.actions[:, 2] * self.cfg.robot_phys_cfg.pan_speed
+            tilt_vel_cmd = self.actions[:, 3] * self.cfg.robot_phys_cfg.tilt_speed
 
-            alpha = self.cfg.robot_phys_cfg.ptz_alpha
-            self.current_pan_vel = alpha * target_pan_vel + (1 - alpha) * self.current_pan_vel
-            self.current_tilt_vel = alpha * target_tilt_vel + (1 - alpha) * self.current_tilt_vel
-
-            ptz_targets = torch.stack([self.current_pan_vel, self.current_tilt_vel], dim=1)
+            ptz_targets = torch.stack([pan_vel_cmd, tilt_vel_cmd], dim=1)
 
             # Scale the wheel commands
             wheel_targets = self.wheel_commands * self.cfg.action_scale
@@ -621,8 +613,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         else:
             action_dim = self.last_action.shape[1]
             last_action_obs = self.last_action
-        #obs_buffer = torch.zeros((self.num_envs, 13 + action_dim+5), device=self.device)
-        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim+5), device=self.device)
+            
+        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim+2), device=self.device)
 
         # pos_noise = (torch.rand_like(position) - 0.5) * 0.2
         # orientation_noise = (torch.rand_like(orientation) - 0.5) * 0.2
@@ -646,17 +638,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         obs_buffer[..., 13:13 + action_dim] = last_action_obs
 
         ptz_joint_pos = self.robot.data.joint_pos[:, self._ptz_joint_indices]
-        ptz_joint_vel = self.robot.data.joint_vel[:, self._ptz_joint_indices]
-        
-        # Get Zoom (normalized between -1 and 1)
-        min_f = self.cfg.robot_phys_cfg.min_focal_length
-        max_f = self.cfg.robot_phys_cfg.max_focal_length
-        normalized_zoom = 2.0 * (self.current_focal_lengths - min_f) / (max_f - min_f) - 1.0
-        normalized_zoom = normalized_zoom.unsqueeze(-1) # Shape: (num_envs, 1)
-
+        # print(f"PTZ Joint Positions: {ptz_joint_pos}")
         obs_buffer[..., 13 + action_dim : 13 + action_dim + 2] = ptz_joint_pos
-        obs_buffer[..., 13 + action_dim + 2 : 13 + action_dim + 4] = ptz_joint_vel
-        obs_buffer[..., 13 + action_dim + 4 : 13 + action_dim + 5] = normalized_zoom
 
         if torch.isnan(obs_buffer).any():
             print("\n[ENV DEBUG] NaN detected in _compute_pose_observation!")
@@ -678,26 +661,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 print(msg)
                 raise ValueError(msg)
         return torch.stack([local_occ_map, local_vis_map, local_visit], dim=-1).to(self.device)
-
-    def _downsample_camera_data(self, data: torch.Tensor, size: tuple[int, int], mode: str = 'bilinear') -> torch.Tensor:
-        if data.numel() == 0:
-            return data
-            
-        # If the input height/width already matches the requested size, do nothing.
-        # data shape is (N, H, W, C)
-        if data.shape[1] == size[0] and data.shape[2] == size[1]:
-            return data
-        
-        # original shape: (N, H, W, C) -> (N, C, H, W)
-        data = data.permute(0, 3, 1, 2)
-        
-        aligned_corners = False if mode == 'bilinear' else None
-        
-        # perform interpolation
-        data = F.interpolate(data, size=size, mode=mode, align_corners=aligned_corners)
-        
-        # (N, C, H, W) -> (N, H, W, C)
-        return data.permute(0, 2, 3, 1)
 
     def _get_observations(self) -> dict:
         # return  {"policy": None}
@@ -750,15 +713,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 if torch.isnan(semantic_channel).any():
                     print("[ENV DEBUG] NaN detected in Semantic Channel (Target Mask)!")
             
-        size = (self.cfg.policy_camera_height, self.cfg.policy_camera_width)
-        
-        if front_camera_data.numel() > 0:
-            front_camera_data = self._downsample_camera_data(front_camera_data, size=size, mode='bilinear')
-        if ptz_camera_data.numel() > 0:
-            ptz_camera_data = self._downsample_camera_data(ptz_camera_data, size=size, mode='bilinear')
-        if semantic_channel.shape[-1] > 0:
-            semantic_channel = self._downsample_camera_data(semantic_channel, size=size, mode='nearest')
-
         combined_camera_data = torch.cat([
             front_camera_data, ptz_camera_data, semantic_channel], dim=-1)
         pose_obs = self._compute_pose_observation()
@@ -933,33 +887,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             max_dist = self.cfg.reward_cfg.max_inspection_distance
             sigma = self.cfg.reward_cfg.depth_sigma
             
-            # Old logic (penalizes being too far)
-            # depth_mask = torch.where(
-            #     depth <= max_dist,
-            #     torch.ones_like(depth),
-            #     torch.exp(-0.5 * torch.square((depth - max_dist) / sigma))
-            # )
-            
-            # New logic (penalizes being too close, within min_inspection_distance)
-            min_dist = getattr(self.cfg.reward_cfg, "min_inspection_distance", 0.3)
-            delta_d = torch.clamp(min_dist - depth, min=0.0) # >0 if closer than min_dist
-            depth_mask = torch.exp(-0.5 * torch.square(delta_d / sigma))
+            depth_mask = torch.where(
+                depth <= max_dist,
+                torch.ones_like(depth),
+                torch.exp(-0.5 * torch.square((depth - max_dist) / sigma))
+            )
 
             weights = weights * depth_mask
-
-        # Apply Optical Flow Quality Mask to Weights
-        if getattr(run_cfg, "use_optical_flow_as_quality", False):
-            if "motion_vectors" in self._ptz_camera.data.output:
-                motion_vectors = self._ptz_camera.data.output["motion_vectors"] # (N, H, W, 2)
-                magnitude = torch.norm(motion_vectors, dim=-1) # (N, H, W)
-                
-                # Using the threshold as the sigma for the decay function
-                flow_sigma = getattr(self.cfg.reward_cfg, "optical_flow_threshold", 12.5)
-                # Create a mask that decays from 1.0 down to 0.0 as flow increases
-                flow_quality_mask = torch.exp(-0.5 * torch.square(magnitude / flow_sigma))
-                
-                # The weights map directly to the camera H/W dimensions, so we can multiply
-                weights = weights * flow_quality_mask.view(self.num_envs, -1)
 
         visible_faces_counts = []
 
@@ -1096,38 +1030,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         return reward
 
-    def _compute_optical_flow(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Computes a penalty based on the magnitude of the dense optical flow (motion vectors),
-        weighted by the semantic mask of the target object.
-
-        Always computes the raw optical flow value and diff-from-min for logging purposes,
-        regardless of whether the penalty is active.
-        """
-        optical_flow_raw_val = torch.zeros(self.num_envs, device=self.device)
-        optical_flow_excess = torch.zeros(self.num_envs, device=self.device)
-
-        # Always compute raw optical flow for logging, even if penalty is disabled
-        if "motion_vectors" in self._ptz_camera.data.output:
-            motion_vectors = self._ptz_camera.data.output["motion_vectors"]  # (N, H, W, 2)
-            magnitude = torch.norm(motion_vectors, dim=-1)  # (N, H, W)
-
-            target_mask = self._get_semantic_mask(self._ptz_camera)  # (N, H, W, 1) or None
-            if target_mask is not None:
-                masked_magnitude = magnitude * target_mask.squeeze(-1).float()
-                optical_flow_raw_val = masked_magnitude.mean(dim=(1, 2))  # (N,)
-
-                threshold = getattr(self.cfg.reward_cfg, "optical_flow_threshold", 12.5)
-                optical_flow_excess = torch.clamp(optical_flow_raw_val - threshold, min=0.0)
-
-        # Push per-step means into episode-summary buffers
-        self.logger.log_optical_flow(
-            optical_flow_raw_val.mean().item(),
-            optical_flow_excess.mean().item(),
-        )
-
-        return optical_flow_raw_val, optical_flow_excess
-    
     def _get_rewards(self) -> torch.Tensor:
         """
             Face Coverage Rewards,
@@ -1138,7 +1040,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         face_discovery_raw, total_num_faces_inspected = self._compute_face_discovery_reward_fast()
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
         visitation_reward = self._compute_visitation_reward()
-        optical_flow_raw, optical_flow_excess = self._compute_optical_flow()
         action_delta = torch.sum(torch.square(self.actions - self.previous_action_for_rewards), dim=1)
         
         # Base Action Penalty (Linear & Angular velocity which are indices 0, 1)
@@ -1161,14 +1062,23 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             0.0
         )
 
+        # --- Adaptive Reward Scaling ---
+        # Decay the face discovery reward as curriculum progresses
+        # We want it high initially (to learn what faces are) and lower later (to prioritize exploration)
+        # progress = self.curriculum.get_progress()
+        
+        # # Linear Decay: Scales from 1.0 down to 0.2 (20% of original)
+        # decay_factor = 1.0 - (progress * 0.8) 
+        # current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale * decay_factor
         current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
 
         total_reward = (current_face_reward_scale * face_discovery_raw
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
                         - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
+                        - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
                         + success_bonus
-                        - self.cfg.reward_cfg.time_penalty
+                        -self.cfg.reward_cfg.time_penalty
                         )
         self._cache_rewards(
             face_discovery_raw,
@@ -1178,9 +1088,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             ptz_action_delta,
             visitation_reward,
             total_reward,
-            current_face_reward_scale,
-            optical_flow_raw,
-            optical_flow_excess,
+            current_face_reward_scale # Pass the dynamic scale for logging
             )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         # Logging
@@ -1193,14 +1101,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         normalized_reward = self.rewardscaler(total_reward)
         return normalized_reward
     
-    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward,
-                            total_unscaled, current_face_reward_scale, optical_flow_raw=None, optical_flow_excess=None):
+    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled, current_face_reward_scale):
         # Construct dictionary for logging (both accumulation and per-step means)
-        if optical_flow_raw is None:
-            optical_flow_raw = torch.zeros(self.num_envs, device=self.device)
-        if optical_flow_excess is None:
-            optical_flow_excess = torch.zeros(self.num_envs, device=self.device)
-
         reward_dict = {
             "face_discovery_raw": face_discovery,
             "info_gain": info_gain,
@@ -1217,10 +1119,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "action_penalty_scaled": self.cfg.reward_cfg.action_penalty_scale * action_delta,
             "camera_penalty_scaled": self.cfg.reward_cfg.ptz_penalty_scale * camera_delta,
             "visitation_reward_scaled": self.cfg.reward_cfg.visitation_reward_scale * visitation_reward,
-
-            # Optical Flow
-            "optical_flow": optical_flow_raw,
-            "optical_flow_excess": optical_flow_excess,
             
             # Debug Stats - Must be a tensor of shape (num_envs,) for the logger to handle it correctly during resets
             "stats/face_reward_scale": torch.full((self.num_envs,), current_face_reward_scale, device=self.device)
@@ -1256,8 +1154,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if len(env_ids)> 0:
             self.last_action[env_ids] = 0.0
             self.previous_action_for_rewards[env_ids] = 0.0
-            self.current_pan_vel[env_ids] = 0.0
-            self.current_tilt_vel[env_ids] = 0.0
 
 
             current_q_values = self.best_q_per_face[env_ids]

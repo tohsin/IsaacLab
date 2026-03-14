@@ -23,7 +23,7 @@ class debug_Cfg:
     headless = False
     num_envs = 1
     nav_camera_modality = "rgbd"
-    use_depth_mask = True
+    use_depth_mask = False
     use_optical_flow_penalty = False
     use_optical_flow_as_quality = False
     fixed_spawns = False
@@ -67,7 +67,7 @@ class eval_Cfg:
     headless = True
     num_envs = 1
     nav_camera_modality = "rgbd"
-    use_depth_mask = True
+    use_depth_mask = False
     use_optical_flow_penalty = False
     use_optical_flow_as_quality = False
     randomize_spawns = True
@@ -95,7 +95,7 @@ class record_Cfg:
     save_depth = False
     save_interval = 2
     nav_camera_modality = "rgb" # "rgb" or "depth"
-    use_depth_mask = True
+    use_depth_mask = False
     use_optical_flow_penalty = False
     use_optical_flow_as_quality = False
     randomize_spawns = True
@@ -121,7 +121,6 @@ class record_depth_Cfg:
     save_depth = True
     save_interval = 5 # Save every 5 steps to avoid huge data
     nav_camera_modality = "rgbd" 
-    use_depth_mask = True
     use_optical_flow_penalty = False
     use_optical_flow_as_quality = False
     fixed_spawns = False
