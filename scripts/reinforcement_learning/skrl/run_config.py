@@ -13,17 +13,23 @@ class TrainingConfig_1:
     reset_std = True
     batch_size = 8192 # 8192
     use_attention_fusion = True
-    entropy_coef = 3e-4 # 3e-4 With obstacles
-    # Attention LR : 2e-5
-    learning_rate = 2e-5 #3e-5 
-    init_log_std = 0.0 #0.3 0.0
+    entropy_coef = 3e-4
+    learning_rate = 2e-5
+    init_log_std = 0.0 
     use_wandb = True
-    global_timesteps = 20_000_000
+    global_timesteps = 50_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
-        "eta_min": learning_rate * 0.01,
+        "eta_min": learning_rate * 0.1,
     }
+    # scheduler_class = KLAdaptiveRL
+    # scheduler_kwargs = {
+    #     "kl_threshold": 0.016,
+    #     "min_lr": 3e-6,   # ~1/4 of starting LR
+    #     "max_lr": 5e-4,   # conservative ceiling for attention stability
+    #     "lr_factor": 1.15
+    # }
     
 
 
@@ -86,4 +92,4 @@ class EvaluationConfig:
 
 # Select the configuration to use
 configs_ = [TrainingConfig_1(), TrainingConfig_2(), EvaluationConfig()]   
-CONFIG = configs_[2]
+CONFIG = configs_[0]

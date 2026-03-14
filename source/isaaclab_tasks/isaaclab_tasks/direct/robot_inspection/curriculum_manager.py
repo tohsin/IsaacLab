@@ -11,8 +11,8 @@ class Curriculum:
                 # Asymmetric increments
                 coverage_increment_up: float = 0.1,
                 coverage_increment_down: float = 0.02,
-                success_rate_increase_thresh = 0.67,
-                success_rate_decrease_thresh = 0.58,
+                success_rate_increase_thresh = 0.70,
+                success_rate_decrease_thresh = 0.6,
 
                 start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
@@ -71,7 +71,7 @@ class Curriculum:
         if getattr(cfg_mode, "is_simplified", False):
             self.spawn_max_y_final = self.spawn_max_y_init
         else:
-            self.spawn_max_y_final = 11.0
+            self.spawn_max_y_final = 9.0
 
 
     #Task curriculum

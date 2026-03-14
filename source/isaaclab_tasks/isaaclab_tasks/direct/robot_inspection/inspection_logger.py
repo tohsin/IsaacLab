@@ -27,6 +27,8 @@ class InspectionLogger:
             "curriculum/active_obstacles": deque(maxlen=window_size),
             "episode_summary/final_map_entropy_percent": deque(maxlen=window_size),
             "curriculum/task_area": deque(maxlen=window_size),
+            "optical_flow_per_step": deque(maxlen=window_size),
+            "optical_flow_excess_per_step": deque(maxlen=window_size),
         }
         self.reward_logging_buffer = defaultdict(list)
         
@@ -50,6 +52,8 @@ class InspectionLogger:
             
             mean_final_map_entropy_percent = np.mean(self.episode_log_buffer["episode_summary/final_map_entropy_percent"]) if self.episode_log_buffer["episode_summary/final_map_entropy_percent"] else 0.0
             mean_task_area = np.mean(self.episode_log_buffer["curriculum/task_area"]) if self.episode_log_buffer["curriculum/task_area"] else 0.0
+            mean_optical_flow = np.mean(self.episode_log_buffer["optical_flow_per_step"]) if self.episode_log_buffer["optical_flow_per_step"] else 0.0
+            mean_optical_flow_excess = np.mean(self.episode_log_buffer["optical_flow_excess_per_step"]) if self.episode_log_buffer["optical_flow_excess_per_step"] else 0.0
             
             # Calculate means for reward sums
             reward_sum_metrics = {}
@@ -72,6 +76,8 @@ class InspectionLogger:
                 "episode_summary/avg_faces_visible_per_step": mean_visible_faces,
                 "curriculum/active_obstacles": np.mean(self.episode_log_buffer["curriculum/active_obstacles"]) if self.episode_log_buffer.get("curriculum/active_obstacles") else 0.0,
                 "curriculum/task_area": mean_task_area,
+                "episode_summary/mean_optical_flow": mean_optical_flow,
+                "episode_summary/mean_optical_flow_excess": mean_optical_flow_excess,
             }
             
             # Add reward sum metrics
@@ -144,6 +150,10 @@ class InspectionLogger:
 
     def log_visible_faces(self, count: float):
         self.episode_log_buffer["visible_faces_per_step"].append(count)
+
+    def log_optical_flow(self, mean_flow: float, mean_excess: float):
+        self.episode_log_buffer["optical_flow_per_step"].append(mean_flow)
+        self.episode_log_buffer["optical_flow_excess_per_step"].append(mean_excess)
 
     def clear_episode_buffers(self):
         """
