@@ -889,8 +889,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             motion_vecs = self._ptz_camera.data.output["motion_vectors"]
             flow_magnitude = torch.norm(motion_vecs.float(), dim=-1)
             
-            safe_zone = self.cfg.robot_cfg.flow_safe_zone
-            drop_speed = self.cfg.robot_cfg.flow_drop_speed
+            safe_zone = self.cfg.robot_phys_cfg.flow_safe_zone
+            drop_speed = self.cfg.robot_phys_cfg.flow_drop_speed
             
             active_penalty = torch.clamp(flow_magnitude - safe_zone, min=0.0)
             flow_multiplier = torch.exp(-0.5 * torch.square(active_penalty / drop_speed))
