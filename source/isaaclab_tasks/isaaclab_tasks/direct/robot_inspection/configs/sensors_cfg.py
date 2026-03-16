@@ -44,7 +44,7 @@ class SensorsCfg:
         update_period=0.24,
         height=camera_height,
         width=camera_width,
-        data_types=["rgb", "distance_to_image_plane", "semantic_segmentation" ],
+        data_types=["rgb", "distance_to_image_plane", "semantic_segmentation", "motion_vectors"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,

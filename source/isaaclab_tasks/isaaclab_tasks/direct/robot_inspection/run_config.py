@@ -46,7 +46,6 @@ class train_Cfg:
     num_envs = 128
     nav_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
     use_depth_mask = False
-    use_optical_flow_penalty = False
     use_optical_flow_as_quality = False
     fixed_spawns = False
     randomize_spawns = True

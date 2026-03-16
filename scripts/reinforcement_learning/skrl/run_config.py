@@ -17,11 +17,11 @@ class TrainingConfig_1:
     learning_rate = 2e-5
     init_log_std = 0.0 
     use_wandb = True
-    global_timesteps = 50_000_000
+    global_timesteps = 30_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
-        "eta_min": learning_rate * 0.1,
+        "eta_min": learning_rate * 0.01,
     }
     # scheduler_class = KLAdaptiveRL
     # scheduler_kwargs = {

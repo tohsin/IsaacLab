@@ -18,8 +18,8 @@ if __name__ == "__main__":
     plt.plot(flow_values, compute_flow_behavior(sigma, flow_values), label=f"Original (Sigma={sigma})")
     
     # A new offset curve that tolerates movement up to 10.0 perfectly
-    safe_zone = 10.0
-    drop_speed = 10.0
+    safe_zone = 12.5
+    drop_speed = 12.0
     plt.plot(flow_values, compute_flow_behavior_offset(safe_zone, drop_speed, flow_values), 
              label=f"Offset (Tolerate up to {safe_zone}, then drop)", linewidth=2.5)
     

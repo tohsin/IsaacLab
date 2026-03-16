@@ -881,6 +881,23 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Fallback to pure counts (weight = 1.0)
             weights = torch.ones_like(face_ids, dtype=torch.float32).squeeze(-1)
 
+        optical_flow_means = []
+        optical_flow_excess_means = []
+        optical_flow_multiplier_means = []
+        
+        if "motion_vectors" in self._ptz_camera.data.output:
+            motion_vecs = self._ptz_camera.data.output["motion_vectors"]
+            flow_magnitude = torch.norm(motion_vecs.float(), dim=-1)
+            
+            safe_zone = self.cfg.robot_cfg.flow_safe_zone
+            drop_speed = self.cfg.robot_cfg.flow_drop_speed
+            
+            active_penalty = torch.clamp(flow_magnitude - safe_zone, min=0.0)
+            flow_multiplier = torch.exp(-0.5 * torch.square(active_penalty / drop_speed))
+            
+            if getattr(run_cfg, "use_optical_flow_as_quality", False):
+                weights = weights * flow_multiplier.squeeze(-1) if flow_multiplier.dim() > weights.dim() else weights * flow_multiplier
+
         # Apply Distance Mask to Weights
         if getattr(run_cfg, "use_depth_mask", False):
             depth = self._raycaster_camera.data.output["distance_to_image_plane"].squeeze(-1)
@@ -906,6 +923,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             valid_mask = env_faces >= 0
             valid_faces = env_faces[valid_mask]
             valid_weights = env_weights[valid_mask]
+
+            if "motion_vectors" in self._ptz_camera.data.output:
+                env_flow = flow_magnitude[env_idx].flatten()
+                env_excess = active_penalty[env_idx].flatten()
+                env_flow_mult = flow_multiplier[env_idx].flatten()
+                
+                valid_flow = env_flow[valid_mask]
+                valid_excess = env_excess[valid_mask]
+                valid_flow_mult = env_flow_mult[valid_mask]
+                
+                if valid_flow.numel() > 0:
+                    optical_flow_means.append(valid_flow.mean().item())
+                    optical_flow_excess_means.append(valid_excess.mean().item())
+                    optical_flow_multiplier_means.append(valid_flow_mult.mean().item())
 
             unique_ids_visible = torch.unique(valid_faces)
             visible_faces_counts.append(len(unique_ids_visible))
@@ -953,6 +984,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             num_faces_inspected[env_idx] = (self.best_q_per_face[env_idx] > 0).sum()
         
         self.logger.log_visible_faces(np.mean(visible_faces_counts))
+        if len(optical_flow_means) > 0:
+            self.logger.log_optical_flow(np.mean(optical_flow_means), np.mean(optical_flow_excess_means), np.mean(optical_flow_multiplier_means))
         return face_rewards, num_faces_inspected
     
     def _calculate_entropy(self, log_odds):
