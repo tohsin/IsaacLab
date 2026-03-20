@@ -9,7 +9,7 @@ class TrainingConfig_1:
     is_eval = False
     headless = True
     checkpoint_path = None
-    num_envs = 128 # 128
+    num_envs = 64
     reset_std = True
     batch_size = 8192 # 8192
     use_attention_fusion = True
@@ -23,15 +23,6 @@ class TrainingConfig_1:
         "T_max": -1,  # Will be dynamically set
         "eta_min": learning_rate * 0.01,
     }
-    # scheduler_class = KLAdaptiveRL
-    # scheduler_kwargs = {
-    #     "kl_threshold": 0.016,
-    #     "min_lr": 3e-6,   # ~1/4 of starting LR
-    #     "max_lr": 5e-4,   # conservative ceiling for attention stability
-    #     "lr_factor": 1.15
-    # }
-    
-
 
 class TrainingConfig_2:
     optimizer_class = "adam"
@@ -64,7 +55,7 @@ class TrainingConfig_2:
         "max_lr": 3e-3,
         "lr_factor": 1.15
     }
-path_local = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-08_21-53-29_ppo_gru_128/checkpoints/agent_156000.pt"
+path_local = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-17_07-42-02_ppo_gru_128/checkpoints/agent_234000.pt"
 class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True

@@ -25,17 +25,16 @@ from .configs.mapping_cfg import MappingCfg
 from .configs.rewards_cfg import RewardsCfg
 from  .configs.robot_cfg import RobotPhysicsCfg
 # from semantic_manager import SemanticManager
-from .configs.config_ import ROBOT_CONFIGS, Env_params
-env_parameters = Env_params["empty_room"]
+from .configs.config_ import ROBOT_CONFIGS, env_parameters
 from .run_config import cfg_mode
 
 @configclass
 class WarehouseSceneCfg(InteractiveSceneCfg):
     # scene
     warehouse: AssetBaseCfg = AssetBaseCfg(
-        prim_path = env_parameters["env_prim_path"],
+        prim_path = env_parameters.prim_path,
         spawn=sim_utils.UsdFileCfg(
-            usd_path=env_parameters["env_file_path"],
+            usd_path=env_parameters.usd_path,
             # scale=(1.0, 1.0, 1.0),
         ),
         collision_group=-1, # Keep collision settings
@@ -47,7 +46,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     # env
     env_parameters = inspection_goal_cfg = env_parameters
     use_camera_obs: bool = True
-    inspection_objective_prim_path = env_parameters["inspection_goal_prim_path"]
+
 
 
     decimation = 6
@@ -87,7 +86,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         ))
 
 
-    max_obstacles: int = 8     # Cap obstacles around 10 depending on the environment scale
+    max_obstacles: int = 0     # Cap obstacles around 10 depending on the environment scale
 
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
@@ -154,7 +153,6 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     terminate_on_all_inspected = True
     min_episode_length = cfg_mode.max_episode_length
-    max_faces_to_inspect = env_parameters["num_faces"]
 
     # Logging
     logging_interval: int = cfg_mode.logging_interval

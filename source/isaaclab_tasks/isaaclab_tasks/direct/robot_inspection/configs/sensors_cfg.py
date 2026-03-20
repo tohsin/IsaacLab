@@ -57,7 +57,7 @@ class SensorsCfg:
             convention="ros"
         ),
         colorize_semantic_segmentation=False,
-        semantic_filter=f'class:{env_parameters["semantics_name"]}',
+        semantic_filter=[f'class:{name}' for name in env_parameters.semantics_name] if isinstance(env_parameters.semantics_name, list) else f'class:{env_parameters.semantics_name}',
         update_latest_camera_pose=True,
         debug_vis=cfg_mode.debug
     )
@@ -82,10 +82,10 @@ class SensorsCfg:
         ),
         mesh_prim_paths=[
             MultiMeshRayCasterCameraCfg.RaycastTargetCfg(
-                target_prim_expr=env_parameters["inspection_goal_prim_path"],
+                target_prim_expr=target.prim_path,
                 track_mesh_transforms=True
-            )
+            ) for target in env_parameters.inspection_targets.values()
         ],
         update_mesh_ids=True,
-        debug_vis=False
+        debug_vis=True
     )

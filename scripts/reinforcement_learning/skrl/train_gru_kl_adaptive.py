@@ -23,7 +23,7 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
-parser.add_argument("--max_episodes", type=int, default=5, help="Maximum number of episodes to run in evaluation mode.")
+parser.add_argument("--max_episodes", type=int, default=10, help="Maximum number of episodes to run in evaluation mode.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
 # append AppLauncher cli args
 

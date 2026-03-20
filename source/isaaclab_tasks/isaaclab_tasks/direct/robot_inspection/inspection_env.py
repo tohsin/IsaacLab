@@ -60,11 +60,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
 
-        # Automatically count faces after the scene is set up
-        # self.total_mesh_faces = self._count_total_mesh_faces()
-        self.total_mesh_faces = self.cfg.max_faces_to_inspect
-
-
+        # Assign targets
+        target_keys = list(self.cfg.inspection_goal_cfg.inspection_targets.keys())
+        self.env_target_names = np.random.choice(target_keys, self.num_envs)
+        
+        # Setup specific faces for environments
+        self.total_mesh_faces = torch.zeros(self.num_envs, device=self.device)
+        for i, target_name in enumerate(self.env_target_names):
+            faces = self.cfg.inspection_goal_cfg.inspection_targets[target_name].num_faces
+            self.total_mesh_faces[i] = faces
 
         self.robot_pos = self.robot.data.root_pos_w
         self.robot_vel = self.robot.data.root_lin_vel_w
@@ -171,7 +175,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
         
         # Allocate enough capacity to avoid re-allocating dynamically on the CPU
-        self.q_capacity = max(50000, self.total_mesh_faces + 1000)
+        # USD mesh Face IDs can be sparse/non-contiguous, requiring large array bounds
+        max_faces = int(self.total_mesh_faces.max().item())
+        self.q_capacity = max(1_700_000, max_faces + 1000)
         self.best_q_per_face = torch.zeros((self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32)
 
         self.episode_goal_achieved = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
@@ -220,79 +226,72 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.scene.sensors["ptz_camera"] = self._ptz_camera
 
         # --- RESTORED MANUAL SPAWN LOGIC ---
-        # Spawning manually as per original implementation which works with the USD assets
-
-        rubiks_cfg = sim_utils.UsdFileCfg(
-            # usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-            #scale=(10.0, 10.0, 10.0),
-            usd_path= self.cfg.inspection_goal_cfg["inspection_goal_usd_path"],
-            scale=self.cfg.inspection_goal_cfg["inspection_goal_scale"],
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True),
-            mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            semantic_tags=[(self.cfg.inspection_goal_cfg["semantics_type"],
-                            self.cfg.inspection_goal_cfg["semantics_name"])]
-            )
-        rubiks_cfg.func(
-            self.cfg.inspection_goal_cfg["inspection_goal_prim_path"], 
-            rubiks_cfg, 
-            translation=(2.0, 0.0, 0.4), 
-            orientation=(1, 0.0, 0.0, 0.0),
-        )
-
-         # Force collision on Rubik's cube meshes to fix pass-through issue
         stage = get_current_stage()
         import re
-        # Get the template path from config, e.g. "/World/envs/env_.*/rubiks_cube"
-        prim_path_template = self.cfg.inspection_objective_prim_path
         
-        for i in range(self.num_envs):
-            # Resolve the specific path for this environment
-            if "env_.*" in prim_path_template:
-                cube_prim_path = prim_path_template.replace("env_.*", f"env_{i}")
-            else:
-                cube_prim_path = f"/World/envs/env_{i}/rubiks_cube"
-            
-            cube_prim = stage.GetPrimAtPath(cube_prim_path)
-            if cube_prim.IsValid():
-                # Ensure the root prim has RigidBodyAPI so RigidObject can wrap it
-                if not cube_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                    UsdPhysics.RigidBodyAPI.Apply(cube_prim)
+        # Clone heavily populated structures immediately to build parallel env branches
+        
+        self.inspection_goals = {}
+        self.goal_prims_dict = {}
 
-                for child in Usd.PrimRange(cube_prim):
-                    if child.IsA(UsdGeom.Mesh):
-                        if not child.HasAPI(UsdPhysics.CollisionAPI):
-                            UsdPhysics.CollisionAPI.Apply(child)
-                        if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
-                            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
-                            mesh_collision.GetApproximationAttr().Set("convexHull")
-                        if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
-                            PhysxSchema.PhysxCollisionAPI.Apply(child)
+        for target_name, target_cfg in self.cfg.inspection_goal_cfg.inspection_targets.items():
+            usd_path = target_cfg.usd_path
+            prim_path_template = target_cfg.prim_path
+            scale = target_cfg.scale
+            orientation = target_cfg.orientation
 
-        # Create RigidObject wrapper for the manually spawned object to enable programmatic control
-        # spawn=None because it's already spawned above
-        self.inspection_goal = RigidObject(
-            RigidObjectCfg(
-                prim_path=self.cfg.inspection_objective_prim_path,
-                spawn=None,
-                init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
+            obj_cfg = sim_utils.UsdFileCfg(
+                usd_path=usd_path,
+                scale=scale,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True, kinematic_enabled=True),
+                mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
+                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+                semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type, target_name)]
             )
-        )
-        self.scene.rigid_objects["inspection_goal"] = self.inspection_goal
-        
-        # Cache goal prims for manual USD updates
-        self.goal_prims = []
-        for i in range(self.num_envs):
-            if "env_.*" in prim_path_template:
-                cube_prim_path = prim_path_template.replace("env_.*", f"env_{i}")
-            else:
-                cube_prim_path = f"/World/envs/env_{i}/rubiks_cube"
-            prim = stage.GetPrimAtPath(cube_prim_path)
-            if prim.IsValid():
-                self.goal_prims.append(UsdGeom.Xformable(prim))
-            else:
-                print(f"[WARNING] Goal prim not found at {cube_prim_path}")
-                self.goal_prims.append(None)
+            obj_cfg.func(
+                prim_path_template,
+                obj_cfg,
+                translation=(2.0, 0.0, 0.7),
+                orientation=orientation,
+            )
+
+            # Force collision
+            self.goal_prims_dict[target_name] = []
+            for i in range(self.num_envs):
+                if "env_.*" in prim_path_template:
+                    obj_prim_path = prim_path_template.replace("env_.*", f"env_{i}")
+                else:
+                    obj_prim_path = f"{prim_path_template}_{i}" # fallback
+                
+                obj_prim = stage.GetPrimAtPath(obj_prim_path)
+                if obj_prim.IsValid():
+                    if not obj_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                        UsdPhysics.RigidBodyAPI.Apply(obj_prim)
+
+                    for child in Usd.PrimRange(obj_prim):
+                        if child.IsA(UsdGeom.Mesh):
+                            if not child.HasAPI(UsdPhysics.CollisionAPI):
+                                UsdPhysics.CollisionAPI.Apply(child)
+                            if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
+                                mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
+                                mesh_collision.GetApproximationAttr().Set("convexHull")
+                            if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
+                                PhysxSchema.PhysxCollisionAPI.Apply(child)
+                                
+                    self.goal_prims_dict[target_name].append(UsdGeom.Xformable(obj_prim))
+                else:
+                    print(f"[WARNING] Goal prim not found at {obj_prim_path}")
+                    self.goal_prims_dict[target_name].append(None)
+                    
+            # Create RigidObject wrapper
+            self.inspection_goals[target_name] = RigidObject(
+                RigidObjectCfg(
+                    prim_path=prim_path_template,
+                    spawn=None,
+                    init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
+                )
+            )
+            self.scene.rigid_objects[f"inspection_goal_{target_name}"] = self.inspection_goals[target_name]
         # Spawn obstacles dynamically
         from .utils.dataset_handler import ObstacleDatasetHandler
         max_obstacles = self.cfg.max_obstacles
@@ -787,18 +786,22 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Retrieve label mapping
         info = camera.data.info.get("semantic_segmentation", {})
         id_to_labels = info.get("idToLabels", {})
-        target_class_name = self.cfg.env_parameters["semantics_name"]
-
-        # Find the ID associated with the class name
-        target_id = None
-        for k, v in id_to_labels.items():
-            if v.get("class") == target_class_name:
-                target_id = int(k)
-                break
+        target_class_names = self.cfg.env_parameters.semantics_name
         
-        if target_id is not None:
-            # Return boolean mask (N, H, W, 1)
-            return seg_data == target_id
+        if isinstance(target_class_names, str):
+            target_class_names = [target_class_names]
+
+        # Find the IDs associated with the class names
+        target_ids = []
+        for k, v in id_to_labels.items():
+            if v.get("class") in target_class_names:
+                target_ids.append(int(k))
+        
+        if target_ids:
+            mask = torch.zeros_like(seg_data, dtype=torch.bool)
+            for tid in target_ids:
+                mask |= (seg_data == tid)
+            return mask
         
         return None
     
@@ -982,6 +985,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Update best q values
             self.best_q_per_face[env_idx, unique_ids] = torch.maximum(q_best, q_now)
             num_faces_inspected[env_idx] = (self.best_q_per_face[env_idx] > 0).sum()
+            
+            # Normalize face reward by the total number of mesh faces
+            face_rewards[env_idx] /= self.total_mesh_faces[env_idx].float()
         
         self.logger.log_visible_faces(np.mean(visible_faces_counts))
         if len(optical_flow_means) > 0:
@@ -1204,7 +1210,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             mask = num_faces_inspected > 0
             mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
 
-            achieved_coverage_ratios = num_faces_inspected / float(self.total_mesh_faces)
+            achieved_coverage_ratios = num_faces_inspected / self.total_mesh_faces[env_ids].float()
             current_cov_goal = self.curriculum.get_current_coverage_goal()
             episode_successes = (achieved_coverage_ratios >= current_cov_goal) # & (mean_quality >= self.curriculum.get_current_quality_goal())
             self.curriculum.update_curriculum(episode_successes, mean_quality)
@@ -1319,32 +1325,55 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         obj_state = torch.zeros((num_resets, 13), device=self.device)
         obj_state[:, :3] = obj_pos + self.scene.env_origins[env_ids]
         obj_state[:, 3:7] = obj_quat
-        
-        self.inspection_goal.write_root_pose_to_sim(obj_state[:, :7], env_ids)
-        self.inspection_goal.write_root_velocity_to_sim(obj_state[:, 7:], env_ids)
 
-        # Manually update USD prim translation for RayCaster
-        obj_pos_cpu = obj_state[:, :3].cpu().numpy().astype(float)
-        for i, env_id in enumerate(env_ids.cpu().tolist()):
-            xf = self.goal_prims[env_id]
-            if xf:
-                # We assume no rotation/scale ops need clearing or complex handling for now
-                # Just find or create the translation op
-                # Note: This updates the *local* transform if ops exist, or adds one. 
-                # Since these are root objects in envs, relative to env root might be tricky 
-                # if we used relative paths, but here we used absolute paths in _setup_scene.
-                # However, obj_state includes env_origins, so it's global pose.
-                
-                # Check current ops
-                found_translate = False
-                for op in xf.GetOrderedXformOps():
-                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                        op.Set(Gf.Vec3d(*obj_pos_cpu[i]))
-                        found_translate = True
-                        break
-                
-                if not found_translate:
-                    xf.AddTranslateOp().Set(Gf.Vec3d(*obj_pos_cpu[i]))
+        env_ids_local = env_ids.cpu().numpy()
+
+        for target_name, target_cfg in self.cfg.inspection_goal_cfg.inspection_targets.items():
+            # Boolean mask for environments assigned this target
+            assigned_mask_np = (self.env_target_names[env_ids_local] == target_name)
+            assigned_mask = torch.from_numpy(assigned_mask_np).to(device=self.device, dtype=torch.bool)
+            
+            mixed_state = torch.zeros((num_resets, 13), device=self.device)
+            hidden_pos = torch.tensor([0, 0, -100.0], device=self.device)
+            mixed_state[:, :3] = hidden_pos + self.scene.env_origins[env_ids]
+            mixed_state[:, 3] = 1.0  # Identity quat w
+            
+            if assigned_mask.any():
+                mixed_state[assigned_mask, :3] = obj_state[assigned_mask, :3]
+                target_ori = torch.tensor(target_cfg.orientation, device=self.device, dtype=torch.float32)
+                mixed_state[assigned_mask, 3:7] = target_ori
+                mixed_state[assigned_mask, 7:] = obj_state[assigned_mask, 7:]
+            
+            self.inspection_goals[target_name].write_root_pose_to_sim(mixed_state[:, :7], env_ids)
+            self.inspection_goals[target_name].write_root_velocity_to_sim(mixed_state[:, 7:], env_ids)
+
+            mixed_pos_cpu = mixed_state[:, :3].cpu().numpy().astype(float)
+            mixed_ori_cpu = mixed_state[:, 3:7].cpu().numpy().astype(float)
+            for i, env_id in enumerate(env_ids_local):
+                xf = self.goal_prims_dict[target_name][env_id]
+                if xf:
+                    found_translate = False
+                    found_orient = False
+                    for op in xf.GetOrderedXformOps():
+                        if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                            try:
+                                op.Set(Gf.Vec3d(*mixed_pos_cpu[i]))
+                            except Exception:
+                                op.Set(Gf.Vec3f(*mixed_pos_cpu[i]))
+                            found_translate = True
+                        elif op.GetOpType() in [UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeTransform]:
+                            if op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                                q_w, q_x, q_y, q_z = float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])
+                                try:
+                                    op.Set(Gf.Quatd(q_w, q_x, q_y, q_z))
+                                except Exception:
+                                    op.Set(Gf.Quatf(q_w, q_x, q_y, q_z))
+                                found_orient = True
+                                
+                    if not found_translate:
+                        xf.AddTranslateOp().Set(Gf.Vec3d(*mixed_pos_cpu[i]))
+                    if not found_orient:
+                        xf.AddOrientOp().Set(Gf.Quatd(float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])))
         # ------------------------------------------
 
         # --- Base Spawning Logic ---
