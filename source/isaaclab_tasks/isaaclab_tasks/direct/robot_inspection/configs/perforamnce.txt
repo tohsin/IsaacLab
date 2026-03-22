@@ -1,0 +1,160 @@
+Model 0 : Rubix
+Model 1: Multi Object
+
+tuna_fish_can_flat
+
+Model 0:
+    Mean Faces Discovered: 3720.05
+    Std Deviation:         320.23
+    Min Faces:             2974
+    Max Faces:             4168
+    ==============================
+    Model 1:
+    ==================================================
+    EVALUATION RESULTS (20 Episodes)
+    ==================================================
+    Mean Faces Discovered: 3047.50
+    Std Deviation:         947.99
+    Min Faces:             737
+    Max Faces:             4643
+    ==================================================
+
+blue_cup
+
+Model 0:
+    Mean Faces Discovered: 8333.95
+    Std Deviation:         2111.20
+    Min Faces:             196
+    Max Faces:             10421
+    ==================================================
+Model 1:
+    Mean Faces Discovered: 8059.85
+    Std Deviation:         2050.44
+    Min Faces:             2823
+    Max Faces:             10803
+    ==================================================
+red_bowl
+
+    Model 0:
+        Mean Faces Discovered: 5285.90
+        Std Deviation:         563.71
+        Min Faces:             3777
+        Max Faces:             5831
+    Model 1:
+    ==================================================
+    EVALUATION RESULTS (20 Episodes)
+    ==================================================
+    Mean Faces Discovered: 5193.95
+    Std Deviation:         551.81
+    Min Faces:             4105
+    Max Faces:             5793
+==================================================
+
+forklift
+
+Model 0:
+    Mean Faces Discovered: 33539.30
+    Std Deviation:         3878.43
+    Min Faces:             23176
+    Max Faces:             38695
+Model 1:
+==================================================
+Mean Faces Discovered: 27591.10
+Std Deviation:         8454.84
+Min Faces:             1526
+Max Faces:             38181
+
+ur10_mount
+
+Model 0:
+    Mean Faces Discovered: 11664.40
+    Std Deviation:         622.55
+    Min Faces:             10462
+    Max Faces:             12494
+
+Model 1:
+    Mean Faces Discovered: 7724.20
+    Std Deviation:         2828.83
+    Min Faces:             1555
+    Max Faces:             11304
+
+pallet
+
+Model 0:
+    Mean Faces Discovered: 5269.73
+    Std Deviation:         2779.52
+    Min Faces:             0
+    Max Faces:             9316
+
+Model 1:
+    Mean Faces Discovered: 5911.56
+Std Deviation:         1607.72
+Min Faces:             1644
+Max Faces:             8931
+
+sortbot_housing
+
+    Model 0:
+        Mean Faces Discovered: 1323.27
+        Std Deviation:         167.97
+        Min Faces:             840
+        Max Faces:             1627
+
+    Model 1:
+        Mean Faces Discovered: 1253.69
+        Std Deviation:         233.12
+        Min Faces:             591
+        Max Faces:             1646
+
+potted_meat_can
+
+    Model 0:
+        Mean Faces Discovered: 9998.97
+        Std Deviation:         518.36
+        Min Faces:             7355
+        Max Faces:             10666
+    Model 1:
+        Mean Faces Discovered: 8837.44
+        Std Deviation:         1992.72
+        Min Faces:             38
+        Max Faces:             10763
+
+wood_block
+
+    Model 0:
+        Mean Faces Discovered: 10211.11
+        Std Deviation:         1981.24
+        Min Faces:             2112
+        Max Faces:             12418
+
+    Model 1:
+        Mean Faces Discovered: 9558.30
+        Std Deviation:         2365.02
+        Min Faces:             16
+        Max Faces:             12319
+
+small_corner_bracket_physics
+
+    Model 0:
+        Mean Faces Discovered: 1967.55
+        Std Deviation:         310.90
+        Min Faces:             268
+        Max Faces:             2442
+    Model 1:
+        Mean Faces Discovered: 1317.33
+        Std Deviation:         596.51
+        Min Faces:             0
+        Max Faces:             2173
+
+caster
+
+    Model 0:
+        Mean Faces Discovered: 8496.76
+        Std Deviation:         1399.22
+        Min Faces:             4550
+        Max Faces:             11397
+    Model 1:
+        Mean Faces Discovered: 7253.13
+        Std Deviation:         2229.16
+        Min Faces:             0
+        Max Faces:             11334

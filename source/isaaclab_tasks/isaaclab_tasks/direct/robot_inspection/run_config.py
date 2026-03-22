@@ -102,9 +102,9 @@ class record_Cfg:
 
 class record_depth_Cfg:
     debug = False
-    min_episode_length: int = 1700
+    min_episode_length: int = 2500
     logging_interval: int = 100
-    max_episode_length: int = 1700
+    max_episode_length: int = 2500
     inspection_goal =  0.95
     visualisation_mode = None
     display_ray_counts = False
@@ -125,8 +125,9 @@ class record_depth_Cfg:
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = True
-    rl_camera_width = 84
-    rl_camera_height = 84
+    add_high_res_inspection_camera = False
+    high_res_camera_width = 512
+    high_res_camera_height = 512
 
 modes = [debug_Cfg, #0
     train_Cfg, #1

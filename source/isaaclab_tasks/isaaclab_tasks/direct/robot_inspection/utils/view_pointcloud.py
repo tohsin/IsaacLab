@@ -18,7 +18,7 @@ def view_with_trimesh(filepath):
     print(f"Loading {filepath} with Trimesh...")
     pcd = trimesh.load(filepath)
     pcd.show()
-path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/SEEIR_eval_point_cloud.ply"
+path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/flange_pc.ply"
 #path_ = "data/point_clouds/comparison_vis.ply"
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="View a PLY point cloud file.")

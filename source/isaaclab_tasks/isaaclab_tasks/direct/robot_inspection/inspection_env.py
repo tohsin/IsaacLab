@@ -162,12 +162,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         )
         self.committed_focal_lengths = self.current_focal_lengths.clone()
 
+        self.high_res_camera_prims = []
         for i in range(self.num_envs):
             cam_prim_path = self.cfg.sensor_cfg.ptz_camera.prim_path.replace("env_.*", f"env_{i}")
             prim = stage.GetPrimAtPath(cam_prim_path)
             if not prim:
                 raise RuntimeError(f"Camera prim not found at path: {cam_prim_path}")
             self.camera_prims.append(UsdGeom.Camera(prim))
+            
+            if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
+                hr_cam_prim_path = self.cfg.sensor_cfg.high_res_ptz_camera.prim_path.replace("env_.*", f"env_{i}")
+                hr_prim = stage.GetPrimAtPath(hr_cam_prim_path)
+                if hr_prim:
+                    self.high_res_camera_prims.append(UsdGeom.Camera(hr_prim))
 
     def _setup_tensor_buffers(self):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
@@ -224,6 +231,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self._ptz_camera = TiledCamera(self.cfg.sensor_cfg.ptz_camera)
         self.scene.sensors["ptz_camera"] = self._ptz_camera
+
+        if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
+            self._high_res_ptz_camera = TiledCamera(self.cfg.sensor_cfg.high_res_ptz_camera)
+            self.scene.sensors["high_res_ptz_camera"] = self._high_res_ptz_camera
 
         # --- RESTORED MANUAL SPAWN LOGIC ---
         stage = get_current_stage()
@@ -433,6 +444,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         focal_lengths_cpu_to_update = self.current_focal_lengths[update_indices].cpu().numpy()
         for idx_idx, env_idx in enumerate(update_indices.tolist()):
             self.camera_prims[env_idx].GetFocalLengthAttr().Set(float(focal_lengths_cpu_to_update[idx_idx]))
+            if hasattr(self, "high_res_camera_prims") and len(self.high_res_camera_prims) > env_idx:
+                self.high_res_camera_prims[env_idx].GetFocalLengthAttr().Set(float(focal_lengths_cpu_to_update[idx_idx]))
 
         self.committed_focal_lengths[update_mask] = self.current_focal_lengths[update_mask].clone()
 
@@ -440,6 +453,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         if hasattr(self, "_ptz_camera"):
             self._ptz_camera._update_intrinsic_matrices(update_indices)
+        if hasattr(self, "_high_res_ptz_camera"):
+            self._high_res_ptz_camera._update_intrinsic_matrices(update_indices)
         
     def _zoom_ray_caster(self, env_ids=None):
         if env_ids is None:
@@ -761,12 +776,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.data_collector.collect(self._ptz_camera, self.common_step_counter)
 
         if self.pc_collector:
-             target_mask = self._get_semantic_mask(self._ptz_camera)
+             inspection_cam = getattr(self, "_high_res_ptz_camera", self._ptz_camera)
+             target_mask = self._get_semantic_mask(inspection_cam)
              if target_mask is not None:
                  if hasattr(self, '_nav_camera'):
-                     self.pc_collector.collect(self._ptz_camera, self.common_step_counter, semantic_mask=target_mask, nav_camera=self._nav_camera)
+                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask, nav_camera=self._nav_camera)
                  else:
-                     self.pc_collector.collect(self._ptz_camera, self.common_step_counter, semantic_mask=target_mask)
+                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask)
 
         # Record max distance from origin taking into account X and Y
         current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self.scene.env_origins[:, :2], dim=-1)
@@ -781,29 +797,29 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         Returns a boolean tensor (N, H, W, 1) or None if target not found.
         """
         # Ensure data exists
-        seg_data = camera.data.output["semantic_segmentation"]
-        
-        # Retrieve label mapping
+        seg_data = camera.data.output.get("semantic_segmentation")
+        if seg_data is None:
+            return None
+            
         info = camera.data.info.get("semantic_segmentation", {})
         id_to_labels = info.get("idToLabels", {})
-        target_class_names = self.cfg.env_parameters.semantics_name
         
-        if isinstance(target_class_names, str):
-            target_class_names = [target_class_names]
-
-        # Find the IDs associated with the class names
-        target_ids = []
-        for k, v in id_to_labels.items():
-            if v.get("class") in target_class_names:
-                target_ids.append(int(k))
+        mask = torch.zeros_like(seg_data, dtype=torch.bool)
         
-        if target_ids:
-            mask = torch.zeros_like(seg_data, dtype=torch.bool)
+        # We process the mask per environment to ensure only the specified target is validated.
+        for env_idx in range(self.num_envs):
+            target_name = self.env_target_names[env_idx]
+            
+            # Find the IDs associated with the specific target class name for this environment
+            target_ids = []
+            for k, v in id_to_labels.items():
+                if v.get("class") == target_name:
+                    target_ids.append(int(k))
+            
             for tid in target_ids:
-                mask |= (seg_data == tid)
-            return mask
-        
-        return None
+                mask[env_idx] |= (seg_data[env_idx] == tid)
+                
+        return mask if mask.any() else None
     
     def _update_max_ray_counts(self, valid_faces_tensor):
         """

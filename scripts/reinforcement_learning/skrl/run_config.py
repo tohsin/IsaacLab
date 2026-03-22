@@ -29,7 +29,7 @@ class TrainingConfig_2:
     is_eval = False
     headless = True
     checkpoint_path = None
-    num_envs = 32 # 128
+    num_envs =  32
     checkpoint_path = None
     reset_std    = True
     batch_size = 2048 # 8192
@@ -55,14 +55,19 @@ class TrainingConfig_2:
         "max_lr": 3e-3,
         "lr_factor": 1.15
     }
-path_local = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-17_07-42-02_ppo_gru_128/checkpoints/agent_234000.pt"
+# Old
+path_local0 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-17_07-42-02_ppo_gru_128/checkpoints/agent_234000.pt"
+#new
+path_local1 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-19_21-31-18_ppo_gru_128/checkpoints/agent_369000.pt"
+path_local = path_local0
+
 class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
-    headless = False
+    headless = True
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_local)
-    num_envs = 1
+    num_envs = 128
     use_wandb = False
     reset_std = False
     use_attention_fusion = True

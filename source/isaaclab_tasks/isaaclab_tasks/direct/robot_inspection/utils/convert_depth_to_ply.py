@@ -84,7 +84,7 @@ def create_pointcloud_from_depth(intrinsic_matrix, depth, position=None, orienta
         return points_w
         
     return points_c
-
+    # parser.add_argument("--output", type=str, default="data/point_clouds/flange_pc.ply", help="Output file.")
 def main():
     parser = argparse.ArgumentParser(description="Convert recorded depth to point cloud.")
     parser.add_argument("--data_path", type=str, default="data/recorded_depth_data_eval", help="Path to recording directory.")

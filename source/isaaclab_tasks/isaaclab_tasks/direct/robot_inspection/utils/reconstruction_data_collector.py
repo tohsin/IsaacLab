@@ -23,14 +23,18 @@ class ReconstructionDataCollector:
         
         self.depth_path = os.path.join(self.output_path, "depth")
         self.masks_path = os.path.join(self.output_path, "masks")
+        self.rgb_path = os.path.join(self.output_path, "rgb")
+        self.rgb_cameras_path = os.path.join(self.output_path, "rgb_cameras")
         
         # Cleanup and Create Directories
         if os.path.exists(self.output_path):
             shutil.rmtree(self.output_path)
         os.makedirs(self.depth_path, exist_ok=True)
         os.makedirs(self.masks_path, exist_ok=True)
+        os.makedirs(self.rgb_path, exist_ok=True)
+        os.makedirs(self.rgb_cameras_path, exist_ok=True)
         
-        print(f"[ReconstructionDataCollector] Initialized. Saving Depth/Masks to: {self.output_path}")
+        print(f"[ReconstructionDataCollector] Initialized. Saving Depth/Masks/RGB to: {self.output_path}")
         
         # Buffer for transforms.json
         self.transforms_data = {
@@ -96,12 +100,14 @@ class ReconstructionDataCollector:
         
         # Buffer the data
         rgb_np = None
+        rgb_cameras_np = None
         if "rgb" in camera.data.output:
             rgb_tensor = camera.data.output["rgb"][env_id] # (H, W, 4) or (H, W, 3)
             rgb_np = rgb_tensor.cpu().numpy()
             if rgb_np.shape[-1] == 4:
                 rgb_np = rgb_np[..., :3] # Remove Alpha
                 
+            rgb_cameras_np = rgb_np.copy()
             # If nav_camera is provided, stitch side-by-side
             if nav_camera is not None and "rgb" in nav_camera.data.output:
                 nav_rgb_tensor = nav_camera.data.output["rgb"][env_id]
@@ -117,7 +123,7 @@ class ReconstructionDataCollector:
                     nav_rgb_np = cv2.resize(nav_rgb_np, (w, h))
 
                 # Concatenate horizontally
-                rgb_np = np.concatenate((nav_rgb_np, rgb_np), axis=1)
+                rgb_cameras_np = np.concatenate((nav_rgb_np, rgb_np), axis=1)
 
         if not hasattr(self, 'frame_buffer'):
             self.frame_buffer = []
@@ -126,6 +132,7 @@ class ReconstructionDataCollector:
             "depth": depth_np,
             "mask": mask_np,
             "rgb": rgb_np,
+            "rgb_cameras": rgb_cameras_np,
             "transform_matrix": mat.tolist(),
             "fl_x": fl_x_frame,
             "fl_y": fl_y_frame,
@@ -201,9 +208,16 @@ class ReconstructionDataCollector:
                 shutil.rmtree(self.depth_path)
             if os.path.exists(self.masks_path):
                 shutil.rmtree(self.masks_path)
+            if os.path.exists(self.rgb_path):
+                shutil.rmtree(self.rgb_path)
+            if hasattr(self, 'rgb_cameras_path') and os.path.exists(self.rgb_cameras_path):
+                shutil.rmtree(self.rgb_cameras_path)
             
             os.makedirs(self.depth_path, exist_ok=True)
             os.makedirs(self.masks_path, exist_ok=True)
+            os.makedirs(self.rgb_path, exist_ok=True)
+            if hasattr(self, 'rgb_cameras_path'):
+                os.makedirs(self.rgb_cameras_path, exist_ok=True)
             
             data_copy = self.transforms_data.copy()
             data_copy["frames"] = []
@@ -225,13 +239,32 @@ class ReconstructionDataCollector:
                     mask_img = Image.fromarray((frame["mask"] * 255).astype(np.uint8))
                     mask_img.save(mask_filepath)
                     
-                # Collect RGB for video
+                # Collect RGB for GS and save to disk
+                rgb_filename = None
                 if frame.get("rgb") is not None:
-                    rgb_frames.append(frame["rgb"])
+                    rgb_filename = f"{file_name_base}.png"
+                    rgb_filepath = os.path.join(self.rgb_path, rgb_filename)
+                    # Save natively as 8-bit RGB image
+                    rgb_to_save = frame["rgb"]
+                    if rgb_to_save.dtype != np.uint8:
+                        rgb_to_save = (rgb_to_save * 255).astype(np.uint8)
+                    rgb_img = Image.fromarray(rgb_to_save)
+                    rgb_img.save(rgb_filepath)
+
+                # Collect RGB Cameras for video tracing and save to disk
+                if frame.get("rgb_cameras") is not None:
+                    rgb_cameras_to_save = frame["rgb_cameras"]
+                    if rgb_cameras_to_save.dtype != np.uint8:
+                        rgb_cameras_to_save = (rgb_cameras_to_save * 255).astype(np.uint8)
+                    rgb_frames.append(rgb_cameras_to_save)
+                    if hasattr(self, 'rgb_cameras_path'):
+                        rgb_cameras_filepath = os.path.join(self.rgb_cameras_path, f"{file_name_base}.png")
+                        Image.fromarray(rgb_cameras_to_save).save(rgb_cameras_filepath)
 
                 # Add Entry
                 frame_entry = {
-                    "file_path": f"depth/{depth_filename}",
+                    "file_path": f"rgb/{rgb_filename}" if rgb_filename else f"depth/{depth_filename}",
+                    "depth_file_path": f"depth/{depth_filename}",
                     "transform_matrix": frame["transform_matrix"],
                     "fl_x": frame.get("fl_x", data_copy.get("fl_x")),
                     "fl_y": frame.get("fl_y", data_copy.get("fl_y")),
