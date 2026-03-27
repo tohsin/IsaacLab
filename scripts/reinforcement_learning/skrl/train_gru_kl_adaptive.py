@@ -23,7 +23,7 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
-parser.add_argument("--max_episodes", type=int, default=128, help="Maximum number of episodes to run in evaluation mode.")
+parser.add_argument("--max_episodes", type=int, default=20, help="Maximum number of episodes to run in evaluation mode.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
 # append AppLauncher cli args
 
@@ -419,8 +419,8 @@ cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = CONFIG.entropy_coef # Reduced to 1e-4 to stop std from climbing
-cfg["value_loss_scale"] = 1.0
+cfg["entropy_loss_scale"] = CONFIG.entropy_coef
+cfg["value_loss_scale"] = getattr(CONFIG, "value_loss_scale", 1.0)
 cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 1.0
 cfg["time_limit_bootstrap"] = True
 
@@ -434,7 +434,8 @@ log_root_path = os.path.join(script_dir, "logs", "skrl", "3DInspection_direct")
 log_root_path = os.path.abspath(log_root_path)
 
 # experiment_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_ppo_gru_128"
-experiment_name = "Buld_dataset_2"
+# experiment_name = "Buld_dataset_2"
+experiment_name = "SEEIR-Baseline1" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 print(f"[INFO] Logging experiment in directory: {log_root_path}")
 
@@ -455,7 +456,7 @@ if not is_eval and _use_wandb:
 
 if _use_wandb:
     cfg["experiment"]["wandb_kwargs"] = {
-        "project": "3DInspection_NoRNN",  # Name of the project in WandB dashboard
+        "project": "Multi_object_inspection",  # Name of the project in WandB dashboard
         "name": experiment_name,           # Name of this specific run
         "tags": ["PPO", "IsaacLab", args_cli.task],
         # "config": {}

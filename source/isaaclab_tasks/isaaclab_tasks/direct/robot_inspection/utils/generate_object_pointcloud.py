@@ -8,20 +8,24 @@ from __future__ import annotations
 
 import argparse
 from isaaclab.app import AppLauncher
+#python generate_object_pointcloud.py --dataset_key forklift --headless
 
 # Create the parser
 parser = argparse.ArgumentParser(description="Generate a point cloud from an inspection object.")
 parser.add_argument("--usd_path", type=str, default=None, help="Path to the USD file.")
-parser.add_argument("--num_points", type=int, default=10000, help="Number of points to sample.")
-parser.add_argument("--output", type=str, default="data/point_clouds/inspection_object_baseline.ply", help="Output PLY file path.")
+parser.add_argument("--dataset_key", type=str, default="small_corner_bracket_physics", help="Optional dataset key from data_set.py (e.g. 'forklift'). This overrides --usd_path and its config scale/orientation.")
+parser.add_argument("--num_points", type=int, default=10_000, help="Number of points to sample.")
+parser.add_argument("--output", type=str, default="data/point_clouds/dataset/small_corner_bracket_physics.ply", help="Output PLY file path.")
 parser.add_argument("--scale", type=float, nargs=3, default=[10.0, 10.0, 10.0], help="Scale of the object (x, y, z).")
 parser.add_argument("--pos", type=float, nargs=3, default=[0.0, -2.0, 0.3], help="Position of the object (x, y, z).")
 parser.add_argument("--center", action="store_true", help="Center the point cloud at (0,0,0) by subtracting the centroid.")
-# parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode.") # AppLauncher handles this
 
 # Append AppLauncher arguments
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+
+# Force headless mode since we are not passing it as a CLI argument
+args.headless = True
 
 # Launch the app
 app_launcher = AppLauncher(args)
@@ -34,6 +38,21 @@ import trimesh
 from pxr import Usd, UsdGeom, Gf
 import isaacsim.core.utils.stage as stage_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from scipy.spatial.transform import Rotation as R
+
+import sys
+# Allow importing of data_set if running this script strictly
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../..")))
+usd_data_set = {}
+usd_data_set_old = {}
+try:
+    from isaaclab_tasks.direct.robot_inspection.configs.data_set import usd_data_set
+except ImportError:
+    print("[WARN] Could not import usd_data_set")
+try:
+    from isaaclab_tasks.direct.robot_inspection.configs.data_set import usd_data_set_old
+except ImportError:
+    pass
 
 def triangulate_mesh(counts, indices):
     """
@@ -79,6 +98,29 @@ def get_mesh_from_prim(mesh_prim: UsdGeom.Mesh):
     return mesh
 
 def main():
+    # Load dataset config if dataset_key is used
+    orientation_quat = None
+    if getattr(args, "dataset_key", None):
+        combined_dataset = {**usd_data_set_old, **usd_data_set}
+        if args.dataset_key not in combined_dataset:
+            raise ValueError(f"[ERROR] Dataset key '{args.dataset_key}' not found in data_set.py")
+        
+        target_cfg = combined_dataset[args.dataset_key]
+        args.usd_path = target_cfg.get("usd_path", args.usd_path)
+        print(f"[INFO] Using dataset key: {args.dataset_key}")
+        
+        if "scale" in target_cfg:
+            s = target_cfg["scale"]
+            if isinstance(s, (list, tuple)):
+                args.scale = list(s)
+            else:
+                args.scale = [s, s, s]
+            print(f"[INFO] Loaded scale {args.scale} from dataset config.")
+            
+        if "orientation" in target_cfg:
+            orientation_quat = target_cfg["orientation"] # (w, x, y, z)
+            print(f"[INFO] Loaded orientation {orientation_quat} from dataset config.")
+
     # Default path if none provided
     usd_path = args.usd_path
     if not usd_path:
@@ -147,6 +189,16 @@ def main():
     scale_matrix[2, 2] = args.scale[2]
     combined_mesh.apply_transform(scale_matrix)
     print(f"[INFO] Applied Scale: {args.scale}")
+    
+    # Apply Orientation from dataset if available
+    if orientation_quat is not None:
+        w, x, y, z = orientation_quat
+        # scipy Rotation expects [x, y, z, w]
+        rot = R.from_quat([x, y, z, w])
+        orientation_matrix = np.eye(4)
+        orientation_matrix[:3, :3] = rot.as_matrix()
+        combined_mesh.apply_transform(orientation_matrix)
+        print(f"[INFO] Applied Orientation from dataset config")
     
     # Apply Position (Translation)
     translation_matrix = np.eye(4)

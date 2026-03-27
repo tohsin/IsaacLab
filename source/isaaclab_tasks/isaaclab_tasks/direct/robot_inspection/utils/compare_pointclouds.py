@@ -52,13 +52,28 @@ def compute_metrics(source_points, target_points):
         coverage_pct = (covered_count / len(source_points)) * 100
         metrics[f"Coverage @ {thresh:.2f}"] = coverage_pct
         
+    # Calculate AUC (Area Under Curve) of Coverage up to 0.2m
+    max_thresh_auc = 0.2
+    dense_thresholds = np.linspace(0.0, max_thresh_auc, 100)
+    # Compute coverage proportion (0.0 to 1.0) for each threshold
+    coverages = [np.sum(dist_s2t < d) / len(source_points) for d in dense_thresholds]
+    
+    # Calculate the area underneath the plotted curve using trapezoidal rule
+    auc_area = np.trapz(coverages, dense_thresholds)
+    # Normalize by the max distance width so perfectly matching point clouds score 1.0
+    auc_normalized = auc_area / max_thresh_auc
+    
+    metrics[f"Coverage AUC (up to {max_thresh_auc}m)"] = auc_normalized
+        
     return metrics
-
+source = "data/point_clouds/dataset/small_corner_bracket_physics.ply"
+target = "data/point_clouds/eval/small_corner_bracket_physics.ply"
 def main():
     parser = argparse.ArgumentParser(description="Compare two point clouds.")
-    parser.add_argument("--source", type=str, default="data/point_clouds/inspection_object_baseline.ply", help="Path to source PLY (e.g. reconstructed).")
-    parser.add_argument("--target", type=str, default="data/point_clouds/SEEIR_eval_point_cloud.ply", help="Path to target PLY (e.g. baseline/GT).")
+    parser.add_argument("--source", type=str, default=source, help="Path to source PLY (e.g. reconstructed).")
+    parser.add_argument("--target", type=str, default=target, help="Path to target PLY (e.g. baseline/GT).")
     parser.add_argument("--visualize", action="store_true", help="Visualize error (requires Open3D/matplotlib - simpler just prints).")
+    parser.add_argument("--icp", action=argparse.BooleanOptionalAction, default=True, help="Run ICP alignment before comparison to fix offsets (default: True). Use --no-icp to disable.")
     
     args = parser.parse_args()
     
@@ -87,6 +102,34 @@ def main():
         
     print(f"[INFO] Source Points: {points_source.shape[0]}")
     print(f"[INFO] Target Points: {points_target.shape[0]}")
+    
+    if args.icp:
+        print("[INFO] Running ICP Alignment...")
+        try:
+            import open3d as o3d
+            source_o3d = o3d.geometry.PointCloud()
+            source_o3d.points = o3d.utility.Vector3dVector(points_source)
+            target_o3d = o3d.geometry.PointCloud()
+            target_o3d.points = o3d.utility.Vector3dVector(points_target)
+            
+            # Initial alignment using centroids
+            source_center = np.mean(points_source, axis=0)
+            target_center = np.mean(points_target, axis=0)
+            source_o3d.translate(target_center - source_center)
+            
+            # ICP
+            threshold = 0.5  # 50cm search radius
+            trans_init = np.eye(4)
+            reg_p2p = o3d.pipelines.registration.registration_icp(
+                source_o3d, target_o3d, threshold, trans_init,
+                o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+                o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=2000)
+            )
+            print(f"[INFO] ICP Converged: {reg_p2p.fitness}")
+            source_o3d.transform(reg_p2p.transformation)
+            points_source = np.asarray(source_o3d.points)
+        except ImportError:
+            print("[WARN] Open3D not found, skipping ICP.")
     
     metrics = compute_metrics(points_source, points_target)
     
@@ -120,7 +163,7 @@ def main():
     colors[~mask_covered] = [255, 0, 0, 255]
     
     pcd_vis = trimesh.points.PointCloud(points_source, colors=colors)
-    vis_path = "data/point_clouds/comparison_vis.ply"
+    vis_path = "data/point_clouds/compare/small_corner_bracket_physics.ply"
     pcd_vis.export(vis_path)
     print(f"[INFO] Saved visualization to: {vis_path}")
     print(f"       Use view_pointcloud.py to see Green (Covered) vs Red (Missed).")

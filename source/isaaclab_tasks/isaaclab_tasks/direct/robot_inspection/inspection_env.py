@@ -254,7 +254,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             obj_cfg = sim_utils.UsdFileCfg(
                 usd_path=usd_path,
                 scale=scale,
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True, kinematic_enabled=True),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True, kinematic_enabled=False),
                 mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
                 collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                 semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type, target_name)]
@@ -262,7 +262,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             obj_cfg.func(
                 prim_path_template,
                 obj_cfg,
-                translation=(2.0, 0.0, 0.7),
+                translation=(2.0, 0.0, 0.4),
                 orientation=orientation,
             )
 
@@ -806,18 +806,31 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         mask = torch.zeros_like(seg_data, dtype=torch.bool)
         
-        # We process the mask per environment to ensure only the specified target is validated.
-        for env_idx in range(self.num_envs):
-            target_name = self.env_target_names[env_idx]
+        # 1. Pre-compute mappings in Python (runs very fast since num unique classes is small)
+        class_to_ids = {}
+        for k, v in id_to_labels.items():
+            cls_name = v.get("class")
+            if cls_name not in class_to_ids:
+                class_to_ids[cls_name] = []
+            class_to_ids[cls_name].append(int(k))
+
+        target_to_envs = {}
+        for env_idx, target_name in enumerate(self.env_target_names):
+            if target_name not in target_to_envs:
+                target_to_envs[target_name] = []
+            target_to_envs[target_name].append(env_idx)
+
+        # 2. Vectorized mask application per target class
+        for target_name, env_indices in target_to_envs.items():
+            target_ids = class_to_ids.get(target_name, [])
+            if not target_ids:
+                continue
+                
+            env_indices_tensor = torch.tensor(env_indices, device=seg_data.device, dtype=torch.long)
+            target_ids_tensor = torch.tensor(target_ids, device=seg_data.device, dtype=seg_data.dtype)
             
-            # Find the IDs associated with the specific target class name for this environment
-            target_ids = []
-            for k, v in id_to_labels.items():
-                if v.get("class") == target_name:
-                    target_ids.append(int(k))
-            
-            for tid in target_ids:
-                mask[env_idx] |= (seg_data[env_idx] == tid)
+            # Using torch.isin applies the mask for all corresponding environments and IDs at once
+            mask[env_indices_tensor] = torch.isin(seg_data[env_indices_tensor], target_ids_tensor)
                 
         return mask if mask.any() else None
     

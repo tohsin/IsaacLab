@@ -115,7 +115,7 @@ class record_depth_Cfg:
     use_wandb =  False 
     headless = False
     num_envs = 1
-    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval")
+    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval/small_corner_bracket_physics")
     save_images = False
     save_depth = True
     save_interval = 5 # Save every 5 steps to avoid huge data
@@ -125,7 +125,7 @@ class record_depth_Cfg:
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = True
-    add_high_res_inspection_camera = False
+    add_high_res_inspection_camera = True
     high_res_camera_width = 512
     high_res_camera_height = 512
 

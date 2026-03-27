@@ -13,11 +13,12 @@ class TrainingConfig_1:
     reset_std = True
     batch_size = 8192 # 8192
     use_attention_fusion = True
-    entropy_coef = 3e-4
-    learning_rate = 2e-5
+    entropy_coef = 3e-4  # Moderately increased for better exploration with diverse objects
+    value_loss_scale = 1.0  # Increased to give a stronger signal to the critic
+    learning_rate = 3e-5
     init_log_std = 0.0 
     use_wandb = True
-    global_timesteps = 30_000_000
+    global_timesteps = 40_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -59,7 +60,8 @@ class TrainingConfig_2:
 path_local0 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-17_07-42-02_ppo_gru_128/checkpoints/agent_234000.pt"
 #new
 path_local1 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-19_21-31-18_ppo_gru_128/checkpoints/agent_369000.pt"
-path_local = path_local0
+path_local2 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-25_14-04-51_ppo_gru_128/checkpoints/agent_420000.pt"
+path_local = path_local2
 
 class EvaluationConfig:
     optimizer_class = "adam"
@@ -67,7 +69,7 @@ class EvaluationConfig:
     headless = True
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_local)
-    num_envs = 128
+    num_envs = 1
     use_wandb = False
     reset_std = False
     use_attention_fusion = True

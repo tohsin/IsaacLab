@@ -119,11 +119,12 @@ def main():
         K[1, 2] = frame.get('cy', data['cy'])
         intrinsic_matrix = torch.tensor(K, dtype=torch.float32, device=device)
         # Load Depth
-        depth_path = os.path.join(args.data_path, frame["file_path"])
+        depth_rel_path = frame.get("depth_file_path", frame["file_path"])
+        depth_path = os.path.join(args.data_path, depth_rel_path)
         if not os.path.exists(depth_path):
             continue
             
-        depth_np = np.load(depth_path)
+        depth_np = np.load(depth_path, allow_pickle=True)
         depth_tensor = torch.tensor(depth_np, dtype=torch.float32, device=device)
         
         # Load Mask
