@@ -86,3 +86,11 @@ usd_data_set = {
 }
 # During evaluation we test one obejt at at time for now we  want to see if we have annurate estiamtion of number of obejhcts so we
 #overstimate the number of faces to increase potentially ceeling to improve dataset estimation
+# We pretrain on single easy object fine tune on harder objects
+# usd_data_set = {
+#     "rubiks_cube": {
+#         "num_faces": 3800,
+#         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+#         "prim_path": "/World/envs/env_.*/rubiks_cube",
+#     },
+# }

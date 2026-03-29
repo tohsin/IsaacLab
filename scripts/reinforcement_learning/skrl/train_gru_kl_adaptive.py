@@ -430,13 +430,14 @@ cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-log_root_path = os.path.join(script_dir, "logs", "skrl", "3DInspection_direct")
+log_root_path = os.path.join(script_dir, "logs", "skrl", "SEEIR-Baseline")
 log_root_path = os.path.abspath(log_root_path)
 
 # experiment_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_ppo_gru_128"
 # experiment_name = "Buld_dataset_2"
-experiment_name = "SEEIR-Baseline1" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
+# experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+# experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+experiment_name = "Finetune-SEEIR-Baseline " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 print(f"[INFO] Logging experiment in directory: {log_root_path}")
 
 log_dir = os.path.join(log_root_path, experiment_name)

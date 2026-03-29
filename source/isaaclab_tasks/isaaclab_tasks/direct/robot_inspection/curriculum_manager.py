@@ -143,7 +143,9 @@ class Curriculum:
     def get_current_spawn_max_y(self) -> float:
         """Returns the current maximum Y spawn coordinate based on curriculum progress."""
         progress = self.get_progress()
-        return self.spawn_max_y_init + (self.spawn_max_y_final - self.spawn_max_y_init) * progress
+        current_y = self.spawn_max_y_init + (self.spawn_max_y_final - self.spawn_max_y_init) * progress
+        min_y = getattr(cfg_mode, "min_spawn_max_y", self.spawn_max_y_init)
+        return max(min_y, current_y)
 
     def get_total_task_area(self) -> float:
         """Returns the total square meters of the current valid spawn area bounds."""
@@ -165,7 +167,8 @@ class Curriculum:
         # Scale up faster, starting with a base of 1 obstacle at 0.0 progress, which makes it 2 at 0.1, up to max_obstacles
         num = int(progress * max_obstacles) + 1
         
-        return max(2, min(num, max_obstacles))
+        min_obs = getattr(cfg_mode, "min_obstacles", 2)
+        return max(min_obs, min(num, max_obstacles))
 
     def get_start_pos(self, num_resets: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Gets random start positions from bounding boxes."""

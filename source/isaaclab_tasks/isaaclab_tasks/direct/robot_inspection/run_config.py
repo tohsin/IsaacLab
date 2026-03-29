@@ -30,7 +30,7 @@ class debug_Cfg:
     randomize_spawns = True
     use_hardest_curriculum = True
 
-class train_Cfg:
+class train_Cfg_base:
     debug = False
     min_episode_length: int = 1000
     max_episode_length: int = 2500
@@ -50,6 +50,20 @@ class train_Cfg:
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = False
+    min_obstacles: int = 2
+    min_spawn_max_y: float = 5.0
+
+class train_Cfg_pretrain(train_Cfg_base):
+    min_episode_length: int = 1000
+    max_episode_length: int = 2500
+    
+
+class train_Cfg_finetune(train_Cfg_base):
+    inspection_goal =  0.9
+    min_episode_length: int = 2200
+    max_episode_length: int = 2500
+    min_obstacles: int = 8
+    min_spawn_max_y: float = 9.0
 
 class eval_Cfg:
     debug = True
@@ -130,8 +144,9 @@ class record_depth_Cfg:
     high_res_camera_height = 512
 
 modes = [debug_Cfg, #0
-    train_Cfg, #1
-    eval_Cfg, #2
-    record_Cfg, #3
-    record_depth_Cfg] #4
-cfg_mode = modes[1]
+    train_Cfg_pretrain, #1
+    train_Cfg_finetune, #2
+    eval_Cfg, #3
+    record_Cfg, #4
+    record_depth_Cfg] #5
+cfg_mode = modes[2]
