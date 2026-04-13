@@ -61,6 +61,10 @@ class ReconstructionDataCollector:
         """
         if step_idx % self.save_interval != 0:
             return
+            
+        if getattr(self, "is_first_frame", True):
+            self.is_first_frame = False
+            return
 
         env_id = 0
         if "distance_to_image_plane" not in camera.data.output:
@@ -70,7 +74,8 @@ class ReconstructionDataCollector:
         depth_tensor = camera.data.output["distance_to_image_plane"][env_id] # (H, W) or (H, W, 1)
         intrinsic_matrix = camera.data.intrinsic_matrices[env_id]
         cam_pos_w = camera.data.pos_w[env_id]
-        cam_quat_w = camera.data.quat_w_world[env_id]
+        # cam_quat_w = camera.data.quat_w_world[env_id]
+
         
         # --- Handle Intrinsics (Once) ---
         if not self.intrinsics_set:
@@ -302,6 +307,7 @@ class ReconstructionDataCollector:
         # Always clear buffer after episode
         self.frame_buffer = []
         self.frame_idx = 0
+        self.is_first_frame = True
 
     def save(self):
         print(f"[ReconstructionDataCollector] Finalized.")

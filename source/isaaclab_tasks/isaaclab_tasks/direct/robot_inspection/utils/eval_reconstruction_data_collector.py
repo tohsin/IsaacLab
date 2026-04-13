@@ -17,12 +17,13 @@ class EvalReconstructionDataCollector:
         # Quaternion to rotate from Optical Frame (Z-forward) to ROS Camera Frame (X-forward)
         # R_optical_to_ros = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
         # q = (w=0.5, x=-0.5, y=0.5, z=-0.5)
-        # self.optical_to_ros_quat = torch.tensor([0.5, -0.5, 0.5, -0.5], device=device)
+        self.optical_to_ros_quat = torch.tensor([0.5, -0.5, 0.5, -0.5], device=device)
         self.chassis_min_dist_sq = 0.4 ** 2
 
     def reset(self):
         """Clears the accumulated point cloud buffer."""
         self.episode_points = []
+        self.is_first_frame = True
 
     def add_frame(self, depth, intrinsic_matrix, position, orientation, semantic_mask=None):
         """
@@ -39,6 +40,11 @@ class EvalReconstructionDataCollector:
             orientation (torch.Tensor): Camera orientation (4,).
             semantic_mask (torch.Tensor, optional): Boolean mask (H, W) or (H, W, 1). True = Target.
         """
+        # Skip the very first frame of every episode to prevent stale "phantom" objects
+        # from being projected across episode boundaries
+        if getattr(self, "is_first_frame", True):
+            self.is_first_frame = False
+            return
         # 1. Apply Semantic Mask to Depth (Early Filtering)
         # If we have a mask, we can set non-target depth to a "invalid" value (e.g. 0 or -1)
         # to prevent those points from being generated or to easily filter them later.
@@ -67,9 +73,11 @@ class EvalReconstructionDataCollector:
         # before applying the body-to-world rotation.
         # orientation_world_acc_optical = orientation_world_acc_ros * q_ros_acc_optical
         
-        corrected_orientation = orientation #quat_mul(orientation, self.optical_to_ros_quat)
+        # Convert orientation from optical (Z-forward) to ROS (X-forward) frame
+        corrected_orientation = quat_mul(orientation, self.optical_to_ros_quat)
 
         # 2. Generate Point Cloud
+        # Generate point cloud using corrected orientation
         points = create_pointcloud_from_depth(
                 intrinsic_matrix=intrinsic_matrix,
                 depth=d,

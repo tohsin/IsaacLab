@@ -92,6 +92,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
             usd_path=ROBOT_CONFIGS["jackal_ptz"]["usd_path"],
+            activate_contact_sensors=True,
         ),
         actuators={
             "wheel_acts": ImplicitActuatorCfg(

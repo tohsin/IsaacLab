@@ -9,10 +9,10 @@ class Curriculum:
                 max_coverage_ratio: float = 0.95,
                 
                 # Asymmetric increments
-                coverage_increment_up: float = 0.05,
-                coverage_increment_down: float = 0.025,
-                success_rate_increase_thresh = 0.67,
-                success_rate_decrease_thresh = 0.58,
+                coverage_increment_up: float = 0.05, # 0.05,
+                coverage_increment_down: float = 0.02,
+                success_rate_increase_thresh = 0.7, #0.67
+                success_rate_decrease_thresh = 0.6,
 
                 start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
@@ -248,8 +248,8 @@ class Curriculum:
             # Last Resort: If we exhaust 100 attempts, just place it far enough deterministically
             if not valid:
                 print(f"[Curriculum WARN] Could not find valid spawn for env {i} far enough from robot. Using fallback.")
-                selected_positions[i, 0] = self.spawn_min_x
-                selected_positions[i, 1] = current_spawn_max_y
+                selected_positions[i, 0] = self.spawn_min_x + torch.rand(1, device=self.device).item() * 0.5
+                selected_positions[i, 1] = current_spawn_max_y - torch.rand(1, device=self.device).item() * 0.5
 
         # For the object, we use identity quaternion to not break the raycaster
         selected_ori = torch.zeros((num_resets, 4), device=self.device)
@@ -287,7 +287,7 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
 
-        min_dist = 2 # Minimum 1m distance from any other object
+        min_dist = 2.5 # Minimum 1m distance from any other object
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         current_spawn_max_y = self.get_current_spawn_max_y()
@@ -328,9 +328,12 @@ class Curriculum:
         # Fallback for any that didn't find a spot
         if needs_spawn.any():
             fallback_indices = needs_spawn.nonzero().squeeze(-1)
-            print(f"[Curriculum WARN] Could not find valid spawn for {len(fallback_indices)} obstacles. Using fallback.")
-            selected_positions[fallback_indices, 0] = self.spawn_min_x
-            selected_positions[fallback_indices, 1] = current_spawn_max_y
+            print(f"[Curriculum WARN] Could not find valid spawn for {len(fallback_indices)} obstacles. Using fallback with offset.")
+            # Spread them out slightly along the boundary to avoid perfect physics overlap which crashes the GPU
+            jitter_x = torch.rand(len(fallback_indices), device=self.device) * 2.0
+            jitter_y = torch.rand(len(fallback_indices), device=self.device) * 2.0
+            selected_positions[fallback_indices, 0] = self.spawn_min_x + jitter_x
+            selected_positions[fallback_indices, 1] = current_spawn_max_y - jitter_y
             
         # For obstacles, we use identity quaternion (w=1) since they are symmetric or fine in default pose
         selected_ori = torch.zeros((num_resets, 4), device=self.device)

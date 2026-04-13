@@ -1,0 +1,1 @@
+$$ \tau_{\text{current}} = \tau_{\text{rubix}} \times \left( \frac{N_{\text{rubix}}}{N_{\text{current}}} \right) $$

@@ -66,14 +66,17 @@ def compute_metrics(source_points, target_points):
     metrics[f"Coverage AUC (up to {max_thresh_auc}m)"] = auc_normalized
         
     return metrics
-source = "data/point_clouds/dataset/small_corner_bracket_physics.ply"
-target = "data/point_clouds/eval/small_corner_bracket_physics.ply"
+source = "data/recorded_depth_data_eval/eval_results/bracket-SEEIR/reconstructed_env0_ep24990.ply"
+target = "data/point_clouds/Ground-Truth/small_corner_bracket_physics.ply"
 def main():
     parser = argparse.ArgumentParser(description="Compare two point clouds.")
     parser.add_argument("--source", type=str, default=source, help="Path to source PLY (e.g. reconstructed).")
     parser.add_argument("--target", type=str, default=target, help="Path to target PLY (e.g. baseline/GT).")
     parser.add_argument("--visualize", action="store_true", help="Visualize error (requires Open3D/matplotlib - simpler just prints).")
     parser.add_argument("--icp", action=argparse.BooleanOptionalAction, default=True, help="Run ICP alignment before comparison to fix offsets (default: True). Use --no-icp to disable.")
+    parser.add_argument("--outlier_removal", action=argparse.BooleanOptionalAction, default=True, help="Run Statistical Outlier Removal before evaluation.")
+    parser.add_argument("--sor_neighbors", type=int, default=30, help="Number of neighbors for Statistical Outlier Removal.")
+    parser.add_argument("--sor_std", type=float, default=1.0, help="Standard deviation ratio for Statistical Outlier Removal.")
     
     args = parser.parse_args()
     
@@ -103,6 +106,19 @@ def main():
     print(f"[INFO] Source Points: {points_source.shape[0]}")
     print(f"[INFO] Target Points: {points_target.shape[0]}")
     
+    if args.outlier_removal:
+        print(f"[INFO] Running Statistical Outlier Removal (neighbors={args.sor_neighbors}, std_ratio={args.sor_std})...")
+        try:
+            import open3d as o3d
+            source_o3d = o3d.geometry.PointCloud()
+            source_o3d.points = o3d.utility.Vector3dVector(points_source)
+            cl, ind = source_o3d.remove_statistical_outlier(nb_neighbors=args.sor_neighbors, std_ratio=args.sor_std)
+            filtered_points = np.asarray(cl.points)
+            print(f"[INFO] Filtered from {len(points_source)} to {len(filtered_points)} points.")
+            points_source = filtered_points
+        except ImportError:
+            print("[WARN] Open3D not found, skipping outlier removal.")
+
     if args.icp:
         print("[INFO] Running ICP Alignment...")
         try:

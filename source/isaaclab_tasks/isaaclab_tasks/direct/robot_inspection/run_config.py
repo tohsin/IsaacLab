@@ -54,16 +54,20 @@ class train_Cfg_base:
     min_spawn_max_y: float = 5.0
 
 class train_Cfg_pretrain(train_Cfg_base):
-    min_episode_length: int = 1000
+    min_episode_length: int = 800
     max_episode_length: int = 2500
     
+class train_Cfg_diverse_scratch(train_Cfg_base):
+    min_episode_length: int = 1000
+    max_episode_length: int = 2500
+
 
 class train_Cfg_finetune(train_Cfg_base):
-    inspection_goal =  0.9
-    min_episode_length: int = 2200
-    max_episode_length: int = 2500
+    inspection_goal =  0.7
+    min_episode_length: int =1500
+    max_episode_length: int = 3000
     min_obstacles: int = 8
-    min_spawn_max_y: float = 9.0
+    min_spawn_max_y: float = 7.0
 
 class eval_Cfg:
     debug = True
@@ -115,11 +119,12 @@ class record_Cfg:
     use_hardest_curriculum = True
 
 class record_depth_Cfg:
-    debug = False
-    min_episode_length: int = 2500
+    is_multi_env_pc_eval = True
+    debug = True #True
+    min_episode_length: int = 3000
     logging_interval: int = 100
-    max_episode_length: int = 2500
-    inspection_goal =  0.95
+    max_episode_length: int = 3000
+    inspection_goal =  1.0
     visualisation_mode = None
     display_ray_counts = False
     visualise_point_cloud = False
@@ -129,7 +134,8 @@ class record_depth_Cfg:
     use_wandb =  False 
     headless = False
     num_envs = 1
-    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval/small_corner_bracket_physics")
+    eval_results_subdir = "ur10_mount"
+    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval/ur10_mount")
     save_images = False
     save_depth = True
     save_interval = 5 # Save every 5 steps to avoid huge data
@@ -146,7 +152,9 @@ class record_depth_Cfg:
 modes = [debug_Cfg, #0
     train_Cfg_pretrain, #1
     train_Cfg_finetune, #2
-    eval_Cfg, #3
-    record_Cfg, #4
-    record_depth_Cfg] #5
-cfg_mode = modes[2]
+    train_Cfg_diverse_scratch, #3
+    eval_Cfg, #4
+    record_Cfg, #5
+    record_depth_Cfg, #6
+    ] #6
+cfg_mode = modes[1]

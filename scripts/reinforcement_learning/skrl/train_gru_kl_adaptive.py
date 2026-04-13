@@ -8,7 +8,7 @@ import numpy as np
 import warnings
 # from heavyball import ForeachMuon
 # import heavyball.utils
-torch.autograd.set_detect_anomaly(True)
+torch.autograd.set_detect_anomaly(False)
 
 # conda install -c conda-forge gcc=12 -y
 from isaaclab.app import AppLauncher
@@ -23,7 +23,7 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
-parser.add_argument("--max_episodes", type=int, default=20, help="Maximum number of episodes to run in evaluation mode.")
+parser.add_argument("--max_episodes", type=int, default=10, help="Maximum number of episodes to run in evaluation mode.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
 # append AppLauncher cli args
 
@@ -61,6 +61,9 @@ from muon import Muon
 sys.argv.append("--enable_cameras")
 
 set_seed(42)
+# Override cuDNN deterministic setting to avoid random CUDNN_STATUS_EXECUTION_FAILED in GRU backward pass
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = True
 # for some reason changing the clip actionsvarialbe to true in thr training script causes this error
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self,
@@ -357,6 +360,9 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
 )
+env_cfg.is_multi_env_pc_eval = is_eval
+env_cfg.save_depth = getattr(CONFIG, "save_depth", False)
+env_cfg.data_recording_path = getattr(CONFIG, "data_recording_path", None)
 env_cfg.seed = 42
 env = gym.make(args_cli.task, cfg=env_cfg)
 env = wrap_env(env)
@@ -391,7 +397,7 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 4 #8
+cfg["learning_epochs"] = 6 #8
 cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.97 #0.95 0.97
@@ -416,7 +422,7 @@ elif "T_max" in cfg["learning_rate_scheduler_kwargs"]:
         cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_max_steps
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
-cfg["grad_norm_clip"] = 0.7
+cfg["grad_norm_clip"] = 1.0
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef
@@ -437,32 +443,37 @@ log_root_path = os.path.abspath(log_root_path)
 # experiment_name = "Buld_dataset_2"
 # experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-experiment_name = "Finetune-SEEIR-Baseline " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-print(f"[INFO] Logging experiment in directory: {log_root_path}")
+experiment_name = "Pretrain-SEEIR-Baseline " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-log_dir = os.path.join(log_root_path, experiment_name)
-print(f"[INFO] skrl will log this experiment in: {log_dir}")
+if not is_eval:
+    print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    log_dir = os.path.join(log_root_path, experiment_name)
+    print(f"[INFO] skrl will log this experiment in: {log_dir}")
+    os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
+    os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
-os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
-os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
+    if _use_wandb:
+        cfg["experiment"]["write_interval"] = 1000
+        cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
+        cfg["experiment"]["checkpoint_interval"] = 3_000
+        cfg["experiment"]["directory"] = log_root_path
+        cfg["experiment"]["experiment_name"] = experiment_name
+        cfg["experiment"]["wandb"] = _use_wandb
 
+        cfg["experiment"]["wandb_kwargs"] = {
+            "project": "Multi_object_inspection",  # Name of the project in WandB dashboard
+            "name": experiment_name,           # Name of this specific run
+            "tags": ["PPO", "IsaacLab", args_cli.task],
+            # "config": {}
+        }
+else:
+    # Disable all logging in evaluation mode to prevent empty directories and w&b logs
+    cfg["experiment"]["write_interval"] = 0
+    cfg["experiment"]["checkpoint_interval"] = 0
+    cfg["experiment"]["wandb"] = False
+    cfg["experiment"]["directory"] = ""
 
 if not is_eval and _use_wandb:
-    cfg["experiment"]["write_interval"] = 1000 if not is_eval else 0
-    cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
-    cfg["experiment"]["checkpoint_interval"] = 3_000 if not is_eval else 0
-    cfg["experiment"]["directory"] = log_root_path
-    cfg["experiment"]["experiment_name"] = experiment_name
-    cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
-
-if _use_wandb:
-    cfg["experiment"]["wandb_kwargs"] = {
-        "project": "Multi_object_inspection",  # Name of the project in WandB dashboard
-        "name": experiment_name,           # Name of this specific run
-        "tags": ["PPO", "IsaacLab", args_cli.task],
-        # "config": {}
-    }
-
     # Try to extract curriculum config if available
     try:
         # Access the base environment

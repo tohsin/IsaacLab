@@ -51,7 +51,21 @@ class Environment:
 
 inspection_datasets = {}
 
-from .data_set import usd_data_set
+from ..run_config import cfg_mode
+from .data_set import usd_data_set_pre_train, usd_data_set_finetune, get_object_eval
+
+mode_name = cfg_mode.__name__.lower()
+
+if "pretrain" in mode_name:
+    usd_data_set = usd_data_set_pre_train
+elif "finetune" in mode_name or "diverse_scratch" in mode_name:
+    usd_data_set = usd_data_set_finetune
+elif "eval" in mode_name or "record" in mode_name:
+    eval_obj = getattr(cfg_mode, "eval_results_subdir", "ur10_mount")
+    usd_data_set = get_object_eval(eval_obj)
+else:
+    usd_data_set = usd_data_set_finetune
+
 for key, value in usd_data_set.items():
     inspection_datasets[key] = Inpsection_Target(
         custom_name = key,

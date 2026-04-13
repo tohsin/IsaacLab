@@ -19,7 +19,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.utils import configclass
 from isaacsim.core.utils.semantics import add_labels
 
-from isaaclab.sensors import RayCasterCamera, TiledCamera,  MultiMeshRayCasterCamera
+from isaaclab.sensors import RayCasterCamera, TiledCamera,  MultiMeshRayCasterCamera, ContactSensor
 from isaaclab.utils.math import transform_points, unproject_depth
 from isaaclab.sensors.camera.utils import create_pointcloud_from_depth
 import isaacsim.core.utils.stage as stage_utils
@@ -45,6 +45,7 @@ from isaaclab.sim.utils import get_current_stage
 from .run_config import cfg_mode
 from .utils.data_collector import DataCollector
 from .utils.reconstruction_data_collector import ReconstructionDataCollector
+from .utils.eval_reconstruction_data_collector import EvalReconstructionDataCollector
 
 # congfig_mode = run_Config
 run_cfg = cfg_mode
@@ -122,9 +123,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # Initialize Point Cloud Collector if needed (saves Depth/masks)
         self.pc_collector = None
+        self.eval_pc_collectors = None
         
-        if hasattr(run_cfg, "data_recording_path") and getattr(run_cfg, "save_depth", False):
-             self.pc_collector = ReconstructionDataCollector(run_cfg, device=self.device)
+        is_val_run = getattr(self.cfg, "is_multi_env_pc_eval", False) or getattr(run_cfg, "is_multi_env_pc_eval", False)
+        save_depth = getattr(self.cfg, "save_depth", False) or getattr(run_cfg, "save_depth", False)
+        data_recording_path = getattr(self.cfg, "data_recording_path", getattr(run_cfg, "data_recording_path", None))
+        
+        if data_recording_path and save_depth:
+             if is_val_run:
+                 self.eval_pc_collectors = [EvalReconstructionDataCollector(device=self.device) for _ in range(self.num_envs)]
+             else:
+                 self.pc_collector = ReconstructionDataCollector(run_cfg, device=self.device)
 
 
     def close(self):
@@ -235,6 +244,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
             self._high_res_ptz_camera = TiledCamera(self.cfg.sensor_cfg.high_res_ptz_camera)
             self.scene.sensors["high_res_ptz_camera"] = self._high_res_ptz_camera
+
+        if hasattr(self.cfg.sensor_cfg, "base_contact_sensor"):
+            self._base_contact_sensor = ContactSensor(self.cfg.sensor_cfg.base_contact_sensor)
+            self.scene.sensors["base_contact_sensor"] = self._base_contact_sensor
 
         # --- RESTORED MANUAL SPAWN LOGIC ---
         stage = get_current_stage()
@@ -772,24 +785,39 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.logger.log_step(self.common_step_counter, self.curriculum.success_rate)
 
+        out = super().step(action)
+
         if self.data_collector:
-            self.data_collector.collect(self._ptz_camera, self.common_step_counter)
+            if hasattr(self, "episode_length_buf") and self.episode_length_buf[0] > 0:
+                self.data_collector.collect(self._ptz_camera, self.common_step_counter)
 
         if self.pc_collector:
+             if hasattr(self, "episode_length_buf") and self.episode_length_buf[0] > 0:
+                 inspection_cam = getattr(self, "_high_res_ptz_camera", self._ptz_camera)
+                 target_mask = self._get_semantic_mask(inspection_cam)
+                 if target_mask is not None:
+                     if hasattr(self, '_nav_camera'):
+                         self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask, nav_camera=self._nav_camera)
+                     else:
+                         self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask)
+                     
+        if hasattr(self, "eval_pc_collectors") and self.eval_pc_collectors is not None:
              inspection_cam = getattr(self, "_high_res_ptz_camera", self._ptz_camera)
              target_mask = self._get_semantic_mask(inspection_cam)
              if target_mask is not None:
-                 if hasattr(self, '_nav_camera'):
-                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask, nav_camera=self._nav_camera)
-                 else:
-                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask)
+                 depth = inspection_cam.data.output["distance_to_image_plane"].squeeze(-1) if inspection_cam.data.output["distance_to_image_plane"].dim() == 4 else inspection_cam.data.output["distance_to_image_plane"]
+                 intrinsics = inspection_cam.data.intrinsic_matrices
+                 pos = inspection_cam.data.pos_w
+                 quat = inspection_cam.data.quat_w_world
+                 for i in range(self.num_envs):
+                     self.eval_pc_collectors[i].add_frame(depth[i], intrinsics[i], pos[i], quat[i], target_mask[i])
 
         # Record max distance from origin taking into account X and Y
         current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self.scene.env_origins[:, :2], dim=-1)
         if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
             self.max_distance_reached = torch.maximum(self.max_distance_reached, current_dist)
 
-        return super().step(action)
+        return out
       
     def _get_semantic_mask(self, camera) -> torch.Tensor | None:
         """
@@ -1002,9 +1030,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 valid_bound = unique_ids < self.q_capacity
                 unique_ids = unique_ids[valid_bound]
                 weighted_counts = weighted_counts[valid_bound]
-
             # Calculate Quality: Q = 1 - exp(-WeightedCount / k)
-            q_now = 1.0 - torch.exp(-weighted_counts / k)
+            # q_now = 1.0 - torch.exp(-weighted_counts / k)
+            # Dynamic tau (k) scaling for mesh resolution invariance
+            base_faces = 3800.0  # Reference face count from rubiks_cube
+            current_faces = self.total_mesh_faces[env_idx].float()
+            k_env = k * (base_faces / torch.clamp(current_faces, min=1.0))
+
+            # Calculate Quality: Q = 1 - exp(-WeightedCount / k_env)
+            q_now = 1.0 - torch.exp(-weighted_counts / k_env)
 
             q_best = self.best_q_per_face[env_idx, unique_ids]
 
@@ -1098,6 +1132,31 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         return reward
 
+    def _compute_collision_penalty(self) -> tuple[torch.Tensor, torch.Tensor]:
+        collision_penalty = torch.zeros(self.num_envs, device=self.device)
+        collision_count = torch.zeros(self.num_envs, device=self.device)
+        if hasattr(self, "_base_contact_sensor"):
+            net_forces_w = self._base_contact_sensor.data.net_forces_w
+            # Depending on number of sensors and paths, net_forces_w might be (num_envs, num_sensors, 3)
+            # Assuming 1 sensor specified in filter paths
+            if net_forces_w.dim() == 3:
+                 xy_forces = torch.norm(net_forces_w[:, :, 0:2], dim=-1).max(dim=1)[0]
+            else:
+                 xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
+                 
+            # Only print for first env to spam less, or check max force overall
+            from .run_config import cfg_mode as run_cfg
+            # if xy_forces.max() > self.cfg.reward_cfg.collision_threshold:
+            #     print(f"[DEBUG] Collision detected! Max XY Force: {xy_forces.max().item():.2f}")
+            # if run_cfg.debug and xy_forces.max() > self.cfg.reward_cfg.collision_threshold:
+            #      # COMMENT LATER: Print for manual verification
+            #      print(f"[DEBUG] Collision detected! Max XY Force: {xy_forces.max().item():.2f}")
+                 
+            collision_mask = xy_forces > self.cfg.reward_cfg.collision_threshold
+            collision_penalty[collision_mask] = self.cfg.reward_cfg.collision_penalty_scale
+            collision_count = collision_mask.float()
+        return collision_penalty, collision_count
+
     def _get_rewards(self) -> torch.Tensor:
         """
             Face Coverage Rewards,
@@ -1140,11 +1199,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale * decay_factor
         current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
 
+        collision_penalty, collision_count = self._compute_collision_penalty()
+            
         total_reward = (current_face_reward_scale * face_discovery_raw
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
                         - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
                         - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
+                        - collision_penalty
                         + success_bonus
                         -self.cfg.reward_cfg.time_penalty
                         )
@@ -1156,7 +1218,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             ptz_action_delta,
             visitation_reward,
             total_reward,
-            current_face_reward_scale # Pass the dynamic scale for logging
+            current_face_reward_scale, # Pass the dynamic scale for logging
+            collision_penalty,
+            collision_count
             )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         # Logging
@@ -1169,7 +1233,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         normalized_reward = self.rewardscaler(total_reward)
         return normalized_reward
     
-    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled, current_face_reward_scale):
+    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled, current_face_reward_scale, collision_penalty=None, collision_count=None):
         # Construct dictionary for logging (both accumulation and per-step means)
         reward_dict = {
             "face_discovery_raw": face_discovery,
@@ -1191,6 +1255,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Debug Stats - Must be a tensor of shape (num_envs,) for the logger to handle it correctly during resets
             "stats/face_reward_scale": torch.full((self.num_envs,), current_face_reward_scale, device=self.device)
         }
+        
+        if collision_penalty is not None:
+             reward_dict["collision_penalty"] = collision_penalty
+        if collision_count is not None:
+             reward_dict["collision_count"] = collision_count
         
         self.logger.accumulate_rewards(reward_dict)
 
@@ -1254,15 +1323,45 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             # Logging
             for i, env_id in enumerate(env_ids):
-                if env_id == 0:
-                    final_face_count = num_faces_inspected[i].item()
-                    if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
-                        max_dist = self.max_distance_reached[i].item()
-                        if hasattr(self, 'pc_collector') and self.pc_collector is not None:
-                            self.pc_collector.flush_if_best(final_face_count, max_dist)
+                data_recording_path = getattr(self.cfg, "data_recording_path", getattr(run_cfg, "data_recording_path", None))
+                if data_recording_path:
+                    max_dist = self.max_distance_reached[i].item()
+                    if hasattr(self, 'pc_collector') and self.pc_collector is not None:
+                        self.pc_collector.flush_if_best(num_faces_inspected[i].item(), max_dist)
+                            
+                if hasattr(self, 'eval_pc_collectors') and self.eval_pc_collectors is not None:
+                    cloud = self.eval_pc_collectors[env_id].get_full_cloud()
+                    if cloud is not None:
+                        import trimesh
+                        import os
+                        
+                        try:
+                            import open3d as o3d
+                            pcd = o3d.geometry.PointCloud()
+                            pcd.points = o3d.utility.Vector3dVector(cloud)
+                            # nb_neighbors=20 and std_ratio=2.0 are conservative defaults
+                            # Increase std_ratio (e.g. to 3.0) to remove fewer points (safer for mesh)
+                            cl, ind = pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=1.0)
+                            # cl, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+                            # cl, ind = pcd.remove_statistical_outlier(nb_neighbors=30, std_ratio=5.0)
+                            filtered_cloud = np.asarray(cl.points)
+                            if len(filtered_cloud) > 0:
+                                cloud = filtered_cloud
+                        except ImportError:
+                            print("[WARN] Open3D not installed. Skipping outlier removal.")
+                        
+                        eval_subdir = getattr(run_cfg, "eval_results_subdir", "")
+                        save_dir = os.path.join(data_recording_path if data_recording_path else "data/recorded_depth_data_eval", "eval_results", eval_subdir)
+                        os.makedirs(save_dir, exist_ok=True)
+                        save_path = os.path.join(save_dir, f"reconstructed_env{env_id}_ep{self.common_step_counter}.ply")
+                        pc = trimesh.points.PointCloud(cloud)
+                        centroid = np.mean(cloud, axis=0)
+                        pc.vertices -= centroid
+                        pc.export(save_path)
+                    self.eval_pc_collectors[env_id].reset()
                             
                     if getattr(run_cfg, 'debug', False):
-                        print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {final_face_count} ---")
+                        print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {num_faces_inspected[i].item()} ---")
 
                 self.episode_log_buffer["coverage_percent"].append(achieved_coverage_ratios[i].item() * 100)
                 self.episode_log_buffer["faces_discovered"].append(num_faces_inspected[i].item())

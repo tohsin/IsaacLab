@@ -18,10 +18,13 @@ def view_with_trimesh(filepath):
     print(f"Loading {filepath} with Trimesh...")
     pcd = trimesh.load(filepath)
     pcd.show()
-path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/flange_pc.ply"
-path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/dataset/small_corner_bracket_physics.ply"
-path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/eval/small_corner_bracket_physics.ply"
+#path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/flange_pc.ply"
+#path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/dataset/small_corner_bracket_physics.ply"
+#path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/eval/small_corner_bracket_physics.ply"
+#path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/compare/small_corner_bracket_physics.ply"
+path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/recorded_depth_data_eval/eval_results/reconstructed_env0_ep15522.ply"
 path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/point_clouds/compare/small_corner_bracket_physics.ply"
+path_ = "/home/tosin/Documents/GitHub/IsaacLab/data/recorded_depth_data_eval/eval_results/ur10_mount/reconstructed_env0_ep14994.ply"
 #path_ = "data/point_clouds/comparison_vis.ply"
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="View a PLY point cloud file.")

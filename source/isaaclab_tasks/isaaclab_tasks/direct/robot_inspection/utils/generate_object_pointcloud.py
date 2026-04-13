@@ -9,13 +9,13 @@ from __future__ import annotations
 import argparse
 from isaaclab.app import AppLauncher
 #python generate_object_pointcloud.py --dataset_key forklift --headless
-
+output_ = "data/point_clouds/Ground-Truth/small_corner_bracket_physics.ply"
 # Create the parser
 parser = argparse.ArgumentParser(description="Generate a point cloud from an inspection object.")
 parser.add_argument("--usd_path", type=str, default=None, help="Path to the USD file.")
 parser.add_argument("--dataset_key", type=str, default="small_corner_bracket_physics", help="Optional dataset key from data_set.py (e.g. 'forklift'). This overrides --usd_path and its config scale/orientation.")
 parser.add_argument("--num_points", type=int, default=10_000, help="Number of points to sample.")
-parser.add_argument("--output", type=str, default="data/point_clouds/dataset/small_corner_bracket_physics.ply", help="Output PLY file path.")
+parser.add_argument("--output", type=str, default=output_, help="Output PLY file path.")
 parser.add_argument("--scale", type=float, nargs=3, default=[10.0, 10.0, 10.0], help="Scale of the object (x, y, z).")
 parser.add_argument("--pos", type=float, nargs=3, default=[0.0, -2.0, 0.3], help="Position of the object (x, y, z).")
 parser.add_argument("--center", action="store_true", help="Center the point cloud at (0,0,0) by subtracting the centroid.")

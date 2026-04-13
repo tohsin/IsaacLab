@@ -1,7 +1,7 @@
 import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from .config_ import env_parameters
-from isaaclab.sensors import TiledCameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg
+from isaaclab.sensors import TiledCameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg, ContactSensorCfg
 from ..run_config import cfg_mode, record_Cfg
 @configclass
 class SensorsCfg:
@@ -59,6 +59,15 @@ class SensorsCfg:
         colorize_semantic_segmentation=False,
         semantic_filter=[f'class:{name}' for name in env_parameters.semantics_name] if isinstance(env_parameters.semantics_name, list) else f'class:{env_parameters.semantics_name}',
         update_latest_camera_pose=True,
+        debug_vis=cfg_mode.debug
+    )
+
+    base_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/base_link",
+        update_period=0.0, # Run every physics step
+        history_length=3,
+        track_air_time=False,
+        filter_prim_paths_expr=[".*"],
         debug_vis=cfg_mode.debug
     )
 
