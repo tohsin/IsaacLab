@@ -40,6 +40,7 @@ def extract_local_maps_kernel(
     local_visitation_map: wp.array(dtype=float),
     # Robot and map info
     robot_positions_w: wp.array(dtype=wp.vec3),
+    robot_quats_w: wp.array(dtype=wp.vec4),
     map_origins: wp.array(dtype=wp.vec3),
     voxel_size: float,
     global_map_dims: wp.vec3i,
@@ -66,19 +67,39 @@ def extract_local_maps_kernel(
     # 2. Find the corresponding global grid index for this local voxel
     robot_pos_w = robot_positions_w[env_id]
     
-    # Convert robot's world position to its global grid index
-    robot_relative_pos = robot_pos_w - map_origin_for_env
-    robot_gx = int(wp.floor(robot_relative_pos[0] / voxel_size))
-    robot_gy = int(wp.floor(robot_relative_pos[1] / voxel_size))
-    robot_gz = int(wp.floor(robot_relative_pos[2] / voxel_size))
-    
     # Center the local map on the robot's XY, and use Z as the floor
-    center_offset_x = local_map_dims[0] // 2
-    center_offset_y = local_map_dims[1] // 2
+    center_offset_x = float(local_map_dims[0] // 2)
+    center_offset_y = float(local_map_dims[1] // 2)
     
-    target_gx = robot_gx + lx - center_offset_x
-    target_gy = robot_gy + ly - center_offset_y
-    target_gz = robot_gz + lz # Voxel (lx, ly, 0) corresponds to robot's Z level
+    local_offset_x = (float(lx) - center_offset_x) * voxel_size
+    local_offset_y = (float(ly) - center_offset_y) * voxel_size
+    local_offset_z = float(lz) * voxel_size
+    
+    local_offset_vec = wp.vec3(local_offset_x, local_offset_y, local_offset_z)
+    
+    # Extract robot orientation
+    q_tensor = robot_quats_w[env_id]
+    w = q_tensor[0]
+    x = q_tensor[1]
+    y = q_tensor[2]
+    z = q_tensor[3]
+
+    # Compute purely yaw-based rotation angle (assuming Z is up)
+    yaw = wp.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    
+    # Warp's quaternion format is (x, y, z, w)
+    yaw_quat = wp.quat(0.0, 0.0, wp.sin(yaw / 2.0), wp.cos(yaw / 2.0))
+    
+    # Rotate the local offset globally
+    rotated_offset = wp.quat_rotate(yaw_quat, local_offset_vec)
+    
+    # Get the global position for this target voxel
+    target_pos_w = robot_pos_w + rotated_offset
+    target_relative_pos = target_pos_w - map_origin_for_env
+    
+    target_gx = int(wp.floor(target_relative_pos[0] / voxel_size))
+    target_gy = int(wp.floor(target_relative_pos[1] / voxel_size))
+    target_gz = int(wp.floor(target_relative_pos[2] / voxel_size))
 
     # 3. Check if the target global index is within bounds
     if (target_gx >= 0 and target_gx < global_map_dims[0] and

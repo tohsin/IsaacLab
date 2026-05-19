@@ -5,25 +5,25 @@ usd_data_set_pre_train = {
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
         "prim_path": "/World/envs/env_.*/rubiks_cube",
     },
-     "tuna_fish_can_flat": {
-        "num_faces": 4643,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/007_tuna_fish_can.usd",
-        "prim_path": "/World/envs/env_.*/tuna_fish_can_flat",
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
-    "wood_block": {
-        "num_faces": 12319,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/036_wood_block.usd",
-        "prim_path": "/World/envs/env_.*/wood_block",
-        "scale": 6.0,
-    }, 
-    "blue_cup": {
-        "num_faces": 10803,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/019_pitcher_base.usd",
-        "prim_path": "/World/envs/env_.*/blue_cup",
-        "scale": 4.0,
-        "orientation": (-0.7071068, 0.7071068, 0.0, 0.0),
-    },
+    #  "tuna_fish_can_flat": {
+    #     "num_faces": 4643,
+    #     "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/007_tuna_fish_can.usd",
+    #     "prim_path": "/World/envs/env_.*/tuna_fish_can_flat",
+    #     "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
+    # },
+    # "wood_block": {
+    #     "num_faces": 12319,
+    #     "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/036_wood_block.usd",
+    #     "prim_path": "/World/envs/env_.*/wood_block",
+    #     "scale": 6.0,
+    # }, 
+    # "blue_cup": {
+    #     "num_faces": 10803,
+    #     "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/019_pitcher_base.usd",
+    #     "prim_path": "/World/envs/env_.*/blue_cup",
+    #     "scale": 4.0,
+    #     "orientation": (-0.7071068, 0.7071068, 0.0, 0.0),
+    # },
 }
 usd_data_set_finetune = {
     "rubiks_cube": {

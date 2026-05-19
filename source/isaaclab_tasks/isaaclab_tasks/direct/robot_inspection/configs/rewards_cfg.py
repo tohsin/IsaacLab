@@ -23,7 +23,7 @@ class RewardsCfg:
 
     # Penalties
     time_penalty: float = 0.3e-3 # original: 1e-3
-    collision_penalty_scale: float = 2
+    collision_penalty_scale: float = 2e-3 # 0.2
     collision_threshold: float = 1.0
     
 

@@ -443,11 +443,20 @@ class OccupancyGridMapper:
 
         return world_points, colors
 
-    def get_local_maps(self, robot_positions_w: torch.Tensor):
+    def get_local_maps(self, robot_positions_w: torch.Tensor, robot_quats_w: torch.Tensor = None):
         
         num_req_envs = robot_positions_w.shape[0]
         if num_req_envs != self.num_envs:
             raise ValueError(f"Provided robot_positions_w has {num_req_envs} envs, but mapper is configured for {self.num_envs}.")
+
+        if robot_quats_w is not None:
+            # Ensure shape (num_envs, 4). PyTorch uses (w, x, y, z)
+            wp_robot_quats = wp.from_torch(robot_quats_w.contiguous(), dtype=wp.vec4)
+        else:
+            # Default to identity w, x, y, z -> 1, 0, 0, 0
+            default_quats = torch.zeros((num_req_envs, 4), device=self.device)
+            default_quats[:, 0] = 1.0
+            wp_robot_quats = wp.from_torch(default_quats.contiguous(), dtype=wp.vec4)
 
         local_dims = (21, 21, 11)
         local_map_dims_wp = wp.vec3i(local_dims[0], local_dims[1], local_dims[2])
@@ -480,6 +489,7 @@ class OccupancyGridMapper:
                 wp_local_visit_map,
 
                 wp_robot_pos,
+                wp_robot_quats,
                 wp_world_map_origins,
                 self.voxel_size,
                 wp_global_map_dims,

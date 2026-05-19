@@ -86,7 +86,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         ))
 
 
-    max_obstacles: int = 8    # Cap obstacles around 10 depending on the environment scale
+    max_obstacles: int = 6    # Cap obstacles around 10 depending on the environment scale
 
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",

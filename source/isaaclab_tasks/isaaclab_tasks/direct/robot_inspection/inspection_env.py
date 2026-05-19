@@ -681,7 +681,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if not self.cfg.mapping_cfg.use_occupancy_map:
             raise ValueError("Occupancy map is not enabled in the configuration.")
         robot_pos_w = self.robot.data.root_pos_w
-        local_occ_map, local_vis_map, local_visit = self.occupancy_mapper.get_local_maps(robot_pos_w)
+        robot_quat_w = self.robot.data.root_quat_w
+        # Extract egocentric local maps
+        local_occ_map, local_vis_map, local_visit = self.occupancy_mapper.get_local_maps(robot_pos_w, robot_quat_w)
         for name, tensor in {"occ": local_occ_map, "vis": local_vis_map, "visit": local_visit}.items():
             if torch.isnan(tensor).any() or torch.isinf(tensor).any():
                 msg = f"Invalid value (NaN or Inf) in Local Map: {name}"

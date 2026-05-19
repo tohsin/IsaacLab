@@ -25,22 +25,29 @@ class TrainingConfig_PreTrain:
     use_attention_fusion = True
     entropy_coef = 3e-5  # Reduced to allow the standard deviation to decrease
     value_loss_scale = 1.0  # Increased to give a stronger signal to the critic
-    learning_rate = 2e-5
+    learning_rate = 2e-5  # Start extremely low for adaptive warmup
     init_log_std = 0.0  # Lower initial standard deviation (≈ 0.6)
     use_wandb = True
-    global_timesteps = 30_000_000
+    global_timesteps = 35_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
         "eta_min": learning_rate * 0.01,
     }
 
+    # scheduler_class = KLAdaptiveRL
+    # scheduler_kwargs = {
+    #     "kl_threshold": 0.016,
+    #     "min_lr": 1e-6,
+    #     "max_lr": 1e-4,  # Ceiling for the warmup to reach
+    # }
+
 class TrainingConfig_FineTune(TrainingConfig_PreTrain):
     num_envs = 64
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
     entropy_coef = 3e-6
     learning_rate = 6e-6
-    global_timesteps = 30_000_000
+    global_timesteps = 50_000_000
     # init_log_std = -1.0
     use_attention_fusion = True
 

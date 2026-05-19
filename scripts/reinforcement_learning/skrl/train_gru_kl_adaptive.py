@@ -63,7 +63,7 @@ sys.argv.append("--enable_cameras")
 set_seed(42)
 # Override cuDNN deterministic setting to avoid random CUDNN_STATUS_EXECUTION_FAILED in GRU backward pass
 torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = False
 # for some reason changing the clip actionsvarialbe to true in thr training script causes this error
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self,
@@ -186,7 +186,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Linear(512, 256),
             nn.ELU(),
             nn.Linear(256, self.num_actions ),
-            nn.Tanh()  
+            # nn.Tanh()  
         )
 
         self.value_head = nn.Sequential(
@@ -397,8 +397,8 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 6 #8
-cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
+cfg["learning_epochs"] = 4 #8
+cfg["mini_batches"] = 4   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.97 #0.95 0.97
 
@@ -422,7 +422,7 @@ elif "T_max" in cfg["learning_rate_scheduler_kwargs"]:
         cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_max_steps
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
-cfg["grad_norm_clip"] = 1.0
+cfg["grad_norm_clip"] = 0.7
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef
@@ -436,15 +436,16 @@ cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-log_root_path = os.path.join(script_dir, "logs", "skrl", "SEEIR-Baseline")
+# log_root_path = os.path.join(script_dir, "logs", "skrl", "SEEIR-Baseline")
+log_root_path = os.path.join(script_dir, "logs", "skrl", "Quals_experiment")
 log_root_path = os.path.abspath(log_root_path)
 
 # experiment_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_ppo_gru_128"
 # experiment_name = "Buld_dataset_2"
 # experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-experiment_name = "Pretrain-SEEIR-Baseline " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
+# experiment_name = "" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+experiment_name = "Baseline"
 if not is_eval:
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
     log_dir = os.path.join(log_root_path, experiment_name)
@@ -461,7 +462,8 @@ if not is_eval:
         cfg["experiment"]["wandb"] = _use_wandb
 
         cfg["experiment"]["wandb_kwargs"] = {
-            "project": "Multi_object_inspection",  # Name of the project in WandB dashboard
+            # "project": "Multi_object_inspection",  # Name of the project in WandB dashboard
+            "project": "Quals_experiment",  # Name of the project in WandB dashboard
             "name": experiment_name,           # Name of this specific run
             "tags": ["PPO", "IsaacLab", args_cli.task],
             # "config": {}

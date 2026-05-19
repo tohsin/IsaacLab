@@ -222,7 +222,7 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
         
-        min_dist_sq = 1.5**2 # Minimum 2m distance
+        min_dist_sq = 1.0**2 # Minimum 2m distance
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         
@@ -287,7 +287,7 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
 
-        min_dist = 2.5 # Minimum 1m distance from any other object
+        min_dist = 1.5 # Minimum 1m distance from any other object
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         current_spawn_max_y = self.get_current_spawn_max_y()
