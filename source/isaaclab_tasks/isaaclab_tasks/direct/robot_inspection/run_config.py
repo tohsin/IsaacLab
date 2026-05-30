@@ -149,4 +149,4 @@ modes = [debug_Cfg, #0
     eval_Cfg, #3
     record_Cfg, #4
     record_depth_Cfg] #5
-cfg_mode = modes[2]
+cfg_mode = modes[1]

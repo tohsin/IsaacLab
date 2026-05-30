@@ -62,6 +62,26 @@ sys.argv.append("--enable_cameras")
 
 set_seed(42)
 # for some reason changing the clip actionsvarialbe to true in thr training script causes this error
+
+class ContinuousPositionalEncoding(nn.Module):
+    def __init__(self, input_dim, num_frequencies=4):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_frequencies = num_frequencies
+        
+        # Transformer-style log-linear spacing, but scaled UP for continuous values in [-1, 1]
+        # (Standard Transformer PE scales down because positions are large integers like 0, 1, ..., 1000)
+        import math
+        frequencies = torch.exp(torch.arange(num_frequencies) * (math.log(10000.0) / max(1, num_frequencies - 1)))
+        self.register_buffer("frequencies", frequencies)
+
+    def forward(self, x):
+        scaled_x = x.unsqueeze(-1) * self.frequencies
+        sin_x = torch.sin(scaled_x)
+        cos_x = torch.cos(scaled_x)
+        encoded = torch.cat([x.unsqueeze(-1), sin_x, cos_x], dim=-1)
+        return encoded.view(*x.shape[:-1], self.input_dim * (1 + self.num_frequencies * 2))
+
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self,
                 observation_space,
@@ -115,7 +135,19 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         #self.gru_input_size = camera_cnn_output_dim + self.robot_pose_dim + map_cnn_output_dim
         camera_features_size = self.camera_encoder.get_out_size()
         map_features_size = self.map_encoder.get_out_size()
-        self.combined_features_size = camera_features_size + self.robot_pose_dim + map_features_size
+
+        self.use_pose_fourier_encoding = getattr(CONFIG, "use_pose_fourier_encoding", False)
+        self.num_pose_frequencies = getattr(CONFIG, "num_pose_frequencies", 4)
+        
+        if self.use_pose_fourier_encoding:
+            self.pose_encoder = ContinuousPositionalEncoding(self.robot_pose_dim, self.num_pose_frequencies)
+            self.encoded_pose_dim = self.robot_pose_dim * (1 + self.num_pose_frequencies * 2)
+            print(f"[INFO] Using Pose Fourier Encoding (Freqs: {self.num_pose_frequencies}, Dim: {self.robot_pose_dim} -> {self.encoded_pose_dim})")
+        else:
+            self.pose_encoder = nn.Identity()
+            self.encoded_pose_dim = self.robot_pose_dim
+
+        self.combined_features_size = camera_features_size + self.encoded_pose_dim + map_features_size
         
         if self.use_attention_fusion:
             # --- ATTENTION-BASED FUSION ---
@@ -125,7 +157,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # Projectors
             self.camera_proj = nn.Linear(camera_features_size, self.d_model)
             self.map_proj = nn.Linear(map_features_size, self.d_model)
-            self.pose_proj = nn.Linear(self.robot_pose_dim, self.d_model)
+            self.pose_proj = nn.Linear(self.encoded_pose_dim, self.d_model)
             
             # Token Normalization (avoids clamping and stabilizes attention)
             self.token_norm = nn.LayerNorm(self.d_model)
@@ -154,14 +186,18 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # Output is merged attended tokens via mean pooling
             self.gru_input_size = self.d_model
         else:
+            act_str = getattr(CONFIG, "activation_fn", "elu").lower()
+            def get_activation():
+                return nn.SiLU() if act_str == "silu" else nn.ELU()
+
             # --- MLP-BASED FUSION (Original) ---
             self.feature_mlp = nn.Sequential(
                 nn.Linear(self.combined_features_size, 2048),
-                nn.ELU(),
+                get_activation(),
                 nn.Linear(2048, 1024),
-                nn.ELU(),
+                get_activation(),
                 nn.Linear(1024, 512),
-                nn.ELU()
+                get_activation()
             )
             
             self.gru_input_size = 512 # Output of the feature MLP
@@ -175,24 +211,28 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                           batch_first=True)  # batch_first -> (batch, sequence, features)
         #output heads
 
+        act_str = getattr(CONFIG, "activation_fn", "elu").lower()
+        def get_activation():
+            return nn.SiLU() if act_str == "silu" else nn.ELU()
+
         self.policy_head = nn.Sequential(
             nn.Linear(self.gru_hidden_size, 1024),
-            nn.ELU(),
+            get_activation(),
             nn.Linear(1024, 512),
-            nn.ELU(),
+            get_activation(),
             nn.Linear(512, 256),
-            nn.ELU(),
+            get_activation(),
             nn.Linear(256, self.num_actions ),
             nn.Tanh()  
         )
 
         self.value_head = nn.Sequential(
             nn.Linear(self.gru_hidden_size, 1024),
-            nn.ELU(),
+            get_activation(),
             nn.Linear(1024, 512),
-            nn.ELU(),
+            get_activation(),
             nn.Linear(512, 256),
-            nn.ELU(),
+            get_activation(),
             nn.Linear(256, 1)
         )
         # Action Head, MU and STD
@@ -265,6 +305,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
         camera_features = self.camera_encoder(camera_obs_permuted)
         map_features = self.map_encoder(local_map_permuted)
+        encoded_pose = self.pose_encoder(robot_pose)
         
         if self.use_attention_fusion:
             # Sanity checks before projection
@@ -275,7 +316,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # Project to d_model and shape into tokens: [batch_size, 1, d_model]
             cam_tok = self.camera_proj(camera_features).unsqueeze(1)
             map_tok = self.map_proj(map_features).unsqueeze(1)
-            pose_tok = self.pose_proj(robot_pose).unsqueeze(1)
+            pose_tok = self.pose_proj(encoded_pose).unsqueeze(1)
             
             # Sequence of tokens: [batch_size, 3, d_model]
             tokens = torch.cat([cam_tok, map_tok, pose_tok], dim=1)
@@ -308,7 +349,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # Mean pool tokens along sequence dim: [batch_size, d_model]
             fusion_features = attended_tokens.mean(dim=1)
         else:
-            combined_features = torch.cat((camera_features, map_features, robot_pose), dim=1)
+            combined_features = torch.cat((camera_features, map_features, encoded_pose), dim=1)
             fusion_features = self.feature_mlp(combined_features)
 
         if self.training:
@@ -370,7 +411,7 @@ rollout_length = TOTAL_BATCH_SIZE // env.num_envs
 from skrl.memories.torch import RandomMemory
 memory = RandomMemory(memory_size=rollout_length, num_envs=env.num_envs, device=device)
 model_config = {
-        "nonlinearity": "elu",
+        "nonlinearity": getattr(CONFIG, "activation_fn", "elu").lower(),
         "encoder_conv_architecture": "resnet_impala",
         "encoder_conv_mlp_layers": [256],
         "encoder_conv_map_occupancy_architecture": "resnet",
@@ -437,7 +478,7 @@ log_root_path = os.path.abspath(log_root_path)
 # experiment_name = "Buld_dataset_2"
 # experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-experiment_name = "Finetune-SEEIR-Baseline " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+experiment_name = "Base" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 print(f"[INFO] Logging experiment in directory: {log_root_path}")
 
 log_dir = os.path.join(log_root_path, experiment_name)

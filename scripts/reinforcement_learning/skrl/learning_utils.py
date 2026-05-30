@@ -12,6 +12,8 @@ def get_activation(activation_name: str) -> nn.Module:
         return nn.ELU()
     elif activation_name.lower() == "tanh":
         return nn.Tanh()
+    elif activation_name.lower() in ["silu", "swish"]:
+        return nn.SiLU()
     else:
         raise ValueError(f"Unknown activation function: {activation_name}")
     

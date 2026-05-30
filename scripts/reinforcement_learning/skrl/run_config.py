@@ -20,12 +20,15 @@ class TrainingConfig_PreTrain:
     reset_std = True
     batch_size = 8192 # 8192
     use_attention_fusion = True
-    entropy_coef = 3e-4  # Moderately increased for better exploration with diverse objects
+    use_pose_fourier_encoding = True
+    num_pose_frequencies = 4
+    activation_fn = "elu"  # "elu" or "silu"
+    entropy_coef = 6e-5  # Moderately increased for better exploration with diverse objects
     value_loss_scale = 1.0  # Increased to give a stronger signal to the critic
-    learning_rate = 2e-5
+    learning_rate = 3e-5
     init_log_std = 0.0 
     use_wandb = True
-    global_timesteps = 30_000_000
+    global_timesteps = 40_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -57,6 +60,9 @@ class EvaluationConfig:
     use_wandb = False
     reset_std = False
     use_attention_fusion = True
+    use_pose_fourier_encoding = True
+    num_pose_frequencies = 4
+    activation_fn = "silu"
     batch_size = 8192
     entropy_coef = 3e-7
     learning_rate = 3e-5
@@ -74,4 +80,4 @@ class EvaluationConfig:
 
 # Select the configuration to use
 configs_ = [TrainingConfig_PreTrain(), TrainingConfig_FineTune(), EvaluationConfig()]   
-CONFIG = configs_[1]
+CONFIG = configs_[0]
