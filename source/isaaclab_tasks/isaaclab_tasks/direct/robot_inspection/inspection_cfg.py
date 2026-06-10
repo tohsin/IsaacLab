@@ -136,7 +136,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             low=float("-inf"),
             high=float("inf"), 
             # Shape is (X, Y, Z, Channels). We have 2 channels: Occupancy, Visibility, Visitation
-            shape=(21, 21, 11, 3), 
+            shape=(*mapping_cfg.local_map_dims, 3), 
             dtype=np.float32,
         )
     })

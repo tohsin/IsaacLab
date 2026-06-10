@@ -8,8 +8,12 @@ class RewardsCfg:
     face_quality_k = 60 #60
     use_angle_weighted_reward: bool = True
     coverage_reward: float = 5.0
-    information_gain_reward_scale: float =    0.3e-4 # in expopnent    
+    # Map based rewards
+    information_gain_reward_scale: float =    3e-5 # in expopnent    
     visibility_increase_reward_scale: float = 4e-4
+    visitation_reward_scale: float = 5e-4
+    occupancy_penalty_scale: float = 1e-2
+
     exploration_success_bonus: float = 2.0
 
     action_penalty_scale: float = 0.3e-5 # original: 1e-5
@@ -22,9 +26,8 @@ class RewardsCfg:
     time_penalty: float = 0.3e-3 # original: 1e-3
     
 
-    visitation_reward_scale: float = 0.5e-3
+    # visitation_reward_scale: float = 0.5e-3
    
     # Visitation penalties to encourage exploration. a * e^N_of_visits
     visibility_decay_factor : float = 0.5
     visitation_decay_factor: float = 0.9
-

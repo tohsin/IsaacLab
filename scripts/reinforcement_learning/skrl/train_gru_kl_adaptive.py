@@ -166,22 +166,29 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model))
             self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model) * 0.02)
             
-            # Transformer Encoder
-            # We add norm_first=True (Pre-LN) which is much more stable for RL
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=self.d_model, 
-                nhead=4, 
-                dim_feedforward=512, 
-                batch_first=True,
-                activation='gelu',
-                dropout=0.0,
-                norm_first=True
-            )
-            self.sensor_attention = nn.TransformerEncoder(
-                encoder_layer, 
-                num_layers=2,
-                norm=nn.LayerNorm(self.d_model) # Final layer norm
-            )
+            self.use_transformer_encoder = getattr(CONFIG, "use_transformer_encoder", False)
+            
+            if self.use_transformer_encoder:
+                # Transformer Encoder
+                # We add norm_first=True (Pre-LN) which is much more stable for RL
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=self.d_model, 
+                    nhead=4, 
+                    dim_feedforward=512, 
+                    batch_first=True,
+                    activation='gelu',
+                    dropout=0.0,
+                    norm_first=True
+                )
+                self.sensor_attention = nn.TransformerEncoder(
+                    encoder_layer, 
+                    num_layers=2,
+                    norm=nn.LayerNorm(self.d_model) # Final layer norm
+                )
+            else:
+                # Simple Multi-Head Attention for stable feature fusion
+                self.mha = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=4, batch_first=True, dropout=0.0)
+                self.mha_norm = nn.LayerNorm(self.d_model)
             
             # Output is merged attended tokens via mean pooling
             self.gru_input_size = self.d_model
@@ -328,23 +335,32 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
             # Add modality embeddings so it knows which token is which
             tokens = tokens + self.modality_embeddings
-            # assert torch.isfinite(tokens).all(), "NaN/Inf after adding modality embeddings"
             
-            # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
-            # tokens = torch.clamp(tokens, min=-20.0, max=20.0)
-            # assert torch.isfinite(tokens).all(), "NaN/Inf after clamp"
-            
-            # Cross-Sensor Attention
-            # Use a deterministic context to avoid SDPA (FlashAttention) NaN bugs on certain GPUs
-            import torch.nn.attention as attn
-            if hasattr(attn, 'sdpa_kernel'):
-                with attn.sdpa_kernel(attn.SDPBackend.MATH):
-                    attended_tokens = self.sensor_attention(tokens)
+            if self.use_transformer_encoder:
+                # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
+                tokens = torch.clamp(tokens, min=-20.0, max=20.0)
+                
+                # Cross-Sensor Attention
+                import torch.nn.attention as attn
+                if hasattr(attn, 'sdpa_kernel'):
+                    with attn.sdpa_kernel(attn.SDPBackend.MATH):
+                        attended_tokens = self.sensor_attention(tokens)
+                else:
+                    with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
+                        attended_tokens = self.sensor_attention(tokens)
             else:
-                with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
-                    attended_tokens = self.sensor_attention(tokens)
-            
-            # assert torch.isfinite(attended_tokens).all(), "NaN/Inf after sensor_attention"
+                # Use a simple Multi-Head Self-Attention layer instead of a deep Transformer
+                # This is more stable for RL and prevents feature explosion without needing clamps
+                import torch.nn.attention as attn
+                if hasattr(attn, 'sdpa_kernel'):
+                    with attn.sdpa_kernel(attn.SDPBackend.MATH):
+                        attn_output, _ = self.mha(tokens, tokens, tokens, need_weights=False)
+                else:
+                    with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
+                        attn_output, _ = self.mha(tokens, tokens, tokens, need_weights=False)
+                
+                # Residual connection + LayerNorm
+                attended_tokens = self.mha_norm(tokens + attn_output)
             
             # Mean pool tokens along sequence dim: [batch_size, d_model]
             fusion_features = attended_tokens.mean(dim=1)
@@ -371,6 +387,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                     rnn_output, hidden_states = self.gru(
                         rnn_input[:, i0:i1, :], hidden_states
                     )
+                    # Clone hidden states before modifying them to avoid breaking autograd BPTT
+                    hidden_states = hidden_states.clone()
                     hidden_states[:, terminated[:, i1 - 1], :] = 0
                     rnn_outputs.append(rnn_output)
                 rnn_output = torch.cat(rnn_outputs, dim=1)
@@ -457,7 +475,7 @@ elif "T_max" in cfg["learning_rate_scheduler_kwargs"]:
         cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_max_steps
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
-cfg["grad_norm_clip"] = 0.7
+cfg["grad_norm_clip"] = 1.0
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef
@@ -478,7 +496,7 @@ log_root_path = os.path.abspath(log_root_path)
 # experiment_name = "Buld_dataset_2"
 # experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-experiment_name = "Base" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+experiment_name = "SEEIR-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 print(f"[INFO] Logging experiment in directory: {log_root_path}")
 
 log_dir = os.path.join(log_root_path, experiment_name)

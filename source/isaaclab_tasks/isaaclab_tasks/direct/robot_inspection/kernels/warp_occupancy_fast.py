@@ -40,6 +40,7 @@ def extract_local_maps_kernel(
     local_visitation_map: wp.array(dtype=float),
     # Robot and map info
     robot_positions_w: wp.array(dtype=wp.vec3),
+    robot_quats_w: wp.array(dtype=wp.quat),
     map_origins: wp.array(dtype=wp.vec3),
     voxel_size: float,
     global_map_dims: wp.vec3i,
@@ -65,20 +66,35 @@ def extract_local_maps_kernel(
 
     # 2. Find the corresponding global grid index for this local voxel
     robot_pos_w = robot_positions_w[env_id]
-    
-    # Convert robot's world position to its global grid index
-    robot_relative_pos = robot_pos_w - map_origin_for_env
-    robot_gx = int(wp.floor(robot_relative_pos[0] / voxel_size))
-    robot_gy = int(wp.floor(robot_relative_pos[1] / voxel_size))
-    robot_gz = int(wp.floor(robot_relative_pos[2] / voxel_size))
+    robot_quat_w = robot_quats_w[env_id]
     
     # Center the local map on the robot's XY, and use Z as the floor
     center_offset_x = local_map_dims[0] // 2
     center_offset_y = local_map_dims[1] // 2
     
-    target_gx = robot_gx + lx - center_offset_x
-    target_gy = robot_gy + ly - center_offset_y
-    target_gz = robot_gz + lz # Voxel (lx, ly, 0) corresponds to robot's Z level
+    # Calculate offset in meters in the local frame
+    local_offset_x = float(lx - center_offset_x) * voxel_size
+    local_offset_y = float(ly - center_offset_y) * voxel_size
+    local_offset_z = float(lz) * voxel_size
+    
+    local_pos = wp.vec3(local_offset_x, local_offset_y, local_offset_z)
+    
+    # Rotate the local offset to world frame
+    world_offset = wp.quat_rotate(robot_quat_w, local_pos)
+    
+    # Calculate target world position
+    # Center XY on robot, but ground Z to the map origin so lz=0 always matches global z=0
+    target_world_pos = wp.vec3(
+        robot_pos_w[0] + world_offset[0],
+        robot_pos_w[1] + world_offset[1],
+        map_origin_for_env[2] + local_offset_z
+    )
+    
+    # Convert to global grid indices relative to the map origin
+    relative_target_pos = target_world_pos - map_origin_for_env
+    target_gx = int(wp.floor(relative_target_pos[0] / voxel_size))
+    target_gy = int(wp.floor(relative_target_pos[1] / voxel_size))
+    target_gz = int(wp.floor(relative_target_pos[2] / voxel_size))
 
     # 3. Check if the target global index is within bounds
     if (target_gx >= 0 and target_gx < global_map_dims[0] and

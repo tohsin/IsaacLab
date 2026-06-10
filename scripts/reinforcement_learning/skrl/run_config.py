@@ -23,12 +23,12 @@ class TrainingConfig_PreTrain:
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef = 6e-5  # Moderately increased for better exploration with diverse objects
+    entropy_coef = 3e-4  # Moderately increased for better exploration with diverse objects
     value_loss_scale = 1.0  # Increased to give a stronger signal to the critic
-    learning_rate = 3e-5
+    learning_rate = 1e-5
     init_log_std = 0.0 
     use_wandb = True
-    global_timesteps = 40_000_000
+    global_timesteps = 50_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set

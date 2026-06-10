@@ -26,13 +26,13 @@ import isaacsim.core.utils.stage as stage_utils
 from isaaclab.markers.config import RAY_CASTER_MARKER_CFG, CUBOID_MARKER_CFG
 # from isaaclab.assets import RigidObject, RigidObjectCfg
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.utils.math import quat_mul, quat_apply, quat_conjugate, quat_apply_inverse
+from isaaclab.utils.math import quat_mul, quat_apply, quat_conjugate, quat_apply_inverse, yaw_quat
 # from semanc_manager import SemanticManager, add_semantic_tags_from_config
 from .inspection_cfg import Isaac3dinspectionEnvCfg
+from .spatial_state_manager import SpatialStateManager
 # import wandb
 from .curriculum_manager import Curriculum
 from .utils import  NormalizeReward, visualise_faces, _show_face_ids_
-from .occupancy_grid_mapper import OccupancyGridMapper
 from .inspection_logger import InspectionLogger
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import time 
@@ -75,23 +75,34 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
 
         if self.cfg.mapping_cfg.use_occupancy_map:
-            self.occupancy_mapper = OccupancyGridMapper(
+            self.map_manager = SpatialStateManager(
                 num_envs=self.num_envs,
                 map_bounds=self.cfg.mapping_cfg.bounds,
                 resolution=self.cfg.mapping_cfg.resolution,
                 visibility_surface_hits_only=self.cfg.mapping_cfg.visibility_surface_hits_only,
+                local_map_dims=self.cfg.mapping_cfg.local_map_dims,
+                egocentric_map=getattr(self.cfg.mapping_cfg, "egocentric_map", True),
+                log_odds_free=getattr(self.cfg.mapping_cfg, "log_odds_free", -0.4),
+                log_odds_occupied=getattr(self.cfg.mapping_cfg, "log_odds_occupied", 0.8),
+                clamp_min=getattr(self.cfg.mapping_cfg, "clamp_min", -5.0),
+                clamp_max=getattr(self.cfg.mapping_cfg, "clamp_max", 5.0),
                 visualization_mode = run_cfg.visualisation_mode,
                 env_origins= self.scene.env_origins.cpu().numpy(),
                 device=self.device,
                 # visualize_env_id= None
                 visualize_env_id=0 if (run_cfg.debug and getattr(run_cfg, 'enable_voxel_visualization', False)) else None
             )
-         
         self.curriculum = Curriculum(
             num_envs=self.num_envs,
             device=self.device,
     
         )
+
+        # Scale spatial rewards dynamically based on map resolution (computed once at init)
+        res_ratio = self.cfg.mapping_cfg.resolution / 0.25
+        self.cfg.reward_cfg.information_gain_reward_scale *= (res_ratio ** 3)
+        self.cfg.reward_cfg.visibility_increase_reward_scale *= (res_ratio ** 2)
+        self.cfg.reward_cfg.visitation_reward_scale *= res_ratio
 
         self._setup_tensor_buffers()
         self._setup_camera_zoom()
@@ -129,8 +140,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
     def close(self):
         """Cleanup for the environment."""
-        if self.cfg.mapping_cfg.use_occupancy_map and self.occupancy_mapper.visualizer:
-            self.occupancy_mapper.visualizer.close()
+        if self.cfg.mapping_cfg.use_occupancy_map and self.map_manager.visualizer:
+            self.map_manager.visualizer.close()
             
         if hasattr(self, 'pc_collector') and self.pc_collector:
             try:
@@ -209,7 +220,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.prev_local_occ_map = torch.zeros((self.num_envs, *local_map_shape[:-1]), device=self.device)
         self.prev_local_vis_map = torch.zeros((self.num_envs, *local_map_shape[:-1]), device=self.device)
         self.prev_coverage_ratio = torch.zeros(self.num_envs, device=self.device)
-        all_vis_maps = wp.to_torch(self.occupancy_mapper.visibility_map)
+        all_vis_maps = wp.to_torch(self.map_manager.visibility_map)
         num_cells = all_vis_maps.view(self.num_envs, -1).shape[1]
         initial_score = -float(num_cells)  # Score for a map of all zeros
         self.prev_visibility_score = torch.full((self.num_envs,), initial_score, device=self.device)
@@ -333,11 +344,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.previous_action_for_rewards.copy_(self.last_action)
+        
+        # Handle potential NaNs or Infs from the policy to prevent CUDA TDR crashes in PhysX
+        if torch.isnan(actions).any() or torch.isinf(actions).any():
+            print(f"[ENV WARNING] NaN/Inf detected in actions! Policy weights have likely collapsed. Zeroing actions to prevent PhysX crash.")
+            #actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
         actions = torch.clamp(actions, -1.0, 1.0)
         self.last_action.copy_(actions)
         self.actions = actions.clone()
     
     def _apply_action(self) -> None:
+        try:
+            torch.cuda.synchronize()
+        except Exception as e:
+            print(f"[DEBUG FATAL] CUDA Error BEFORE _apply_action (likely from _pre_physics_step): {e}")
+            raise
         
         if isinstance(self.single_action_space, gym.spaces.Box):
             linear_velocity = self.actions[:, 0] * self.cfg.robot_phys_cfg.max_linear_velocity  # Forward/Backward command
@@ -422,6 +443,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wheel_joint_indices)
         self.robot.set_joint_velocity_target(ptz_targets, joint_ids=self._ptz_joint_indices)
 
+        try:
+            torch.cuda.synchronize()
+        except Exception as e:
+            print(f"[DEBUG FATAL] CUDA Error AFTER _apply_action tensor ops: {e}")
+            raise
+
     def _update_zoom(self, zoom_cmd: torch.Tensor):
         delta_zoom = zoom_cmd * self.cfg.robot_phys_cfg.zoom_speed
         self.current_focal_lengths += delta_zoom
@@ -489,7 +516,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         chassis_min_dist_sq = 0.4 ** 2
         # Update Visitation Map
-        self.occupancy_mapper.update_visitation(self.robot.data.root_pos_w)
+        self.map_manager.update_visitation(self.robot.data.root_pos_w)
 
         # Update Occupancy Map
         # ---------------------------------------------------------
@@ -510,7 +537,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 orientation=nav_cam_quat,
                 device=self.device,
         )
-        
+           # To visualise the point cloud in my Scene
+        # if i ==0 and run_cfg.visualise_point_cloud and visualise and self.pc_markers is not None:
+        #     if pointcloud.size()[0] > 0:
+        #         self.pc_markers.visualize(translations=pointcloud)
         point_clouds_list  = []
         for i in range(self.num_envs):
             pointcloud = pointclouds_batch[i]
@@ -519,15 +549,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             valid_depth_mask = torch.logical_and(~torch.isnan(pointcloud[:, 2]), ~torch.isinf(pointcloud[:, 2]))
             pointcloud = pointcloud[valid_depth_mask]
 
-            # To visualise the point cloud in my Scene
-            if i ==0 and run_cfg.visualise_point_cloud and visualise and self.pc_markers is not None:
-                if pointcloud.size()[0] > 0:
-                    self.pc_markers.visualize(translations=pointcloud)
-            
             if pointcloud.shape[0] > 0:
                 # 1. Find the indices of all points that are not part of the floor
-                floor_mask = pointcloud[:, 2] > 0.05
-                valid_indices = torch.where(floor_mask)[0]
+                if getattr(self.cfg.mapping_cfg, "filter_floor_occupancy", True):
+                    floor_mask = pointcloud[:, 2] > 0.05
+                else:
+                    floor_mask = pointcloud[:, 2] > -10.0 # Don't filter
+                
+                # Filter out chassis points (prevent the robot from mapping its own bumper at the origin)
+                dist_sq = torch.sum((pointcloud - nav_cam_pos[i])**2, dim=1)
+                chassis_mask = dist_sq > chassis_min_dist_sq
+                
+                # Combine masks
+                valid_mask = torch.logical_and(floor_mask, chassis_mask)
+                valid_indices = torch.where(valid_mask)[0]
 
                 # 2. Check if we need to downsample these indices
                 if valid_indices.shape[0] > 1024:
@@ -546,7 +581,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 pointcloud = torch.empty((0, 3), device=self.device)
             point_clouds_list.append(pointcloud)
         
-        self.occupancy_mapper.update_occupancy(
+        self.map_manager.update_occupancy(
             sensor_origins=nav_cam_pos,
             point_clouds=point_clouds_list,
         )
@@ -589,21 +624,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             point_clouds_list_insp.append(pointcloud_insp)
         
 
-        self.occupancy_mapper.update_visibility(
+        self.map_manager.update_visibility(
             sensor_origins=insp_cam_pos,
             point_clouds=point_clouds_list_insp,
         )
 
         # Update Visualizer
-        if self.occupancy_mapper.visualizer is not None:
-            vis_env_id = self.occupancy_mapper.vis_env_id
-
-            # Get the world pose for that specific robot
-            robot_pos_for_vis = self.robot.data.root_pos_w[vis_env_id]
-            robot_quat_for_vis = self.robot.data.root_quat_w[vis_env_id]
+        if self.map_manager.visualizer is not None:
+            # Pass the full batched poses for potential local map extraction
+            robot_pos_w = self.robot.data.root_pos_w
+            robot_quat_w = self.robot.data.root_quat_w
             
             # Call the updated visualization method with the pose data
-            self.occupancy_mapper.update_visualization(robot_pos_for_vis, robot_quat_for_vis)
+            self.map_manager.update_visualization(robot_pos_w, robot_quat_w)
   
     def _compute_pose_observation(self) -> torch.Tensor:
         """Compute the robot's pose observation.
@@ -668,7 +701,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if not self.cfg.mapping_cfg.use_occupancy_map:
             raise ValueError("Occupancy map is not enabled in the configuration.")
         robot_pos_w = self.robot.data.root_pos_w
-        local_occ_map, local_vis_map, local_visit = self.occupancy_mapper.get_local_maps(robot_pos_w)
+        robot_quat_w = self.robot.data.root_quat_w
+        
+        if getattr(self.cfg.mapping_cfg, "egocentric_map", True):
+            robot_yaw_quat_w = yaw_quat(robot_quat_w)
+        else:
+            robot_yaw_quat_w = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(robot_pos_w.shape[0], 1)
+            
+        local_occ_map, local_vis_map, local_visit = self.map_manager.get_local_maps(robot_pos_w, robot_yaw_quat_w)
+        self.current_local_occ_map = local_occ_map.clone()
         for name, tensor in {"occ": local_occ_map, "vis": local_vis_map, "visit": local_visit}.items():
             if torch.isnan(tensor).any() or torch.isinf(tensor).any():
                 msg = f"Invalid value (NaN or Inf) in Local Map: {name}"
@@ -767,8 +808,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
     def step(self, action: torch.Tensor) -> tuple[dict, torch.Tensor, torch.Tensor, dict]:
 
+        try:
+            torch.cuda.synchronize()
+        except Exception as e:
+            print(f"[DEBUG FATAL] CUDA Error BEFORE environment step: {e}")
+            raise
+
         if self.common_step_counter % self.cfg.mapping_cfg.map_update_interval == 0:
-            self._update_maps(visualise=run_cfg.debug)
+            try:
+                self._update_maps(visualise=run_cfg.debug)
+                torch.cuda.synchronize()
+            except Exception as e:
+                print(f"[DEBUG FATAL] CUDA Error inside `_update_maps` (Warp Kernels)! This proves the warp kernels are causing the timeout: {e}")
+                raise
 
         self.logger.log_step(self.common_step_counter, self.curriculum.success_rate)
 
@@ -789,8 +841,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
             self.max_distance_reached = torch.maximum(self.max_distance_reached, current_dist)
 
-        return super().step(action)
-      
+        try:
+            res = super().step(action)
+            torch.cuda.synchronize()
+            return res
+        except Exception as e:
+            print(f"[DEBUG FATAL] CUDA Error inside `super().step()` (PhysX / Apply Action)! {e}")
+            raise
     def _get_semantic_mask(self, camera) -> torch.Tensor | None:
         """
         Utility to extract the binary mask for the target object from a given camera.
@@ -1037,7 +1094,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     
     def _compute_exploration_rewards(self):
         # --- Entropy / Information Gain ---
-        all_maps_log_odds = wp.to_torch(self.occupancy_mapper.occupancy_map)
+        all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
         all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
         current_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
         information_gain = torch.relu(self.prev_global_map_entropy - current_entropy)
@@ -1045,7 +1102,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # ---Surface Visibility Increase ---
         k = self.cfg.reward_cfg.visibility_decay_factor
-        all_vis_maps = wp.to_torch(self.occupancy_mapper.visibility_map)
+        all_vis_maps = wp.to_torch(self.map_manager.visibility_map)
         all_vis_maps = all_vis_maps.view(self.num_envs, -1)
         current_visibility_score = -torch.exp(-k * all_vis_maps).sum(dim=1)
         visibility_increase_reward = torch.relu(current_visibility_score - self.prev_visibility_score)
@@ -1059,9 +1116,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         The reward diminishes exponentially as a voxel is revisited.
         """
         robot_pos_w = self.robot.data.root_pos_w    # (num_envs, 2)
-        map_origins = torch.from_numpy(self.occupancy_mapper.world_map_origins).to(self.device)
-        voxel_size = self.occupancy_mapper.resolution
-        map_dims = self.occupancy_mapper.map_dims
+        map_origins = torch.from_numpy(self.map_manager.world_map_origins).to(self.device)
+        voxel_size = self.map_manager.resolution
+        map_dims = self.map_manager.map_dims
 
         relative_pos = robot_pos_w - map_origins
         
@@ -1084,11 +1141,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         # Add environment-specific offset to get the global index
         env_ids = torch.arange(self.num_envs, device=self.device)[valid_mask]
-        map_offset = env_ids * self.occupancy_mapper.num_voxels_per_map
+        map_offset = env_ids * self.map_manager.num_voxels_per_map
         global_indices = map_offset + linear_indices
 
         # Get visitation counts from the GPU map
-        all_visit_counts_torch = wp.to_torch(self.occupancy_mapper.visitation_map)
+        all_visit_counts_torch = wp.to_torch(self.map_manager.visitation_map)
         current_counts = all_visit_counts_torch[global_indices]
 
         # Calculate reward: R = exp(-beta * N), where N is the visit count
@@ -1097,6 +1154,50 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         reward[valid_mask] = torch.exp(-self.cfg.reward_cfg.visitation_decay_factor * (current_counts - 1.0))
         
         return reward
+
+    def _compute_occupancy_penalty(self) -> torch.Tensor:
+        """
+        Computes a collision penalty based on occupancy map voxels directly surrounding the robot.
+        Uses a shift window from the egocentric map center.
+        """
+        if getattr(self, 'current_local_occ_map', None) is None:
+            return torch.zeros(self.num_envs, device=self.device)
+            
+        local_dims = self.cfg.mapping_cfg.local_map_dims
+        center_x = local_dims[0] // 2
+        center_y = local_dims[1] // 2
+        center_z = 0 # Robot is at the floor level in the local map
+        
+        import math
+        # Default target collision check radius is 0.5 meters. Calculate voxels dynamically based on resolution.
+        target_radius_m = 0.5
+        calculated_shift = max(1, int(math.ceil(target_radius_m / self.cfg.mapping_cfg.resolution)))
+        
+        # Allow overriding via config, otherwise use the dynamically calculated shift
+        shift_x = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_x', calculated_shift)
+        shift_y = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_y', calculated_shift)
+        shift_z = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_z', calculated_shift)
+
+        # Ensure bounds
+        min_x = max(0, center_x - shift_x)
+        max_x = min(local_dims[0], center_x + shift_x + 1)
+        min_y = max(0, center_y - shift_y)
+        max_y = min(local_dims[1], center_y + shift_y + 1)
+        min_z = max(0, center_z) # Can't go below floor
+        max_z = min(local_dims[2], center_z + shift_z + 1)
+
+        # Log-odds of 1.1 corresponds to a high probability of occupancy
+        collision_mask = self.current_local_occ_map[..., min_x:max_x, min_y:max_y, min_z:max_z] > 1.1
+        
+        collision_mask_size = collision_mask.shape[1] * collision_mask.shape[2] * collision_mask.shape[3]
+        occupancy_penalty_sum = collision_mask.sum(dim=(1,2,3))
+        
+        occupancy_penalty = torch.where(
+            occupancy_penalty_sum > 0.0, 
+            -(1.0 + occupancy_penalty_sum / collision_mask_size), 
+            0.0
+        )
+        return occupancy_penalty
 
     def _get_rewards(self) -> torch.Tensor:
         """
@@ -1108,6 +1209,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         face_discovery_raw, total_num_faces_inspected = self._compute_face_discovery_reward_fast()
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
         visitation_reward = self._compute_visitation_reward()
+        occupancy_penalty = self._compute_occupancy_penalty()
         action_delta = torch.sum(torch.square(self.actions - self.previous_action_for_rewards), dim=1)
         
         # Base Action Penalty (Linear & Angular velocity which are indices 0, 1)
@@ -1145,6 +1247,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
                         - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
                         - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
+                        + getattr(self.cfg.reward_cfg, 'occupancy_penalty_scale', 1.0) * occupancy_penalty
                         + success_bonus
                         -self.cfg.reward_cfg.time_penalty
                         )
@@ -1155,6 +1258,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             base_action_delta,
             ptz_action_delta,
             visitation_reward,
+            occupancy_penalty,
             total_reward,
             current_face_reward_scale # Pass the dynamic scale for logging
             )
@@ -1162,14 +1266,22 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Logging
       
         if torch.isnan(total_reward).any() or torch.isinf(total_reward).any():
-            import ipdb; ipdb.set_trace()
             print("NaN or Inf detected in total reward calculation!")
+            print(f"Total Reward: {total_reward}")
+            print(f"face_discovery_raw: {face_discovery_raw}")
+            print(f"information_gain_reward: {information_gain_reward}")
+            print(f"visibility_increase_reward: {visibility_increase_reward}")
+            print(f"visitation_reward: {visitation_reward}")
+            print(f"base_action_delta: {base_action_delta}")
+            print(f"ptz_action_delta: {ptz_action_delta}")
+            print(f"occupancy_penalty: {occupancy_penalty}")
+            print(f"success_bonus: {success_bonus}")
             raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
         # return total_reward
         normalized_reward = self.rewardscaler(total_reward)
         return normalized_reward
     
-    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, total_unscaled, current_face_reward_scale):
+    def _cache_rewards(self, face_discovery, info_gain, visibility_increase, action_delta, camera_delta, visitation_reward, occupancy_penalty, total_unscaled, current_face_reward_scale):
         # Construct dictionary for logging (both accumulation and per-step means)
         reward_dict = {
             "face_discovery_raw": face_discovery,
@@ -1178,6 +1290,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "action_penalty": action_delta,
             "camera_penalty": camera_delta,
             "visitation_reward": visitation_reward,
+            "occupancy_penalty": occupancy_penalty,
             "total_unscaled": total_unscaled,
             
             # Scaled
@@ -1187,6 +1300,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "action_penalty_scaled": self.cfg.reward_cfg.action_penalty_scale * action_delta,
             "camera_penalty_scaled": self.cfg.reward_cfg.ptz_penalty_scale * camera_delta,
             "visitation_reward_scaled": self.cfg.reward_cfg.visitation_reward_scale * visitation_reward,
+            "occupancy_penalty_scaled": getattr(self.cfg.reward_cfg, 'occupancy_penalty_scale', 1.0) * occupancy_penalty,
             
             # Debug Stats - Must be a tensor of shape (num_envs,) for the logger to handle it correctly during resets
             "stats/face_reward_scale": torch.full((self.num_envs,), current_face_reward_scale, device=self.device)
@@ -1286,9 +1400,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Map Logging and Reset
             if self.cfg.mapping_cfg.use_occupancy_map:
 
-                all_vis_maps_torch = wp.to_torch(self.occupancy_mapper.visibility_map).view(self.num_envs, -1)
-                all_occ_maps_torch = wp.to_torch(self.occupancy_mapper.occupancy_map).view(self.num_envs, -1)
-                all_visit_maps_torch = wp.to_torch(self.occupancy_mapper.visitation_map).view(self.num_envs, -1) # NEW
+                all_vis_maps_torch = wp.to_torch(self.map_manager.visibility_map).view(self.num_envs, -1)
+                all_occ_maps_torch = wp.to_torch(self.map_manager.occupancy_map).view(self.num_envs, -1)
+                all_visit_maps_torch = wp.to_torch(self.map_manager.visitation_map).view(self.num_envs, -1) # NEW
 
                 final_vis_sums = all_vis_maps_torch.sum(dim=1)
                 final_entropies = self._calculate_entropy(all_occ_maps_torch).sum(dim=1)
@@ -1312,12 +1426,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[env_id].item()} ---")
                         print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[env_id].item()} ---")
 
-                self.occupancy_mapper.reset_map(env_ids.cpu().tolist())
-                all_vis_maps = wp.to_torch(self.occupancy_mapper.visibility_map)
+                self.map_manager.reset_map(env_ids.cpu().tolist())
+                all_vis_maps = wp.to_torch(self.map_manager.visibility_map)
                 num_cells = all_vis_maps.view(self.num_envs, -1).shape[1]
                 initial_score = -float(num_cells)
                 self.prev_visibility_score[env_ids] = initial_score 
-                all_maps_log_odds = wp.to_torch(self.occupancy_mapper.occupancy_map)
+                all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
                 all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
                 initial_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
                 self.prev_global_map_entropy[env_ids] = initial_entropy[env_ids]

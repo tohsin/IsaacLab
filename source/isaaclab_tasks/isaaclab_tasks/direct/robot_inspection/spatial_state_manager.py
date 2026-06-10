@@ -12,11 +12,12 @@ from .kernels.warp_occupancy_fast import (
     extract_local_maps_kernel,
     clamp_map_values, 
 )
+from .run_config import map_channels, map_view_mode, visualisation_mode
 
 
-class InteractiveVoxelVisualizer:
+class SpatialVisualizer:
     """Manages an interactive Open3D visualization window."""
-    def __init__(self, voxel_size: float, title="Voxel Grid"):
+    def __init__(self, voxel_size: float, title="Voxel Grid", update_frequency: int = 1):
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window(window_name=title)
 
@@ -24,9 +25,22 @@ class InteractiveVoxelVisualizer:
         self.grid = o3d.geometry.VoxelGrid()
         self._initialized = False
         self.robot_pose_marker = None
+        
+        self.update_frequency = update_frequency
+        self.frame_count = 0
 
     def update_grid(self, points, colors):
         """Updates the point cloud geometry in the visualizer."""
+        self.frame_count += 1
+        
+        # Always pump events to keep the UI responsive for zooming/panning
+        self.vis.poll_events()
+        self.vis.update_renderer()
+        
+        # Throttle the actual geometry rebuild to save CPU
+        if self.frame_count % self.update_frequency != 0:
+            return
+            
         if points.shape[0] == 0:
             # Clear the geometry if there are no points
             if self._initialized:
@@ -51,18 +65,18 @@ class InteractiveVoxelVisualizer:
             view_ctl.set_lookat([0.0, 0.0, 0.3])  # Point the camera at the center of your map
             view_ctl.set_front([-2, -1, 0.8]) # Set the camera's position (where it's looking from)
             view_ctl.set_up([0, 0, 1])     # Define the "up" direction (Z-axis is up)
-            view_ctl.set_zoom(0.1)
+            view_ctl.set_zoom(0.6)  # Increased from 0.1 to zoom out the camera
 
         else:
             self.vis.remove_geometry(self.grid, reset_bounding_box=False)
             self.grid = new_grid # Combine the new grid into our existing one
             self.vis.add_geometry(self.grid, reset_bounding_box=False)
-        # Process events to keep the window responsive
-        self.vis.poll_events()
-        self.vis.update_renderer()
     
     def update_robot_pose(self, position: np.ndarray, orientation_quat: np.ndarray):
         """Creates or updates a coordinate frame representing the robot's pose."""
+        if self.frame_count % self.update_frequency != 0:
+            return
+            
         # Create the coordinate frame geometry
         # The size parameter controls how large the axis marker is
         pose_marker = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
@@ -95,7 +109,7 @@ class InteractiveVoxelVisualizer:
         """Closes the visualization window."""
         self.vis.destroy_window()
 
-class OccupancyGridMapper:
+class SpatialStateManager:
     """
     A class to manage and update a 3D occupancy grid using GPU-accelerated
     fast voxel traversal with NVIDIA Warp.
@@ -107,8 +121,14 @@ class OccupancyGridMapper:
                 resolution  :float,
                 env_origins : np.array,
                 visibility_surface_hits_only : bool = False,
+                local_map_dims : tuple = (21, 21, 11),
+                egocentric_map : bool = True,
+                log_odds_free : float = -0.4,
+                log_odds_occupied : float = 0.8,
+                clamp_min : float = -5.0,
+                clamp_max : float = 5.0,
                 visualize_env_id: int | None = None,
-                visualization_mode: str = "occupancy",
+                visualization_mode: any = None,
                 device="cuda"):
         """
         Initializes the occupancy grid mapper.
@@ -125,6 +145,8 @@ class OccupancyGridMapper:
         self.device = device
         self.map_bounds = map_bounds
         self.resolution = resolution
+        self.local_map_dims = local_map_dims
+        self.egocentric_map = egocentric_map
         self.visibility_surface_hits_only = visibility_surface_hits_only
         self.visualization_mode = visualization_mode
 
@@ -138,11 +160,11 @@ class OccupancyGridMapper:
         self.initialize_map_dimensions()
         
         # Log-odds parameters
-        self.log_odds_free = -0.4  # P(free) = 0.4
-        self.log_odds_occupied = 0.8 # P(occupied) = 0.7
+        self.log_odds_free = log_odds_free  # P(free) = 0.4
+        self.log_odds_occupied = log_odds_occupied # P(occupied) = 0.7
         self.log_odds_neutral = 0.0
-        self.clamp_min = -5.0      # Min log-odds
-        self.clamp_max = 5.0       # Max log-odds
+        self.clamp_min = clamp_min      # Min log-odds
+        self.clamp_max = clamp_max       # Max log-odds
 
         self.log_odds_visible = 0.4
         
@@ -153,7 +175,7 @@ class OccupancyGridMapper:
                 print(f"Warning: visualize_env_id {self.vis_env_id} is out of bounds. Disabling visualization.")
                 self.vis_env_id = None
             else:
-                self.visualizer = InteractiveVoxelVisualizer(voxel_size=self.voxel_size, title=f"Voxel Grid (Env {self.vis_env_id})")
+                self.visualizer = SpatialVisualizer(voxel_size=self.voxel_size, title=f"Voxel Grid (Env {self.vis_env_id})")
                 print(f"Visualization enabled for environment {self.vis_env_id}.")
 
     def initialize_map_dimensions(self):
@@ -386,76 +408,133 @@ class OccupancyGridMapper:
                                             center=True)
         return occupied_centers
 
-    def get_voxel_states_as_points(self, env_id: int):
+    def get_voxel_states_as_points(self, env_id: int, robot_pos_w: torch.Tensor = None, robot_quat_w: torch.Tensor = None):
         """
-        Retrieves the states of all voxels for a given environment as points and colors.
-        - Occupied: Black
-        - Free: White
-        - Unknown: Grey
-        Note: Displaying all 'unknown' voxels can be computationally intensive.
-              For large maps, consider visualizing only 'occupied' and 'free' states.
+        Retrieves the states of voxels for visualization based on the map mode and channel.
         """
-        map_size = self.num_voxels_per_map
-        map_offset = env_id * map_size
-
         all_indices = np.array([], dtype=int)
         colors = np.array([])
+        world_points = np.array([])
 
-        if self.visualization_mode == "occupancy":
-            env_map_np = self.occupancy_map.numpy()[map_offset : map_offset + map_size]
+        if self.visualization_mode.map_mode == map_view_mode.LOCAL:
+            if robot_pos_w is None or robot_quat_w is None:
+                return np.array([]), np.array([])
+            
+            # Use yaw-only rotation for local map extraction if egocentric
+            from isaaclab.utils.math import yaw_quat
+            if getattr(self, "egocentric_map", True):
+                robot_yaw_quat_w = yaw_quat(robot_quat_w)
+            else:
+                robot_yaw_quat_w = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(robot_pos_w.shape[0], 1)
+            
+            local_occ, local_vis, local_visit = self.get_local_maps(robot_pos_w, robot_yaw_quat_w)
+            
+            if self.visualization_mode.channel == map_channels.OCCUPANCY:
+                local_map_np = local_occ[env_id].cpu().numpy()
+                mask = local_map_np > 0.0 # Standard threshold for log-odds occupancy (P > 0.5)
+            elif self.visualization_mode.channel == map_channels.VISIBILITY:
+                local_map_np = local_vis[env_id].cpu().numpy()
+                mask = local_map_np >= 0.4
+            elif self.visualization_mode.channel == map_channels.VISITATION:
+                local_map_np = local_visit[env_id].cpu().numpy()
+                mask = local_map_np > 0
+            else:
+                return np.array([]), np.array([])
 
-            # Define masks for each state
-            occupied_mask = env_map_np > self.log_odds_occupied
-            # Get linear indices for each state
-            occupied_indices = np.where(occupied_mask)[0]
-            # all_indices = np.concatenate([occupied_indices, free_indices, unknown_indices])
-            all_indices = occupied_indices
+            if np.any(mask):
+                x, y, z = np.where(mask)
+                colors = np.zeros((len(x), 3))
+                if self.visualization_mode.channel == map_channels.OCCUPANCY:
+                    colors[:] = [0.0, 0.0, 0.0]
+                elif self.visualization_mode.channel == map_channels.VISIBILITY:
+                    intensities = local_map_np[x, y, z]
+                    colors[:, 1] = intensities
+                    colors[:, 2] = 0.2
+                elif self.visualization_mode.channel == map_channels.VISITATION:
+                    counts = local_map_np[x, y, z]
+                    visitation_threshold = 10.0  # Adjust this to tune how fast it turns red
+                    norm_c = np.clip(counts / visitation_threshold, 0, 1)
+                    colors[:, 0] = norm_c # Red
+                    colors[:, 2] = 1.0 - norm_c # Blue
 
-            if all_indices.size > 0:
-                colors = np.zeros((len(all_indices), 3))
-                colors[:] = [0.0, 0.0, 0.0]
+                # Convert indices to local coordinates
+                # Z starts at 0 (the floor), so we do not shift Z by half the dimension
+                center = np.array([self.local_map_dims[0] // 2, self.local_map_dims[1] // 2, 0])
+                grid_indices = np.vstack([x, y, z]).T
+                # Add 0.5 to pass the *center* of the voxel to Open3D to prevent floating point aliasing
+                world_points = (grid_indices - center + 0.5) * self.voxel_size
+            
+            return world_points, colors
 
-        elif self.visualization_mode == "visibility":
-            env_map_np = self.visibility_map.numpy()[map_offset : map_offset + map_size]
-            visible_mask = env_map_np >= 0.4
-            visible_indices = np.where(visible_mask)[0]
-            all_indices = visible_indices
+        elif self.visualization_mode.map_mode == map_view_mode.GLOBAL:
+            map_size = self.num_voxels_per_map
+            map_offset = env_id * map_size
 
-            if all_indices.size > 0:
-                intensities = env_map_np[visible_indices]
-                colors = np.zeros((len(all_indices), 3))
-                colors[:, 1] = intensities
-                colors[:, 2] = 0.2
+            if self.visualization_mode.channel == map_channels.OCCUPANCY:
+                env_map_np = self.occupancy_map.numpy()[map_offset : map_offset + map_size]
+                occupied_mask = env_map_np > 0.0 # Standard threshold for log-odds occupancy (P > 0.5)
+                all_indices = np.where(occupied_mask)[0]
 
-        if all_indices.size == 0:
-            return np.array([]), np.array([])
+                if all_indices.size > 0:
+                    colors = np.zeros((len(all_indices), 3))
+                    colors[:] = [0.0, 0.0, 0.0]
 
-        # Convert linear indices to 3D grid coordinates
-        z = all_indices % self.map_dims[2]
-        y = (all_indices // self.map_dims[2]) % self.map_dims[1]
-        x = all_indices // (self.map_dims[1] * self.map_dims[2])
+            elif self.visualization_mode.channel == map_channels.VISIBILITY:
+                env_map_np = self.visibility_map.numpy()[map_offset : map_offset + map_size]
+                visible_mask = env_map_np >= 0.4
+                all_indices = np.where(visible_mask)[0]
 
-        grid_indices = np.vstack([x, y, z]).T
-        world_points = self.grid_to_world(
-                                        grid_indices,
-                                        env_id,
-                                        center=False) # Use voxel corners for viz
+                if all_indices.size > 0:
+                    intensities = env_map_np[all_indices]
+                    colors = np.zeros((len(all_indices), 3))
+                    colors[:, 1] = intensities
+                    colors[:, 2] = 0.2
+            
+            elif self.visualization_mode.channel == map_channels.VISITATION:
+                env_map_np = self.visitation_map.numpy()[map_offset : map_offset + map_size]
+                visited_mask = env_map_np > 0
+                all_indices = np.where(visited_mask)[0]
+                
+                if all_indices.size > 0:
+                    counts = env_map_np[all_indices]
+                    visitation_threshold = 10.0  # Adjust this to tune how fast it turns red
+                    norm_c = np.clip(counts / visitation_threshold, 0, 1)
+                    colors = np.zeros((len(all_indices), 3))
+                    colors[:, 0] = norm_c
+                    colors[:, 2] = 1.0 - norm_c
 
-        return world_points, colors
+            if all_indices.size == 0:
+                return np.array([]), np.array([])
 
-    def get_local_maps(self, robot_positions_w: torch.Tensor):
+            # Convert linear indices to 3D grid coordinates
+            z = all_indices % self.map_dims[2]
+            y = (all_indices // self.map_dims[2]) % self.map_dims[1]
+            x = all_indices // (self.map_dims[1] * self.map_dims[2])
+
+            grid_indices = np.vstack([x, y, z]).T
+            world_points = self.grid_to_world(
+                                            grid_indices,
+                                            env_id,
+                                            center=True) # Use voxel centers for viz to prevent floating point aliasing
+
+            return world_points, colors
+        
+        return np.array([]), np.array([])
+
+    def get_local_maps(self, robot_positions_w: torch.Tensor, robot_quats_w: torch.Tensor):
         
         num_req_envs = robot_positions_w.shape[0]
         if num_req_envs != self.num_envs:
             raise ValueError(f"Provided robot_positions_w has {num_req_envs} envs, but mapper is configured for {self.num_envs}.")
 
-        local_dims = (21, 21, 11)
+        local_dims = self.local_map_dims
         local_map_dims_wp = wp.vec3i(local_dims[0], local_dims[1], local_dims[2])
         num_voxels_per_local_map = local_dims[0] * local_dims[1] * local_dims[2]
         total_local_voxels = num_req_envs * num_voxels_per_local_map
 
         # Prepare inputs for the kernel
         wp_robot_pos = wp.from_torch(robot_positions_w.contiguous(), dtype=wp.vec3)
+        wp_robot_quat = wp.from_torch(robot_quats_w.contiguous(), dtype=wp.quat)
         wp_world_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
         wp_global_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
@@ -480,6 +559,7 @@ class OccupancyGridMapper:
                 wp_local_visit_map,
 
                 wp_robot_pos,
+                wp_robot_quat,
                 wp_world_map_origins,
                 self.voxel_size,
                 wp_global_map_dims,
@@ -498,13 +578,18 @@ class OccupancyGridMapper:
 
         return local_occ_torch, local_vis_torch, local_visit_torch
     
-    def update_visualization(self, robot_pos: torch.Tensor, robot_quat: torch.Tensor):
+    def update_visualization(self, robot_pos_w: torch.Tensor, robot_quat_w: torch.Tensor):
         """Updates the interactive visualization for the configured environment."""
         # This method is now called internally by update()
-        if self.visualizer is None or self.visualization_mode == None:
+        if self.visualizer is None or self.visualization_mode is None:
             return
 
-        points, colors = self.get_voxel_states_as_points(self.vis_env_id)
+        points, colors = self.get_voxel_states_as_points(self.vis_env_id, robot_pos_w, robot_quat_w)
         self.visualizer.update_grid(points, colors)
 
-        self.visualizer.update_robot_pose(robot_pos.cpu().numpy(), robot_quat.cpu().numpy())
+        if self.visualization_mode.map_mode == map_view_mode.LOCAL:
+            # For local egocentric view, keep robot at the origin
+            self.visualizer.update_robot_pose(np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0, 0.0]))
+        else:
+            # For global view, move the robot pose marker to its actual location
+            self.visualizer.update_robot_pose(robot_pos_w[self.vis_env_id].cpu().numpy(), robot_quat_w[self.vis_env_id].cpu().numpy())

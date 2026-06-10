@@ -25,12 +25,19 @@ def update_occupancy_fast(
 
     ray_end = point_cloud[tid]
     ray_vec = ray_end - ray_start
-    ray_dist = wp.length(ray_vec)
+    original_ray_dist = wp.length(ray_vec)
 
-    if ray_dist < 1e-6:
+    if original_ray_dist < 1e-6:
         return
     
-    ray_dir = ray_vec / ray_dist
+    ray_dir = ray_vec / original_ray_dist
+
+    ray_dist = original_ray_dist
+    is_hit = True
+    # Cap maximum ray distance to prevent TDR timeouts from massive loops
+    if ray_dist > 25.0:
+        ray_dist = 25.0
+        is_hit = False
 
 
     start_pos_relative = ray_start - map_origin
@@ -98,16 +105,17 @@ def update_occupancy_fast(
                 tMaxZ += tDeltaZ
 
     # --- 4. Mark Endpoint as Occupied ---
-    end_pos_relative = ray_end - map_origin
-    end_X = int(wp.floor(end_pos_relative[0] / voxel_size))
-    end_Y = int(wp.floor(end_pos_relative[1] / voxel_size))
-    end_Z = int(wp.floor(end_pos_relative[2] / voxel_size))
+    if is_hit:
+        end_pos_relative = ray_end - map_origin
+        end_X = int(wp.floor(end_pos_relative[0] / voxel_size))
+        end_Y = int(wp.floor(end_pos_relative[1] / voxel_size))
+        end_Z = int(wp.floor(end_pos_relative[2] / voxel_size))
 
-    if (end_X >= 0 and end_X < map_dims[0] and
-        end_Y >= 0 and end_Y < map_dims[1] and
-        end_Z >= 0 and end_Z < map_dims[2]):
-        linear_index_end =  map_offset +\
-                            end_X * map_dims[1] * map_dims[2] + \
-                            end_Y * map_dims[2] + end_Z
-        update_val = log_odds_occupied - log_odds_free
-        wp.atomic_add(occupancy_map, linear_index_end, update_val)
+        if (end_X >= 0 and end_X < map_dims[0] and
+            end_Y >= 0 and end_Y < map_dims[1] and
+            end_Z >= 0 and end_Z < map_dims[2]):
+            linear_index_end =  map_offset +\
+                                end_X * map_dims[1] * map_dims[2] + \
+                                end_Y * map_dims[2] + end_Z
+            update_val = log_odds_occupied - log_odds_free
+            wp.atomic_add(occupancy_map, linear_index_end, update_val)

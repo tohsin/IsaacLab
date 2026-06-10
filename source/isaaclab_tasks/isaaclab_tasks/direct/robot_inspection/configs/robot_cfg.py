@@ -14,7 +14,7 @@ class RobotPhysicsCfg:
     pan_speed: float = 0.5  # Speed of the pan-tilt unit
     tilt_speed: float = 0.5  # Speed of the pan-tilt unit
     zoom_speed : float = 0.1  # Speed of the zoom control
-    min_focal_length: float = 10  # Minimum focal length for zoom
+    min_focal_length: float = 10.0  # Minimum focal length for zoom
     max_focal_length: float = 100.0 # Telephoto limited to force closer inspection
     default_focal_length: float = 24  # Default focal length for zoom
     # optical flow parameters
