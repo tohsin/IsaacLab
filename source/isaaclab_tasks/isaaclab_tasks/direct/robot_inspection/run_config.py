@@ -26,15 +26,16 @@ class debug_Cfg:
     logging_interval: int = 1500
     max_episode_length: int = 1700
     inspection_goal =  0.95
-    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
+    visualisation_mode = visualisation_mode(channel=map_channels.VISIBILITY, map_mode=map_view_mode.GLOBAL)
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
     display_cameras = False
     enable_voxel_visualization = True
+    visualize_env_id = 0
     use_wandb =  False #not debug
     headless = False
-    num_envs = 1
+    num_envs = 8
     nav_camera_modality = "rgbd"
     use_depth_mask = False
     use_optical_flow_penalty = False
@@ -46,7 +47,7 @@ class debug_Cfg:
 class train_Cfg_base:
     debug = False
     min_episode_length: int = 1000
-    max_episode_length: int = 2000
+    max_episode_length: int = 2300
     logging_interval: int = 1000
     inspection_goal =  0.05
     visualisation_mode = None

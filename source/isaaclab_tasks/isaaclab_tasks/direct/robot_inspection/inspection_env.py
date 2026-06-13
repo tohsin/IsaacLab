@@ -89,8 +89,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 visualization_mode = run_cfg.visualisation_mode,
                 env_origins= self.scene.env_origins.cpu().numpy(),
                 device=self.device,
-                # visualize_env_id= None
-                visualize_env_id=0 if (run_cfg.debug and getattr(run_cfg, 'enable_voxel_visualization', False)) else None
+                visualize_env_id=getattr(run_cfg, 'visualize_env_id', 0) if (run_cfg.debug and getattr(run_cfg, 'enable_voxel_visualization', False)) else None
             )
         self.curriculum = Curriculum(
             num_envs=self.num_envs,
@@ -348,7 +347,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Handle potential NaNs or Infs from the policy to prevent CUDA TDR crashes in PhysX
         if torch.isnan(actions).any() or torch.isinf(actions).any():
             print(f"[ENV WARNING] NaN/Inf detected in actions! Policy weights have likely collapsed. Zeroing actions to prevent PhysX crash.")
-            #actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
+            actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
         actions = torch.clamp(actions, -1.0, 1.0)
         self.last_action.copy_(actions)
         self.actions = actions.clone()
@@ -527,59 +526,56 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         nav_cam_quat = self._nav_camera.data.quat_w_ros
 
         nav_depth_data = self._nav_camera.data.output["distance_to_image_plane"]
-        intrinsic_matrices = self._nav_camera.data.intrinsic_matrices   
-        # Batched unprojection for navigation camera
-        pointclouds_batch = create_pointcloud_from_depth(
-                intrinsic_matrix=intrinsic_matrices,
-                depth=nav_depth_data,
-                keep_invalid=True,  # Ensure we return full shape (N, P, 3)
-                position=nav_cam_pos,
-                orientation=nav_cam_quat,
-                device=self.device,
+        intrinsic_matrices = self._nav_camera.data.intrinsic_matrices
+
+        # --- OLD POINTCLOUD PROCESSING (Commented out for reference) ---
+        # pointclouds_batch = create_pointcloud_from_depth(
+        #         intrinsic_matrix=intrinsic_matrices,
+        #         depth=nav_depth_data,
+        #         keep_invalid=True,  # Ensure we return full shape (N, P, 3)
+        #         position=nav_cam_pos,
+        #         orientation=nav_cam_quat,
+        #         device=self.device,
+        # )
+        # valid_depth_mask = torch.logical_and(~torch.isnan(pointclouds_batch[..., 2]), ~torch.isinf(pointclouds_batch[..., 2]))
+        # 
+        # if getattr(self.cfg.mapping_cfg, "filter_floor_occupancy", True):
+        #     floor_mask = pointclouds_batch[..., 2] > 0.05
+        # else:
+        #     floor_mask = pointclouds_batch[..., 2] > -10.0
+        #     
+        # dist_sq = torch.sum((pointclouds_batch - nav_cam_pos.unsqueeze(1))**2, dim=-1)
+        # chassis_mask = dist_sq > chassis_min_dist_sq
+        # 
+        # combined_mask = valid_depth_mask & floor_mask & chassis_mask
+        # 
+        # rand_weights = torch.rand(pointclouds_batch.shape[:2], device=self.device)
+        # rand_weights[~combined_mask] = -1.0
+        # 
+        # k_occupancy = min(1024, pointclouds_batch.shape[1])
+        # topk_vals, topk_indices = torch.topk(rand_weights, k_occupancy, dim=1)
+        # valid_topk_mask = topk_vals > -0.5
+        # 
+        # gathered_points = torch.gather(pointclouds_batch, 1, topk_indices.unsqueeze(-1).expand(-1, -1, 3))
+        # 
+        # flat_points = gathered_points[valid_topk_mask]
+        # env_indices = torch.arange(self.num_envs, device=self.device).view(-1, 1).expand(-1, k_occupancy)
+        # flat_env_indices = env_indices[valid_topk_mask].to(torch.int32)
+        # 
+        # point_clouds_list = (flat_points, flat_env_indices)
+        # ---------------------------------------------------------------
+
+        # Fast Sampled Unprojection for Occupancy
+        point_clouds_list = self._fast_sampled_unproject_and_filter(
+            depth_data=nav_depth_data,
+            intrinsic_matrices=intrinsic_matrices,
+            cam_pos=nav_cam_pos,
+            cam_quat=nav_cam_quat,
+            K_candidates=4096, # Sample a larger candidate pool to ensure enough valid points
+            filter_floor=getattr(self.cfg.mapping_cfg, "filter_floor_occupancy", True),
+            filter_chassis=True,
+            chassis_min_dist_sq=chassis_min_dist_sq
         )
-           # To visualise the point cloud in my Scene
-        # if i ==0 and run_cfg.visualise_point_cloud and visualise and self.pc_markers is not None:
-        #     if pointcloud.size()[0] > 0:
-        #         self.pc_markers.visualize(translations=pointcloud)
-        point_clouds_list  = []
-        for i in range(self.num_envs):
-            pointcloud = pointclouds_batch[i]
-            
-            # Remove NaN/Inf natively since keep_invalid=True left them in
-            valid_depth_mask = torch.logical_and(~torch.isnan(pointcloud[:, 2]), ~torch.isinf(pointcloud[:, 2]))
-            pointcloud = pointcloud[valid_depth_mask]
-
-            if pointcloud.shape[0] > 0:
-                # 1. Find the indices of all points that are not part of the floor
-                if getattr(self.cfg.mapping_cfg, "filter_floor_occupancy", True):
-                    floor_mask = pointcloud[:, 2] > 0.05
-                else:
-                    floor_mask = pointcloud[:, 2] > -10.0 # Don't filter
-                
-                # Filter out chassis points (prevent the robot from mapping its own bumper at the origin)
-                dist_sq = torch.sum((pointcloud - nav_cam_pos[i])**2, dim=1)
-                chassis_mask = dist_sq > chassis_min_dist_sq
-                
-                # Combine masks
-                valid_mask = torch.logical_and(floor_mask, chassis_mask)
-                valid_indices = torch.where(valid_mask)[0]
-
-                # 2. Check if we need to downsample these indices
-                if valid_indices.shape[0] > 1024:
-                    # Randomly shuffle the valid_indices
-                    perm = torch.randperm(valid_indices.shape[0], device=self.device)
-                    # Select the first 1024 shuffled indices
-                    final_indices = valid_indices[perm[:1024]]
-                else:
-                    # We have fewer than 1024 points, so keep all of them
-                    final_indices = valid_indices
-
-                # 3. Use the final list of indices to select points from the original pointcloud
-                pointcloud = pointcloud[final_indices]
-            else:
-                # Ensure pointcloud is an empty tensor if it was empty to begin with
-                pointcloud = torch.empty((0, 3), device=self.device)
-            point_clouds_list.append(pointcloud)
         
         self.map_manager.update_occupancy(
             sensor_origins=nav_cam_pos,
@@ -595,34 +591,49 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         depth_data_insp = self._ptz_camera.data.output["distance_to_image_plane"]
         intrinsic_matrices_insp = self._ptz_camera.data.intrinsic_matrices
 
-        # Batched unprojection for inspection camera
-        pointclouds_insp_batch = create_pointcloud_from_depth(
-                intrinsic_matrix=intrinsic_matrices_insp,
-                depth=depth_data_insp,
-                keep_invalid=True,  # Ensure we return full shape (N, P, 3)
-                position=insp_cam_pos,
-                orientation=insp_cam_quat,
-                device=self.device,
+        # --- OLD POINTCLOUD PROCESSING (Commented out for reference) ---
+        # pointclouds_insp_batch = create_pointcloud_from_depth(
+        #         intrinsic_matrix=intrinsic_matrices_insp,
+        #         depth=depth_data_insp,
+        #         keep_invalid=True,  # Ensure we return full shape (N, P, 3)
+        #         position=insp_cam_pos,
+        #         orientation=insp_cam_quat,
+        #         device=self.device,
+        # )
+        # valid_depth_mask_insp = torch.logical_and(~torch.isnan(pointclouds_insp_batch[..., 2]), ~torch.isinf(pointclouds_insp_batch[..., 2]))
+        # 
+        # dist_sq_insp = torch.sum((pointclouds_insp_batch - insp_cam_pos.unsqueeze(1))**2, dim=-1)
+        # chassis_mask_insp = dist_sq_insp > chassis_min_dist_sq
+        # 
+        # combined_mask_insp = valid_depth_mask_insp & chassis_mask_insp
+        # 
+        # rand_weights_insp = torch.rand(pointclouds_insp_batch.shape[:2], device=self.device)
+        # rand_weights_insp[~combined_mask_insp] = -1.0
+        # 
+        # k_visibility = min(1024, pointclouds_insp_batch.shape[1])
+        # topk_vals_insp, topk_indices_insp = torch.topk(rand_weights_insp, k_visibility, dim=1)
+        # valid_topk_mask_insp = topk_vals_insp > -0.5
+        # 
+        # gathered_points_insp = torch.gather(pointclouds_insp_batch, 1, topk_indices_insp.unsqueeze(-1).expand(-1, -1, 3))
+        # 
+        # flat_points_insp = gathered_points_insp[valid_topk_mask_insp]
+        # env_indices_insp = torch.arange(self.num_envs, device=self.device).view(-1, 1).expand(-1, k_visibility)
+        # flat_env_indices_insp = env_indices_insp[valid_topk_mask_insp].to(torch.int32)
+        # 
+        # point_clouds_list_insp = (flat_points_insp, flat_env_indices_insp)
+        # ---------------------------------------------------------------
+
+        # Fast Sampled Unprojection for Visibility
+        point_clouds_list_insp = self._fast_sampled_unproject_and_filter(
+            depth_data=depth_data_insp,
+            intrinsic_matrices=intrinsic_matrices_insp,
+            cam_pos=insp_cam_pos,
+            cam_quat=insp_cam_quat,
+            K_candidates=4096,
+            filter_floor=False,
+            filter_chassis=True,
+            chassis_min_dist_sq=chassis_min_dist_sq
         )
-
-        point_clouds_list_insp = []        
-        for i in range(self.num_envs):
-            pointcloud_insp = pointclouds_insp_batch[i]
-            
-            # Remove NaN/Inf natively since keep_invalid=True left them in
-            valid_depth_mask = torch.logical_and(~torch.isnan(pointcloud_insp[:, 2]), ~torch.isinf(pointcloud_insp[:, 2]))
-            pointcloud_insp = pointcloud_insp[valid_depth_mask]
-
-            if pointcloud_insp.shape[0] > 0:
-                # Filter out chassis points
-                dist_sq_insp = torch.sum((pointcloud_insp - insp_cam_pos[i])**2, dim=1)
-                valid_mask_insp = dist_sq_insp > chassis_min_dist_sq
-                pointcloud_insp = pointcloud_insp[valid_mask_insp]
-            if pointcloud_insp.shape[0] > 1024:
-                 perm = torch.randperm(pointcloud_insp.shape[0], device=self.device)
-                 pointcloud_insp = pointcloud_insp[perm[:1024]]
-            point_clouds_list_insp.append(pointcloud_insp)
-        
 
         self.map_manager.update_visibility(
             sensor_origins=insp_cam_pos,
@@ -638,6 +649,60 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Call the updated visualization method with the pose data
             self.map_manager.update_visualization(robot_pos_w, robot_quat_w)
   
+    def _fast_sampled_unproject_and_filter(self, depth_data, intrinsic_matrices, cam_pos, cam_quat, K_candidates, filter_floor, filter_chassis, chassis_min_dist_sq):
+        if depth_data.dim() == 4:
+            N, H, W, _ = depth_data.shape
+        else:
+            N, H, W = depth_data.shape
+            
+        device = depth_data.device
+        
+        # Sample random pixels directly
+        u = torch.randint(0, W, (N, K_candidates), device=device)
+        v = torch.randint(0, H, (N, K_candidates), device=device)
+        
+        # Gather depth
+        batch_idx = torch.arange(N, device=device).unsqueeze(1)
+        if depth_data.dim() == 4:
+            z = depth_data[batch_idx, v, u, 0] # (N, K)
+        else:
+            z = depth_data[batch_idx, v, u] # (N, K)
+            
+        # Valid mask
+        valid_mask = ~torch.isnan(z) & ~torch.isinf(z)
+        
+        # Intrinsics
+        fx = intrinsic_matrices[:, 0, 0].unsqueeze(1)
+        fy = intrinsic_matrices[:, 1, 1].unsqueeze(1)
+        cx = intrinsic_matrices[:, 0, 2].unsqueeze(1)
+        cy = intrinsic_matrices[:, 1, 2].unsqueeze(1)
+        
+        # Unproject to camera frame
+        x = (u.float() - cx) * z / fx
+        y = (v.float() - cy) * z / fy
+        points_cam = torch.stack([x, y, z], dim=-1) # (N, K, 3)
+        
+        # Transform to world frame
+        cam_quat_expanded = cam_quat.unsqueeze(1).expand(-1, K_candidates, -1)
+        points_world = quat_apply(cam_quat_expanded, points_cam) + cam_pos.unsqueeze(1)
+        
+        combined_mask = valid_mask
+        
+        if filter_floor:
+            floor_mask = points_world[..., 2] > 0.05
+            combined_mask = combined_mask & floor_mask
+            
+        if filter_chassis:
+            dist_sq = torch.sum((points_world - cam_pos.unsqueeze(1))**2, dim=-1)
+            chassis_mask = dist_sq > chassis_min_dist_sq
+            combined_mask = combined_mask & chassis_mask
+            
+        flat_points = points_world[combined_mask]
+        env_indices = batch_idx.expand(N, K_candidates)
+        flat_env_indices = env_indices[combined_mask].to(torch.int32)
+        
+        return (flat_points, flat_env_indices)
+
     def _compute_pose_observation(self) -> torch.Tensor:
         """Compute the robot's pose observation.
         Components:
@@ -710,6 +775,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         local_occ_map, local_vis_map, local_visit = self.map_manager.get_local_maps(robot_pos_w, robot_yaw_quat_w)
         self.current_local_occ_map = local_occ_map.clone()
+        
+        # Normalize local maps for neural network stability
+        local_occ_map = local_occ_map / 5.0  # clamp_max is 5.0, so this makes it approx [-1, 1]
+        local_visit = torch.clamp(local_visit / 10.0, max=2.0)  # Normalize visits up to 20 to [0, 2]
+        
         for name, tensor in {"occ": local_occ_map, "vis": local_vis_map, "visit": local_visit}.items():
             if torch.isnan(tensor).any() or torch.isinf(tensor).any():
                 msg = f"Invalid value (NaN or Inf) in Local Map: {name}"
@@ -733,8 +803,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         elif nav_modality == "depth":
              if "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
                 front_camera_data = self._nav_camera.data.output["distance_to_image_plane"].clone()
-                # Replace Inf with a max range (e.g. 10.0m) to keep inputs sane
-                front_camera_data[torch.isinf(front_camera_data)] = 10.0
+                # Replace Inf and clamp large distances to keep inputs sane, then normalize to [0, 1]
+                front_camera_data[torch.isinf(front_camera_data)] = 35.0
+                front_camera_data = torch.clamp(front_camera_data, max=35.0) / 35.0
                 front_camera_data = front_camera_data.unsqueeze(-1)
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera Depth Data!")
@@ -743,7 +814,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
                 rgb = self._nav_camera.data.output["rgb"] / 255.0
                 depth = self._nav_camera.data.output["distance_to_image_plane"].clone()
-                depth[torch.isinf(depth)] = 10.0
+                depth[torch.isinf(depth)] = 35.0
+                depth = torch.clamp(depth, max=35.0) / 35.0
                 if depth.dim() == 3:
                      depth = depth.unsqueeze(-1)
                 
@@ -936,12 +1008,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 max_ids_in_text=12,
             )
 
-         # Exit if either camera data is missing
+        # Exit if either camera data is missing
         if target_mask is None or face_ids is None:
             return (torch.zeros(self.num_envs, device=self.device), 
                     torch.zeros(self.num_envs, dtype=torch.long, device=self.device))
     
-    
+
         occlusion_filtered_face_ids = torch.full_like(face_ids, -1)
         occlusion_filtered_face_ids[target_mask] = face_ids[target_mask]
 
@@ -1366,22 +1438,33 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             num_active_obstacles = self.curriculum.get_num_active_obstacles(self.cfg.max_obstacles)
 
+            # Vectorize CPU extraction to avoid repeated GPU synchronization stalls
+            env_ids_cpu = env_ids.tolist()
+            achieved_coverage_ratios_cpu = achieved_coverage_ratios.cpu().tolist()
+            num_faces_inspected_cpu = num_faces_inspected.cpu().tolist()
+            mean_quality_cpu = mean_quality.cpu().tolist()
+            
+            if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+                max_distance_reached_cpu = self.max_distance_reached[env_ids].cpu().tolist()
+            else:
+                max_distance_reached_cpu = None
+
             # Logging
-            for i, env_id in enumerate(env_ids):
+            for i, env_id in enumerate(env_ids_cpu):
                 if env_id == 0:
-                    final_face_count = num_faces_inspected[i].item()
-                    if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
-                        max_dist = self.max_distance_reached[i].item()
+                    final_face_count = num_faces_inspected_cpu[i]
+                    if max_distance_reached_cpu is not None:
+                        max_dist = max_distance_reached_cpu[i]
                         if hasattr(self, 'pc_collector') and self.pc_collector is not None:
                             self.pc_collector.flush_if_best(final_face_count, max_dist)
                             
                     if getattr(run_cfg, 'debug', False):
                         print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {final_face_count} ---")
 
-                self.episode_log_buffer["coverage_percent"].append(achieved_coverage_ratios[i].item() * 100)
-                self.episode_log_buffer["faces_discovered"].append(num_faces_inspected[i].item())
-                self.logger.update_episode_stats(num_faces_inspected[i].item()) # Update global stats
-                self.episode_log_buffer["mean_inspection_quality"].append(mean_quality[i].item())
+                self.episode_log_buffer["coverage_percent"].append(achieved_coverage_ratios_cpu[i] * 100)
+                self.episode_log_buffer["faces_discovered"].append(num_faces_inspected_cpu[i])
+                self.logger.update_episode_stats(num_faces_inspected_cpu[i]) # Update global stats
+                self.episode_log_buffer["mean_inspection_quality"].append(mean_quality_cpu[i])
                 self.episode_log_buffer["curriculum/current_threshold"].append(current_cov_goal)
                 self.episode_log_buffer["curriculum/active_obstacles"].append(num_active_obstacles)
                 self.episode_log_buffer["curriculum/task_area"].append(self.curriculum.get_total_task_area())
@@ -1389,12 +1472,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Log and Reset Reward Sums
             self.logger.log_and_reset_episode_rewards(env_ids)
 
-            # Logging Loop Continue
-            for i, env_id in enumerate(env_ids):
-                # Clear Buffers
-                
-                self.prev_coverage_ratio[env_id] = 0.0
-
+            # Clear Buffers (Vectorized)
+            self.prev_coverage_ratio[env_ids] = 0.0
             self.best_q_per_face[env_ids] = 0.0
                 
             # Map Logging and Reset

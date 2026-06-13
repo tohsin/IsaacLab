@@ -8,7 +8,7 @@ import numpy as np
 import warnings
 # from heavyball import ForeachMuon
 # import heavyball.utils
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 
 # conda install -c conda-forge gcc=12 -y
 from isaaclab.app import AppLauncher
@@ -308,7 +308,17 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
         camera_obs_permuted = camera_obs.permute(0, 3, 1, 2)
         local_map_permuted = local_map.permute(0, 4, 1, 2, 3)
-        # camera_obs = states["cameras"].permute(0, 3, 1, 2)  # (batch, channels, height, width)
+
+        # ---- DEBUG CHECKS ----
+        if torch.isnan(states).any():
+            print(f"[MODEL DEBUG] NaN detected in 'states' input! Size: {states.shape}")
+        if states.abs().max() > 100:
+            print(f"[MODEL DEBUG] 'states' contains extremely large values! Max: {states.abs().max().item()}")
+        if torch.isnan(camera_obs_permuted).any() or camera_obs_permuted.abs().max() > 100:
+            print(f"[MODEL DEBUG] Issue in camera_obs! NaN: {torch.isnan(camera_obs_permuted).any().item()}, Max: {camera_obs_permuted.abs().max().item()}")
+        if torch.isnan(local_map_permuted).any() or local_map_permuted.abs().max() > 100:
+            print(f"[MODEL DEBUG] Issue in local_map! NaN: {torch.isnan(local_map_permuted).any().item()}, Max: {local_map_permuted.abs().max().item()}")
+        # ----------------------
 
         camera_features = self.camera_encoder(camera_obs_permuted)
         map_features = self.map_encoder(local_map_permuted)
@@ -316,9 +326,9 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         
         if self.use_attention_fusion:
             # Sanity checks before projection
-            # assert torch.isfinite(camera_features).all(), "NaN/Inf in camera_features"
-            # assert torch.isfinite(map_features).all(), "NaN/Inf in map_features"
-            # assert torch.isfinite(robot_pose).all(), "NaN/Inf in robot_pose"
+            if not torch.isfinite(camera_features).all(): print("[MODEL DEBUG] NaN/Inf in camera_features!")
+            if not torch.isfinite(map_features).all(): print("[MODEL DEBUG] NaN/Inf in map_features!")
+            if not torch.isfinite(encoded_pose).all(): print("[MODEL DEBUG] NaN/Inf in encoded_pose!")
 
             # Project to d_model and shape into tokens: [batch_size, 1, d_model]
             cam_tok = self.camera_proj(camera_features).unsqueeze(1)
@@ -483,8 +493,9 @@ cfg["value_loss_scale"] = getattr(CONFIG, "value_loss_scale", 1.0)
 cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 1.0
 cfg["time_limit_bootstrap"] = True
 
-cfg["state_preprocessor"] = RunningStandardScaler
-cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
+# cfg["state_preprocessor"] = RunningStandardScaler
+# cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
+cfg["state_preprocessor"] = None
 cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 

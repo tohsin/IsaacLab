@@ -9,7 +9,7 @@ class Curriculum:
                 max_coverage_ratio: float = 0.95,
                 
                 # Asymmetric increments
-                coverage_increment_up: float = 0.05,
+                coverage_increment_up: float = 0.075,
                 coverage_increment_down: float = 0.025,
                 success_rate_increase_thresh = 0.67,
                 success_rate_decrease_thresh = 0.58,

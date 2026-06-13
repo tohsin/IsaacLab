@@ -201,38 +201,43 @@ class SpatialStateManager:
         print(f"  - Map Origin (World Coords): {self.map_origin}")
 
     def world_to_grid(self,  world_coords: np.ndarray, env_id) -> np.ndarray:
-        if world_coords.ndim == 1:
+        is_1d = world_coords.ndim == 1
+        if is_1d:
             world_coords = world_coords.reshape(1, -1)
         map_origin = self.world_map_origins[env_id]
         relative_coords = world_coords - map_origin
         grid_indices = (relative_coords / self.voxel_size).astype(int)
-        return grid_indices.squeeze()
+        return grid_indices[0] if is_1d else grid_indices
 
     def grid_to_world(self, grid_indices: np.ndarray, env_id: int, center: bool = True) -> np.ndarray:
-        if grid_indices.ndim == 1:
+        is_1d = grid_indices.ndim == 1
+        if is_1d:
             grid_indices = grid_indices.reshape(1, -1)
         world_origin = self.world_map_origins[env_id]
         world_coords = (grid_indices * self.voxel_size) + world_origin
         if center:
             world_coords += (self.voxel_size / 2.0)
-        return world_coords.squeeze()
+        return world_coords[0] if is_1d else world_coords
 
-    def update_occupancy(self, sensor_origins: torch.Tensor, point_clouds: list[torch.Tensor]):
+    def update_occupancy(self, sensor_origins: torch.Tensor, point_clouds: list[torch.Tensor] | tuple[torch.Tensor, torch.Tensor]):
         """
         Updates the occupancy grid with a new point cloud measurement.
 
         Args:
             sensor_origins (torch.Tensor): A (N, 3) tensor for the sensor's positions.
-            point_clouds (list[torch.Tensor]): A list of point cloud data.
+            point_clouds (list[torch.Tensor] | tuple[torch.Tensor, torch.Tensor]): A list of point cloud data or a flattened tuple.
         """
-        valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
-
-        if not valid_indices:
-            return
-        concatenated_pc = torch.cat([point_clouds[i] for i in valid_indices], dim=0)
-        env_indices_list = [torch.full((point_clouds[i].shape[0],), i, dtype=torch.int32, device=self.device) for i in valid_indices]
-        env_indices = torch.cat(env_indices_list, dim=0)
-        num_total_points = concatenated_pc.shape[0]
+        if isinstance(point_clouds, tuple):
+            concatenated_pc, env_indices = point_clouds
+            num_total_points = concatenated_pc.shape[0]
+        else:
+            valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
+            if not valid_indices:
+                return
+            concatenated_pc = torch.cat([point_clouds[i] for i in valid_indices], dim=0)
+            env_indices_list = [torch.full((point_clouds[i].shape[0],), i, dtype=torch.int32, device=self.device) for i in valid_indices]
+            env_indices = torch.cat(env_indices_list, dim=0)
+            num_total_points = concatenated_pc.shape[0]
 
         if num_total_points == 0:
             return
@@ -268,15 +273,19 @@ class SpatialStateManager:
         
         wp.synchronize()
 
-    def update_visibility(self, sensor_origins: torch.Tensor, point_clouds: list[torch.Tensor]):
-        valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
-        if not valid_indices:
-            return
+    def update_visibility(self, sensor_origins: torch.Tensor, point_clouds: list[torch.Tensor] | tuple[torch.Tensor, torch.Tensor]):
+        if isinstance(point_clouds, tuple):
+            concatenated_pc, env_indices = point_clouds
+            num_total_points = concatenated_pc.shape[0]
+        else:
+            valid_indices = [i for i, pc in enumerate(point_clouds) if pc.shape[0] > 0]
+            if not valid_indices:
+                return
+            concatenated_pc = torch.cat([point_clouds[i] for i in valid_indices], dim=0)
+            env_indices_list = [torch.full((point_clouds[i].shape[0],), i, dtype=torch.int32, device=self.device) for i in valid_indices]
+            env_indices = torch.cat(env_indices_list, dim=0)
+            num_total_points = concatenated_pc.shape[0]
         
-        concatenated_pc = torch.cat([point_clouds[i] for i in valid_indices], dim=0)
-        env_indices_list = [torch.full((point_clouds[i].shape[0],), i, dtype=torch.int32, device=self.device) for i in valid_indices]
-        env_indices = torch.cat(env_indices_list, dim=0)
-        num_total_points = concatenated_pc.shape[0]
         if num_total_points == 0:
             return        
         wp_point_cloud = wp.from_torch(concatenated_pc.contiguous(), dtype=wp.vec3)
