@@ -67,7 +67,7 @@ def main():
                     # turn a bit first
                     # print(f"[INFO]: Step {i}")  
                     if i < 100:
-                        actions = torch.tensor([[0.0, 0.3, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, 0.4, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                    
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']

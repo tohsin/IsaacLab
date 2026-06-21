@@ -9,10 +9,10 @@ class RobotPhysicsCfg:
     turn_vel: float = 9.0
     max_linear_velocity: float = 2.0  # 1.3 discrete
     max_angular_velocity: float = 4.0
-    max_wheel_velocity: float = 18.0  # Max wheel velocity for the robot
+    max_wheel_velocity: float = 20.0  # Max wheel velocity for the robot
     # PTZ Camera control configurations
-    pan_speed: float = 0.5  # Speed of the pan-tilt unit
-    tilt_speed: float = 0.5  # Speed of the pan-tilt unit
+    pan_speed: float = 0.6  # Speed of the pan-tilt unit
+    tilt_speed: float = 0.6  # Speed of the pan-tilt unit
     zoom_speed : float = 0.1  # Speed of the zoom control
     min_focal_length: float = 10.0  # Minimum focal length for zoom
     max_focal_length: float = 100.0 # Telephoto limited to force closer inspection

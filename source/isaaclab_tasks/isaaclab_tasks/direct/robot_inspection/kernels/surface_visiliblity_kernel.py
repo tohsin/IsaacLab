@@ -89,6 +89,12 @@ def mark_visible_voxels(
                 wp.atomic_add(visibility_map, linear_index_end, mark_visible_value)
     else:
         while t_current < ray_dist:
+            # If the ray completely leaves the map bounding box and is moving further away, break early
+            if ((X < 0 and stepX < 0.0) or (X >= map_dims[0] and stepX > 0.0) or
+                (Y < 0 and stepY < 0.0) or (Y >= map_dims[1] and stepY > 0.0) or
+                (Z < 0 and stepZ < 0.0) or (Z >= map_dims[2] and stepZ > 0.0)):
+                break
+
             # Update current voxel as 'free'
             if (X >= 0 and X < map_dims[0] and
                 Y >= 0 and Y < map_dims[1] and

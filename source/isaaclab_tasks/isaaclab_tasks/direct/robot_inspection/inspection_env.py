@@ -458,9 +458,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.cfg.robot_phys_cfg.max_focal_length
         )
         
-        # Only update RayCaster and USD if focal length changed by > 0.05
+        # Only update RayCaster and USD if focal length changed by > 1.0
+        # Updating USD attributes at high frequency for all envs triggers Vulkan TDR crashes
         diff = torch.abs(self.current_focal_lengths - self.committed_focal_lengths)
-        update_mask = diff > 0.05
+        update_mask = diff > 1.0
         
         if not torch.any(update_mask):
             return
@@ -1319,7 +1320,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
                         - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
                         - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
-                        + getattr(self.cfg.reward_cfg, 'occupancy_penalty_scale', 1.0) * occupancy_penalty
+                        # + getattr(self.cfg.reward_cfg, 'occupancy_penalty_scale', 1.0) * occupancy_penalty
                         + success_bonus
                         -self.cfg.reward_cfg.time_penalty
                         )

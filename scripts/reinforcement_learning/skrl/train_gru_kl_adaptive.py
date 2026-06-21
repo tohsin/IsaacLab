@@ -1,5 +1,6 @@
 import argparse
 import os
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 import torch
 import torch.nn as nn
 import sys
@@ -348,7 +349,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             
             if self.use_transformer_encoder:
                 # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
-                tokens = torch.clamp(tokens, min=-20.0, max=20.0)
+                # tokens = torch.clamp(tokens, min=-20.0, max=20.0)
                 
                 # Cross-Sensor Attention
                 import torch.nn.attention as attn
@@ -465,12 +466,23 @@ cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   81
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.97 #0.95 0.97
 
-if getattr(CONFIG, "optimizer_class", "adam").lower() == "muon":
-    print("[INFO] Using Muon optimizer")
-    cfg["optimizer_class"] = Muon
-else:
-    print("[INFO] Using Adam optimizer")
-    cfg["optimizer_class"] = torch.optim.Adam
+def get_custom_optimizer(params, lr, **kwargs):
+    policy_params = []
+    std_params = []
+    for name, p in models["policy"].named_parameters():
+        if "log_std_parameter" in name:
+            std_params.append(p)
+        else:
+            policy_params.append(p)
+    
+    opt_class = Muon if getattr(CONFIG, "optimizer_class", "adam").lower() == "muon" else torch.optim.Adam
+    return opt_class([
+        {"params": policy_params, "lr": lr},
+        {"params": std_params, "lr": getattr(CONFIG, "std_learning_rate", 3e-4)}
+    ], **kwargs)
+
+print("[INFO] Using custom optimizer builder to decouple log_std learning rate")
+cfg["optimizer_class"] = get_custom_optimizer
 
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]
 
@@ -485,7 +497,7 @@ elif "T_max" in cfg["learning_rate_scheduler_kwargs"]:
         cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_max_steps
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
-cfg["grad_norm_clip"] = 1.0
+cfg["grad_norm_clip"] = getattr(CONFIG, "grad_clip_norm", 0.7)
 cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef

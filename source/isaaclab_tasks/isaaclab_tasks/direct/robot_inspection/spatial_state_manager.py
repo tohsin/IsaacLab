@@ -191,6 +191,15 @@ class SpatialStateManager:
         self.visibility_map = wp.zeros(total_voxels, dtype=float, device=self.device)
         self.visitation_map = wp.zeros(total_voxels, dtype=float, device=self.device)
 
+        # Pre-allocate world map origins to avoid Host-To-Device copies during simulation
+        self.wp_world_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
+
+        # Pre-allocate local maps to avoid massive memory fragmentation and allocations every step
+        total_local_voxels = self.num_envs * self.local_map_dims[0] * self.local_map_dims[1] * self.local_map_dims[2]
+        self.wp_local_occ_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
+        self.wp_local_visibility_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
+        self.wp_local_visit_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
+
 
 
         print(f"Initialized {self.num_envs} Occupancy Grids on '{self.device}':")
@@ -243,7 +252,6 @@ class SpatialStateManager:
             return
         wp_point_cloud = wp.from_torch(concatenated_pc.contiguous(), dtype=wp.vec3)
         wp_sensor_origins = wp.from_torch(sensor_origins.contiguous(), dtype=wp.vec3)
-        wp_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
         wp_env_indices = wp.from_torch(env_indices.contiguous(), dtype=wp.int32)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
@@ -253,7 +261,7 @@ class SpatialStateManager:
             inputs=[
                 wp_point_cloud,
                 wp_sensor_origins,
-                wp_map_origins,
+                self.wp_world_map_origins,
                 wp_env_indices,
                 self.voxel_size,
                 wp_map_dims,
@@ -290,7 +298,6 @@ class SpatialStateManager:
             return        
         wp_point_cloud = wp.from_torch(concatenated_pc.contiguous(), dtype=wp.vec3)
         wp_sensor_origins = wp.from_torch(sensor_origins.contiguous(), dtype=wp.vec3)
-        wp_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
         wp_env_indices = wp.from_torch(env_indices.contiguous(), dtype=wp.int32)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
@@ -300,7 +307,7 @@ class SpatialStateManager:
             inputs=[
                 wp_point_cloud,
                 wp_sensor_origins,
-                wp_map_origins,
+                self.wp_world_map_origins,
                 wp_env_indices,
                 self.voxel_size,
                 wp_map_dims,
@@ -318,13 +325,14 @@ class SpatialStateManager:
             inputs=[self.visibility_map, 0.0, 1.0], # Min is 0
             device=self.device
         )
+        
+        wp.synchronize()
     
     def update_visitation(self, robot_positions: torch.Tensor):
         num_envs = robot_positions.shape[0]
         if num_envs == 0:
             return
         wp_robot_positions = wp.from_torch(robot_positions.contiguous(), dtype=wp.vec3)
-        wp_world_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
         wp.launch(
@@ -333,13 +341,15 @@ class SpatialStateManager:
             inputs=[
                 self.visitation_map,
                 wp_robot_positions,
-                wp_world_map_origins,
+                self.wp_world_map_origins,
                 self.voxel_size,
                 wp_map_dims,
                 self.num_voxels_per_map,
             ],
             device=self.device,
         )
+        
+        wp.synchronize()
 
     def reset_map(self, env_ids: list[int] = None):
         if not env_ids:
@@ -544,13 +554,7 @@ class SpatialStateManager:
         # Prepare inputs for the kernel
         wp_robot_pos = wp.from_torch(robot_positions_w.contiguous(), dtype=wp.vec3)
         wp_robot_quat = wp.from_torch(robot_quats_w.contiguous(), dtype=wp.quat)
-        wp_world_map_origins = wp.array(self.world_map_origins, dtype=wp.vec3, device=self.device)
         wp_global_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
-
-        # Create output arrays on the GPU
-        wp_local_occ_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
-        wp_local_visibility_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
-        wp_local_visit_map = wp.zeros(total_local_voxels, dtype=float, device=self.device)
 
         # Launch the extraction kernel
         wp.launch(
@@ -563,13 +567,13 @@ class SpatialStateManager:
                 self.visitation_map,
 
                 #Local Maps
-                wp_local_occ_map,
-                wp_local_visibility_map,
-                wp_local_visit_map,
+                self.wp_local_occ_map,
+                self.wp_local_visibility_map,
+                self.wp_local_visit_map,
 
                 wp_robot_pos,
                 wp_robot_quat,
-                wp_world_map_origins,
+                self.wp_world_map_origins,
                 self.voxel_size,
                 wp_global_map_dims,
                 local_map_dims_wp,
@@ -581,9 +585,9 @@ class SpatialStateManager:
         wp.synchronize()
 
         # Convert to PyTorch tensors and reshape
-        local_occ_torch = wp.to_torch(wp_local_occ_map).view(num_req_envs, *local_dims)
-        local_vis_torch = wp.to_torch(wp_local_visibility_map).view(num_req_envs, *local_dims)
-        local_visit_torch = wp.to_torch(wp_local_visit_map).view(num_req_envs, *local_dims)
+        local_occ_torch = wp.to_torch(self.wp_local_occ_map).view(num_req_envs, *local_dims)
+        local_vis_torch = wp.to_torch(self.wp_local_visibility_map).view(num_req_envs, *local_dims)
+        local_visit_torch = wp.to_torch(self.wp_local_visit_map).view(num_req_envs, *local_dims)
 
         return local_occ_torch, local_vis_torch, local_visit_torch
     

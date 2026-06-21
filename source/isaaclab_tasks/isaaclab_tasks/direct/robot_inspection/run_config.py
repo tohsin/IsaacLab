@@ -26,7 +26,7 @@ class debug_Cfg:
     logging_interval: int = 1500
     max_episode_length: int = 1700
     inspection_goal =  0.95
-    visualisation_mode = visualisation_mode(channel=map_channels.VISIBILITY, map_mode=map_view_mode.GLOBAL)
+    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -49,7 +49,7 @@ class train_Cfg_base:
     min_episode_length: int = 1000
     max_episode_length: int = 2300
     logging_interval: int = 1000
-    inspection_goal =  0.05
+    inspection_goal =  0.1
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False

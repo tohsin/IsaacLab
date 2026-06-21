@@ -12,7 +12,7 @@ class MappingCfg:
     log_odds_occupied: float = 0.8 # How aggressively to mark obstacles
     clamp_min: float = -5.0 # Lower bound clipping
     clamp_max: float = 5.0  # Upper bound clipping
-    resolution: float = 0.25  # Voxel size in meters
+    resolution: float = 0.2  # Voxel size in meters
     bounds: dict = {
         "x_min": -10.5, "x_max": 9.5,
         "y_min": -12.5, "y_max": 18.0,
