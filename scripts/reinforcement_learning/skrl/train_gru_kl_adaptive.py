@@ -1,9 +1,22 @@
 import argparse
 import os
-# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+import sys
+
+if "LOCAL_RANK" in os.environ:
+    # Save the real local rank for our monkey patch later
+    os.environ["REAL_LOCAL_RANK"] = os.environ["LOCAL_RANK"]
+    
+    # 1. Restrict this process to only see its assigned physical GPU
+    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["LOCAL_RANK"]
+    
+    # 2. Trick Omniverse and SKRL into thinking they are running on device 0
+    os.environ["LOCAL_RANK"] = "0"
+
+# Remove --local_rank to prevent AppLauncher from reading it
+sys.argv = [arg for arg in sys.argv if not arg.startswith("--local_rank") and not arg.startswith("--local-rank")]
+
 import torch
 import torch.nn as nn
-import sys
 from datetime import datetime
 import numpy as np
 import warnings
@@ -21,6 +34,10 @@ parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environ
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
+#multi GPU Code
+parser.add_argument(
+    "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
+)
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
@@ -35,8 +52,27 @@ _headless = CONFIG.headless
 args_cli = parser.parse_args()
 args_cli.enable_cameras =  True
 args_cli.headless = _headless
+#multi GPU Code
+
+
+# monkey-patch SimulationApp to fix Vulkan interop mismatch
+from isaacsim import SimulationApp
+_original_init = SimulationApp.__init__
+
+def _patched_init(self, launch_config=None, *args, **kwargs):
+    if launch_config is not None and "REAL_LOCAL_RANK" in os.environ:
+        real_rank = int(os.environ["REAL_LOCAL_RANK"])
+        # Force Vulkan to use the actual physical GPU
+        launch_config["active_gpu"] = real_rank
+        # Force Physics/CUDA to use device 0 (which maps to the physical GPU via CUDA_VISIBLE_DEVICES)
+        launch_config["physics_gpu"] = 0
+    _original_init(self, launch_config, *args, **kwargs)
+
+SimulationApp.__init__ = _patched_init
+
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
+
 simulation_app = app_launcher.app
 
 
@@ -60,8 +96,8 @@ from muon import Muon
 
 # sys.argv.append("--headless")
 sys.argv.append("--enable_cameras")
-
-set_seed(42)
+# set_seed(42)
+set_seed(42, deterministic=True)
 # for some reason changing the clip actionsvarialbe to true in thr training script causes this error
 
 class ContinuousPositionalEncoding(nn.Module):
@@ -231,7 +267,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Linear(512, 256),
             get_activation(),
             nn.Linear(256, self.num_actions ),
-            nn.Tanh()  
+            nn.Tanh()
         )
 
         self.value_head = nn.Sequential(
@@ -245,6 +281,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         )
         # Action Head, MU and STD
         self.log_std_parameter = nn.Parameter(self.init_log_std * torch.ones(self.num_actions))
+        if getattr(CONFIG, "manual_std_decay", False):
+            self.log_std_parameter.requires_grad = False
 
 
     def get_specification(self) -> dict:
@@ -423,10 +461,15 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             return value_estimate, {"rnn": [hidden_states]}
 
 
+#multi GPU code
+if args_cli.distributed:
+    # Since we use CUDA_VISIBLE_DEVICES, each process only sees one GPU, which is cuda:0
+    args_cli.device = "cuda:0"
 
 env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
 )
+
 env_cfg.seed = 42
 env = gym.make(args_cli.task, cfg=env_cfg)
 env = wrap_env(env)
@@ -476,10 +519,17 @@ def get_custom_optimizer(params, lr, **kwargs):
             policy_params.append(p)
     
     opt_class = Muon if getattr(CONFIG, "optimizer_class", "adam").lower() == "muon" else torch.optim.Adam
-    return opt_class([
-        {"params": policy_params, "lr": lr},
-        {"params": std_params, "lr": getattr(CONFIG, "std_learning_rate", 3e-4)}
-    ], **kwargs)
+    
+    if getattr(CONFIG, "manual_std_decay", False):
+        print("[INFO] manual_std_decay is True. Removing log_std_parameter from optimizer.")
+        return opt_class([
+            {"params": policy_params, "lr": lr}
+        ], **kwargs)
+    else:
+        return opt_class([
+            {"params": policy_params, "lr": lr},
+            {"params": std_params, "lr": getattr(CONFIG, "std_learning_rate", 3e-4)}
+        ], **kwargs)
 
 print("[INFO] Using custom optimizer builder to decouple log_std learning rate")
 cfg["optimizer_class"] = get_custom_optimizer
@@ -578,6 +628,11 @@ if _use_wandb:
             
     except Exception as e:
         print(f"[WARNING] Failed to extract curriculum config for WandB: {e}")
+# Pass manual decay variables into agent's configuration for SKRL library hook
+cfg["manual_std_decay"] = getattr(CONFIG, "manual_std_decay", False)
+cfg["init_log_std"] = getattr(CONFIG, "init_log_std", 0.0)
+cfg["final_log_std"] = getattr(CONFIG, "final_log_std", -2.0)
+
 agent = PPO(models=models, 
             memory=memory,
             cfg=cfg,

@@ -9,7 +9,7 @@ path_local0 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct
 #new
 path_local1 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-19_21-31-18_ppo_gru_128/checkpoints/agent_369000.pt"
 path_local2 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-25_14-04-51_ppo_gru_128/checkpoints/agent_420000.pt"
-path_pretrained = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/Pretrain2026-03-28_01-57-13/checkpoints/agent_201000.pt"
+path_pretrained = "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline/SEEIR-2026-06-19_20-58-14/checkpoints/agent_390000.pt"
 path_finetune = ""
 class TrainingConfig_PreTrain:
     optimizer_class = "adam" # "adam" or "muon"
@@ -24,12 +24,14 @@ class TrainingConfig_PreTrain:
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef = 1e-5#0.00006# Moderately increased for better exploration with diverse objects
-    value_loss_scale = 1.0  # Increased to give a stronger signal to the critic
-    learning_rate = 3e-5
+    entropy_coef = 3e-5#0.00006# Moderately increased for better exploration with diverse objects
+    value_loss_scale = 1.0 #1.0 
+    learning_rate = 6e-5
     std_learning_rate = 3e-4
     grad_clip_norm = 0.7
-    init_log_std = 0.0# 0.0 
+    init_log_std =  0.0# 0.0 
+    manual_std_decay = True
+    final_log_std = -3.0#-2.0  # Decays std to ~0.13
     use_gsde = True
     use_wandb = True
     global_timesteps = 50_000_000
@@ -38,19 +40,16 @@ class TrainingConfig_PreTrain:
         "T_max": -1,  # Will be dynamically set
         "eta_min": learning_rate * 0.1,
     }
-    #  scheduler_kwargs = {
-    #     "T_max": -1,  # Will be dynamically set
-    #     "eta_min": learning_rate * 0.01,
-    # }
+
 
 class TrainingConfig_FineTune(TrainingConfig_PreTrain):
-    num_envs = 64
+    num_envs = 128
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
-    entropy_coef = 3e-4
-    learning_rate = 6e-6
-    global_timesteps = 10_000_000
-    reset_std = False
-    # init_log_std = -0.5
+    entropy_coef = 3e-6
+    learning_rate = 6e-5
+    global_timesteps = 5_000_000
+    reset_std = True
+    init_log_std = -1.6  # log(0.2) approx -1.6, giving an std of ~0.2
     
     # Explicitly overriding the scheduler so it evaluates based on the NEW learning rate
     scheduler_kwargs = {

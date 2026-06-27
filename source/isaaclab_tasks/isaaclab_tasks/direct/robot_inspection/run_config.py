@@ -73,11 +73,11 @@ class train_Cfg_pretrain(train_Cfg_base):
     
 
 class train_Cfg_finetune(train_Cfg_base):
-    inspection_goal =  0.9
-    min_episode_length: int = 2200
-    max_episode_length: int = 2500
-    min_obstacles: int = 8
-    min_spawn_max_y: float = 9.0
+    inspection_goal =  0.95
+    min_episode_length: int = 2300
+    # max_episode_length: int = 2300
+    # min_obstacles: int = 
+    # min_spawn_max_y: float = 9.0
 
 class eval_Cfg:
     debug = True
