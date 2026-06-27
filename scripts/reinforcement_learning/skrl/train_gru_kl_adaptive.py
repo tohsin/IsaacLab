@@ -2,19 +2,6 @@ import argparse
 import os
 import sys
 
-if "LOCAL_RANK" in os.environ:
-    # Save the real local rank for our monkey patch later
-    os.environ["REAL_LOCAL_RANK"] = os.environ["LOCAL_RANK"]
-    
-    # 1. Restrict this process to only see its assigned physical GPU
-    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["LOCAL_RANK"]
-    
-    # 2. Trick Omniverse and SKRL into thinking they are running on device 0
-    os.environ["LOCAL_RANK"] = "0"
-
-# Remove --local_rank to prevent AppLauncher from reading it
-sys.argv = [arg for arg in sys.argv if not arg.startswith("--local_rank") and not arg.startswith("--local-rank")]
-
 import torch
 import torch.nn as nn
 from datetime import datetime
@@ -34,10 +21,6 @@ parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environ
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-#multi GPU Code
-parser.add_argument(
-    "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
-)
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
@@ -52,24 +35,6 @@ _headless = CONFIG.headless
 args_cli = parser.parse_args()
 args_cli.enable_cameras =  True
 args_cli.headless = _headless
-#multi GPU Code
-
-
-# monkey-patch SimulationApp to fix Vulkan interop mismatch
-from isaacsim import SimulationApp
-_original_init = SimulationApp.__init__
-
-def _patched_init(self, launch_config=None, *args, **kwargs):
-    if launch_config is not None and "REAL_LOCAL_RANK" in os.environ:
-        real_rank = int(os.environ["REAL_LOCAL_RANK"])
-        # Force Vulkan to use the actual physical GPU
-        launch_config["active_gpu"] = real_rank
-        # Force Physics/CUDA to use device 0 (which maps to the physical GPU via CUDA_VISIBLE_DEVICES)
-        launch_config["physics_gpu"] = 0
-    _original_init(self, launch_config, *args, **kwargs)
-
-SimulationApp.__init__ = _patched_init
-
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 
@@ -460,11 +425,6 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             value_estimate = self.value_head(rnn_output)
             return value_estimate, {"rnn": [hidden_states]}
 
-
-#multi GPU code
-if args_cli.distributed:
-    # Since we use CUDA_VISIBLE_DEVICES, each process only sees one GPU, which is cuda:0
-    args_cli.device = "cuda:0"
 
 env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
