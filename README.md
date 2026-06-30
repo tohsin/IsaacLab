@@ -1,5 +1,7 @@
-# Learning Robot Exploration and Inspection Policies to Directly Optimize Fidelity of 3D Gaussian Splatting Reconstruction ( Ongoing Work)
-![System Diagram](system_diagram.png "System Diagram")
+# SEEIR: Semantic driven End-to-end Exploration and Inspection for optimizing 3D Reconstruction Quality and Coverage( Ongoing Work)
+
+![System Diagram](assets/system_diagram.png "System Diagram")
+![System Diagram](assets/fusion.png "System Diagram")
 ## Note
 Switched to this feature branch to support multi env training due to Ray Caster Camera
 
