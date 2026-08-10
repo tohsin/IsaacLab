@@ -1,0 +1,5 @@
+- [] Integrate crash rate to eval (make sure you can only log a single crash per epsiode then so crash rate is number of epsiode that had that single crash / number of epsiode)
+-  [ ] incrrease the Focal length of inspeciton camera test first to see how much better resolution it cpatures
+- [ ] Integrate mutiple objects back
+- [ ]For evlauation use chamfer diatnce and other gemortic metric for point cloud reconstruction
+- [ ]

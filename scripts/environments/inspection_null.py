@@ -63,12 +63,29 @@ def main():
             # run everything in inference mode
             with torch.inference_mode():
 
-                for i in range(2000):
+                for i in range(2500):
                     # turn a bit first
-                    # print(f"[INFO]: Step {i}")  
-                    if i < 100:
-                        actions = torch.tensor([[0.0, 0.4, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    #     # print(f"[INFO]: Step {i}") 
+                    # hit wall
+                    # if i < 100:
+                    #     actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                    
+                    # Hit target
+                    # if i < 45:
+                    #     actions = torch.tensor([[0.0, -0.8, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    # else:
+                    #     actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    # print(f"[INFO]: Step {i}")  
+                    # Brush the obstacles
+                    if i < 100:
+                        actions = torch.tensor([[0.0, 0.605, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    else:
+                        actions = torch.tensor([[0.4, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    # Hit obstacles
+                    # if i < 100:
+                    #     actions = torch.tensor([[0.0, 0.4, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    # else:
+                    #     actions = torch.tensor([[0.5, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

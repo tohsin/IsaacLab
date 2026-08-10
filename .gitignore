@@ -82,3 +82,4 @@ data/recorded_depth_data_eval
 .miniconda.exe
 data/Flange_recorded
 multi_gpu_troubleshooting_notes.md
+scripts/reinforcement_learning/skrl/plots/

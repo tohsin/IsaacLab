@@ -19,7 +19,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.utils import configclass
 from isaacsim.core.utils.semantics import add_labels
 
-from isaaclab.sensors import RayCasterCamera, TiledCamera,  MultiMeshRayCasterCamera
+from isaaclab.sensors import RayCasterCamera, TiledCamera,  MultiMeshRayCasterCamera, ContactSensor
 from isaaclab.utils.math import transform_points, unproject_depth
 from isaaclab.sensors.camera.utils import create_pointcloud_from_depth
 import isaacsim.core.utils.stage as stage_utils
@@ -198,6 +198,25 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.best_q_per_face = torch.zeros((self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32)
 
         self.episode_goal_achieved = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.episode_collision_proxy_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.episode_collision_contact_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.episode_crashes = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.consecutive_collision_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.current_collision_contact = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.current_collision_force = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float32
+        )
+        self.current_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
         if isinstance(self.cfg.action_space, gym.spaces.Discrete):
             action_shape = (self.num_envs, 1)
@@ -245,6 +264,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
             self._high_res_ptz_camera = TiledCamera(self.cfg.sensor_cfg.high_res_ptz_camera)
             self.scene.sensors["high_res_ptz_camera"] = self._high_res_ptz_camera
+        if hasattr(self.cfg.sensor_cfg, "base_contact_sensor"):
+            self._base_contact_sensor = ContactSensor(self.cfg.sensor_cfg.base_contact_sensor)
+            self.scene.sensors["base_contact_sensor"] = self._base_contact_sensor
 
         # --- RESTORED MANUAL SPAWN LOGIC ---
         stage = get_current_stage()
@@ -990,7 +1012,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if batch_max > self.global_max_ray_count[0]:
             self.global_max_ray_count[0] = batch_max
             max_idx = counts.argmax()
-            print(f"!!! New Global Max Zoom Record: {batch_max.item()} rays (Face {unique_ids[max_idx].item()}) !!!")
+            # print(f"!!! New Global Max Zoom Record: {batch_max.item()} rays (Face {unique_ids[max_idx].item()}) !!!")
 
 
     def _compute_face_discovery_reward_fast(self):
@@ -1227,6 +1249,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         reward[valid_mask] = torch.exp(-self.cfg.reward_cfg.visitation_decay_factor * (current_counts - 1.0))
         
         return reward
+    def _compute_collision_contact(self) -> torch.Tensor:
+        """Return the raw chassis-contact signal before temporal debouncing."""
+        self.current_collision_force.zero_()
+        if hasattr(self, '_base_contact_sensor'):
+            net_forces_w = self._base_contact_sensor.data.net_forces_w
+
+            if net_forces_w.dim()==3:
+                xy_forces = torch.norm(net_forces_w[:, :, 0:2], dim=-1).max(dim=1)[0]
+            else:
+                xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
+            self.current_collision_force.copy_(xy_forces)
+            return xy_forces > self.cfg.reward_cfg.collision_threshold
+        return torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
     def _compute_occupancy_penalty(self) -> torch.Tensor:
         """
@@ -1236,28 +1271,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if getattr(self, 'current_local_occ_map', None) is None:
             return torch.zeros(self.num_envs, device=self.device)
             
-        local_dims = self.cfg.mapping_cfg.local_map_dims
-        center_x = local_dims[0] // 2
-        center_y = local_dims[1] // 2
-        center_z = 0 # Robot is at the floor level in the local map
-        
-        import math
-        # Default target collision check radius is 0.5 meters. Calculate voxels dynamically based on resolution.
-        target_radius_m = 0.5
-        calculated_shift = max(1, int(math.ceil(target_radius_m / self.cfg.mapping_cfg.resolution)))
-        
-        # Allow overriding via config, otherwise use the dynamically calculated shift
-        shift_x = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_x', calculated_shift)
-        shift_y = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_y', calculated_shift)
-        shift_z = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_z', calculated_shift)
+        # Allow overriding via config, otherwise use the dynamically calculated shift in the map manager
+        shift_x = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_x', None)
+        shift_y = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_y', None)
+        shift_z = getattr(self.cfg.reward_cfg, 'occupancy_penalty_shift_z', None)
 
-        # Ensure bounds
-        min_x = max(0, center_x - shift_x)
-        max_x = min(local_dims[0], center_x + shift_x + 1)
-        min_y = max(0, center_y - shift_y)
-        max_y = min(local_dims[1], center_y + shift_y + 1)
-        min_z = max(0, center_z) # Can't go below floor
-        max_z = min(local_dims[2], center_z + shift_z + 1)
+        min_x, max_x, min_y, max_y, min_z, max_z = self.map_manager.get_collision_bounds(
+            shift_x=shift_x, 
+            shift_y=shift_y, 
+            shift_z=shift_z
+        )
 
         # Log-odds of 1.1 corresponds to a high probability of occupancy
         collision_mask = self.current_local_occ_map[..., min_x:max_x, min_y:max_y, min_z:max_z] > 1.1
@@ -1270,6 +1293,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             -(1.0 + occupancy_penalty_sum / collision_mask_size), 
             0.0
         )
+        
+        # Debug printing
+        if getattr(run_cfg, 'debug', False) and (occupancy_penalty < 0.0).any():
+            env_ids = (occupancy_penalty < 0.0).nonzero(as_tuple=True)[0].tolist()
+            vals = occupancy_penalty[occupancy_penalty < 0.0].tolist()
+            print(f"[DEBUG] Collision Proxy Triggered in envs: {env_ids} | Penalties: {[round(v, 3) for v in vals]}")
+            
         return occupancy_penalty
 
     def _get_rewards(self) -> torch.Tensor:
@@ -1283,6 +1313,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
         visitation_reward = self._compute_visitation_reward()
         occupancy_penalty = self._compute_occupancy_penalty()
+        self.episode_collision_proxy_steps += (occupancy_penalty < 0.0).long()
         action_delta = torch.sum(torch.square(self.actions - self.previous_action_for_rewards), dim=1)
         
         # Base Action Penalty (Linear & Angular velocity which are indices 0, 1)
@@ -1315,15 +1346,29 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale * decay_factor
         current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
 
-        total_reward = (current_face_reward_scale * face_discovery_raw
+        base_reward = (current_face_reward_scale * face_discovery_raw
                         + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
                         + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
                         - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
                         - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
-                        # + getattr(self.cfg.reward_cfg, 'occupancy_penalty_scale', 1.0) * occupancy_penalty
                         + success_bonus
                         -self.cfg.reward_cfg.time_penalty
                         )
+        scaled_occupancy_penalty = getattr(self.cfg.reward_cfg, 'occupancy_penalty_scale', 1.0) * occupancy_penalty
+        shaped_reward = base_reward + scaled_occupancy_penalty
+
+        # The map-based proxy is additive shaping. A confirmed physical crash,
+        # however, receives an exclusive terminal reward so a large inspection
+        # reward on the impact step cannot make crashing profitable.
+        terminal_collision_penalty = getattr(
+            self.cfg.reward_cfg, "terminal_collision_penalty", 1.0
+        )
+        total_reward = torch.where(
+            self.current_crashes,
+            torch.full_like(shaped_reward, -terminal_collision_penalty),
+            shaped_reward,
+        )
+        
         self._cache_rewards(
             face_discovery_raw,
             information_gain_reward, 
@@ -1348,6 +1393,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print(f"base_action_delta: {base_action_delta}")
             print(f"ptz_action_delta: {ptz_action_delta}")
             print(f"occupancy_penalty: {occupancy_penalty}")
+            print(f"crashes: {self.current_crashes}")
             print(f"success_bonus: {success_bonus}")
             raise ValueError("Training stopped: NaN or Inf detected in total reward calculation!")
         # return total_reward
@@ -1364,6 +1410,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "camera_penalty": camera_delta,
             "visitation_reward": visitation_reward,
             "occupancy_penalty": occupancy_penalty,
+            "collision_contact": self.current_collision_contact.float(),
+            "collision_force_xy": self.current_collision_force,
+            "crashes": self.current_crashes.float(),
             "total_unscaled": total_unscaled,
             
             # Scaled
@@ -1382,8 +1431,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.logger.accumulate_rewards(reward_dict)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # Check for timeout
-        # Check for timeout
+        # Read contact before rewards are computed. DirectRLEnv calls
+        # _get_dones() before _get_rewards() on every environment step.
+        self.current_collision_contact = self._compute_collision_contact()
+        self.episode_collision_contact_steps += self.current_collision_contact.long()
+        self.consecutive_collision_steps = torch.where(
+            self.current_collision_contact,
+            self.consecutive_collision_steps + 1,
+            torch.zeros_like(self.consecutive_collision_steps),
+        )
+
+        required_contact_steps = max(
+            1, int(getattr(run_cfg, "collision_consecutive_steps", 2))
+        )
+        # Emit a single event when contact first becomes confirmed. Persistent
+        # contact does not create a new crash every subsequent step.
+        self.current_crashes = self.consecutive_collision_steps == required_contact_steps
+        self.episode_crashes += self.current_crashes.long()
+
         max_steps = self.curriculum.get_current_episode_length()
         time_out = self.episode_length_buf >= max_steps - 1
         current_q_values = self.best_q_per_face
@@ -1394,8 +1459,22 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         mask = num_faces_inspected > 0
         mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
         coverage_achieved = (num_faces_inspected / self.total_mesh_faces) >= self.curriculum.get_current_coverage_goal()
-        success_condition = coverage_achieved 
-        return success_condition, time_out
+        current_max_crashes = self.curriculum.get_current_max_crashes()
+        collision_failure = (self.episode_crashes >= current_max_crashes) & bool(
+            getattr(run_cfg, "reset_on_crash", False)
+        )
+        success_condition = coverage_achieved & ~collision_failure
+        terminated = success_condition | collision_failure
+        # A terminal outcome takes precedence if it occurs on the nominal last
+        # step, preventing PPO from bootstrapping a collision or success as a
+        # time-limit truncation.
+        time_out = time_out & ~terminated
+        
+        if getattr(run_cfg, "debug", False) and self.current_crashes.any():
+            for i in self.current_crashes.nonzero(as_tuple=True)[0]:
+                print(f"[DEBUG] CRASH DETECTED in env {i.item()} at step {self.common_step_counter}")
+                
+        return terminated, time_out
     
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
@@ -1417,6 +1496,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             if "log" not in self.extras:
                 self.extras["log"] = {}
             self.extras["log"]["faces_discovered"] = num_faces_inspected
+            self.extras["log"]["collision_proxy_steps"] = self.episode_collision_proxy_steps[env_ids].clone()
+            self.extras["log"]["collision_contact_steps"] = self.episode_collision_contact_steps[env_ids].clone()
+            self.extras["log"]["crashes"] = self.episode_crashes[env_ids].clone()
             if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
                 self.extras["log"]["max_distance"] = self.max_distance_reached[env_ids]
             
@@ -1428,7 +1510,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             achieved_coverage_ratios = num_faces_inspected / self.total_mesh_faces[env_ids].float()
             current_cov_goal = self.curriculum.get_current_coverage_goal()
-            episode_successes = (achieved_coverage_ratios >= current_cov_goal) # & (mean_quality >= self.curriculum.get_current_quality_goal())
+            current_max_crashes = self.curriculum.get_current_max_crashes()
+            collision_failures = (self.episode_crashes[env_ids] >= current_max_crashes) & bool(
+                getattr(run_cfg, "reset_on_crash", False)
+            )
+            episode_successes = (
+                achieved_coverage_ratios >= current_cov_goal
+            ) & ~collision_failures
             self.curriculum.update_curriculum(episode_successes, mean_quality)
 
             # Check if curriculum updated
@@ -1469,6 +1557,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.episode_log_buffer["curriculum/current_threshold"].append(current_cov_goal)
                 self.episode_log_buffer["curriculum/active_obstacles"].append(num_active_obstacles)
                 self.episode_log_buffer["curriculum/task_area"].append(self.curriculum.get_total_task_area())
+                self.episode_log_buffer["curriculum/max_crashes"].append(current_max_crashes)
                 
             # Log and Reset Reward Sums
             self.logger.log_and_reset_episode_rewards(env_ids)
@@ -1476,6 +1565,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Clear Buffers (Vectorized)
             self.prev_coverage_ratio[env_ids] = 0.0
             self.best_q_per_face[env_ids] = 0.0
+            self.episode_collision_proxy_steps[env_ids] = 0
+            self.episode_collision_contact_steps[env_ids] = 0
+            self.episode_crashes[env_ids] = 0
+            self.consecutive_collision_steps[env_ids] = 0
+            self.current_collision_contact[env_ids] = False
+            self.current_collision_force[env_ids] = 0.0
+            self.current_crashes[env_ids] = False
                 
             # Map Logging and Reset
             if self.cfg.mapping_cfg.use_occupancy_map:

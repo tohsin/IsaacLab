@@ -1,3 +1,4 @@
+import os
 import torch
 from collections import deque
 from .run_config import cfg_mode
@@ -11,8 +12,8 @@ class Curriculum:
                 # Asymmetric increments
                 coverage_increment_up: float = 0.05,
                 coverage_increment_down: float = 0.025,
-                success_rate_increase_thresh = 0.67,
-                success_rate_decrease_thresh = 0.58,
+                success_rate_increase_thresh = 0.7,
+                success_rate_decrease_thresh = 0.57,
 
                 start_quality_threshold: float = 0.03,
                 max_quality_threshold: float = 0.6,
@@ -50,14 +51,16 @@ class Curriculum:
         self.success_rate = 0.0 
         self.avg_quality = 0.0 # Init
         
-        self.last_objective_pool_size = -1
         self.last_robot_pool_size = -1
 
+        self.is_main_process = int(os.environ.get("REAL_LOCAL_RANK", 0)) == 0
+
         self._setup_spawn_points()
-        print("--- Inspection Curriculum Initialized (Reversible w/ Hysteresis) ---")
-        print(f"  Initial Coverage Goal: {self.current_coverage_threshold*100:.1f}%")
-        print(f"  Increase Thresh: >{self.success_rate_increase_thresh:.2f}, Decrease Thresh: <{self.success_rate_decrease_thresh:.2f}")
-        print("----------------------------------------------------------")
+        if self.is_main_process:
+            print("--- Inspection Curriculum Initialized (Reversible w/ Hysteresis) ---")
+            print(f"  Initial Coverage Goal: {self.current_coverage_threshold*100:.1f}%")
+            print(f"  Increase Thresh: >{self.success_rate_increase_thresh:.2f}, Decrease Thresh: <{self.success_rate_decrease_thresh:.2f}")
+            print("----------------------------------------------------------")
 
     def _setup_spawn_points(self):
         self.init_z = 0.06
@@ -68,7 +71,7 @@ class Curriculum:
         self.spawn_max_x = -self.spawn_min_x 
         self.spawn_min_y = -5.0
         self.spawn_max_y_init = -self.spawn_min_y
-        self.spawn_max_y_final = 7.0
+        self.spawn_max_y_final = 8.0
 
 
     #Task curriculum
@@ -88,7 +91,9 @@ class Curriculum:
             self.success_buffer.append(1 if success.item() else 0)
             self.quality_buffer.append(quality.item())
 
-        # Wait until buffer is full enough
+        # This method is driven by local environment resets, which are not synchronized
+        # across distributed workers. Keep the curriculum statistics local so one rank
+        # cannot enter a collective while another rank is reducing model gradients.
         if len(self.success_buffer) < self.min_episodes_for_update:
             return
 
@@ -106,9 +111,10 @@ class Curriculum:
                      self.current_coverage_threshold = min(new_cov, self.max_coverage_threshold)
                      self.success_buffer.clear()
                      self.quality_buffer.clear()
-                     print(f"--- CURRICULUM LEVEL UP ---")
-                     print(f"  New Coverage Goal: {self.current_coverage_threshold:.2f}")
-                     print(f"  Reason: Success Rate ({self.success_rate:.2f}) >= {self.success_rate_increase_thresh}")
+                     if self.is_main_process:
+                         print(f"--- CURRICULUM LEVEL UP ---")
+                         print(f"  New Coverage Goal: {self.current_coverage_threshold:.2f}")
+                         print(f"  Reason: Success Rate ({self.success_rate:.2f}) >= {self.success_rate_increase_thresh}")
 
         # Check if we should retreat (Decrease Difficulty)
         elif self.success_rate < self.success_rate_decrease_thresh:
@@ -120,9 +126,10 @@ class Curriculum:
                      self.current_coverage_threshold = max(new_cov, self.start_coverage_ratio)
                      self.success_buffer.clear()
                      self.quality_buffer.clear()
-                     print(f"--- CURRICULUM LEVEL DOWN ---")
-                     print(f"  New Coverage Goal: {self.current_coverage_threshold:.2f}")
-                     print(f"  Reason: Success Rate ({self.success_rate:.2f}) < {self.success_rate_decrease_thresh}")
+                     if self.is_main_process:
+                         print(f"--- CURRICULUM LEVEL DOWN ---")
+                         print(f"  New Coverage Goal: {self.current_coverage_threshold:.2f}")
+                         print(f"  Reason: Success Rate ({self.success_rate:.2f}) < {self.success_rate_decrease_thresh}")
 
     def get_progress(self) -> float:
         """Returns the curriculum progress from 0.0 to 1.0."""
@@ -139,6 +146,14 @@ class Curriculum:
         
         episode_length = int(self.min_episode_length_limit + (self.max_episode_length_limit - self.min_episode_length_limit) * progress)
         return episode_length
+
+    def get_current_max_crashes(self) -> int:
+        """Returns the current max allowed crashes based on curriculum progress."""
+        progress = self.get_progress()
+        start_crashes = getattr(cfg_mode, "start_crashes", 5)
+        end_crashes = getattr(cfg_mode, "end_crashes", 1)
+        current_crashes = int(round(start_crashes - progress * (start_crashes - end_crashes)))
+        return max(end_crashes, current_crashes)
 
     def get_current_spawn_max_y(self) -> float:
         """Returns the current maximum Y spawn coordinate based on curriculum progress."""
@@ -222,7 +237,8 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
         
-        min_dist_sq = 1.5**2 # Minimum 2m distance
+        min_dist_to_obj = getattr(cfg_mode, "min_dist_to_objective", 1.5)
+        min_dist_sq = min_dist_to_obj**2
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         
@@ -287,7 +303,7 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
 
-        min_dist = 2 # Minimum 1m distance from any other object
+        min_dist = getattr(cfg_mode, "min_dist_between_obstacles", 2.0)
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         current_spawn_max_y = self.get_current_spawn_max_y()

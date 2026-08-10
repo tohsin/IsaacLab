@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 
@@ -12,7 +13,7 @@ if "LOCAL_RANK" in os.environ:
     # 2. Trick Omniverse and SKRL into thinking they are running on device 0
     os.environ["LOCAL_RANK"] = "0"
 
-# Remove --local_rank to prevent AppLauncher from reading it
+# Remove --loca_rank to prevent AppLauncher from reading it
 sys.argv = [arg for arg in sys.argv if not arg.startswith("--local_rank") and not arg.startswith("--local-rank")]
 
 import torch
@@ -76,7 +77,10 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 
-from skrl.agents.torch.ppo import PPO_RNN as PPO, PPO_DEFAULT_CONFIG
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from ppo_rnn_custom import PPO_RNN as PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
@@ -478,7 +482,12 @@ device = env.device
 # assume num env is 16
 TOTAL_BATCH_SIZE = CONFIG.batch_size #8192# 2048
 sequence_length = 32
-rollout_length = TOTAL_BATCH_SIZE // env.num_envs
+# rollout_length = TOTAL_BATCH_SIZE // env.num_envs
+if torch.distributed.is_initialized():
+    world_size = torch.distributed.get_world_size()
+else:
+    world_size = 1
+rollout_length = TOTAL_BATCH_SIZE // (env.num_envs * world_size)
 
 from skrl.memories.torch import RandomMemory
 memory = RandomMemory(memory_size=rollout_length, num_envs=env.num_envs, device=device)
@@ -498,13 +507,13 @@ models['policy'] = Shared(env.observation_space,
                             sequence_length=sequence_length,
                             use_attention_fusion=getattr(CONFIG, "use_attention_fusion", False))
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
-total_timesteps = CONFIG.global_timesteps // env.num_envs
+total_timesteps = CONFIG.global_timesteps // (env.num_envs * world_size)
 
 cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 4 #8
+cfg["learning_epochs"] = 2  #8
 cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.97 #0.95 0.97
@@ -570,19 +579,28 @@ log_root_path = os.path.abspath(log_root_path)
 # experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 experiment_name = "SEEIR-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-print(f"[INFO] Logging experiment in directory: {log_root_path}")
-
 log_dir = os.path.join(log_root_path, experiment_name)
-print(f"[INFO] skrl will log this experiment in: {log_dir}")
 
-os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
-os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
+is_main_process = int(os.environ.get("REAL_LOCAL_RANK", 0)) == 0
+_use_wandb = _use_wandb and is_main_process
 
+if is_eval:
+    # Evaluation results are written next to the loaded checkpoint below. Do not
+    # create a timestamped training run or initialize SKRL's training writers.
+    _use_wandb = False
+    cfg["experiment"]["write_interval"] = 0
+    cfg["experiment"]["checkpoint_interval"] = 0
+    cfg["experiment"]["wandb"] = False
+else:
+    print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    print(f"[INFO] skrl will log this experiment in: {log_dir}")
+    os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
+    os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 if not is_eval and _use_wandb:
-    cfg["experiment"]["write_interval"] = 1000 if not is_eval else 0
+    cfg["experiment"]["write_interval"] = 1000
     cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
-    cfg["experiment"]["checkpoint_interval"] = 3_000 if not is_eval else 0
+    cfg["experiment"]["checkpoint_interval"] = 3_000
     cfg["experiment"]["directory"] = log_root_path
     cfg["experiment"]["experiment_name"] = experiment_name
     cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
@@ -632,6 +650,7 @@ if _use_wandb:
 cfg["manual_std_decay"] = getattr(CONFIG, "manual_std_decay", False)
 cfg["init_log_std"] = getattr(CONFIG, "init_log_std", 0.0)
 cfg["final_log_std"] = getattr(CONFIG, "final_log_std", -2.0)
+cfg["std_decay_fraction"] = getattr(CONFIG, "std_decay_fraction", 0.25)
 
 agent = PPO(models=models, 
             memory=memory,
@@ -675,6 +694,9 @@ if is_eval:
     
     # Initialize agent for evaluation
     agent.set_running_mode("eval")
+    deterministic_eval = getattr(CONFIG, "deterministic_eval", True)
+    evaluation_mode = "deterministic (policy mean)" if deterministic_eval else "stochastic (policy sample)"
+    print(f"[INFO] Evaluation action mode: {evaluation_mode}")
     
     # Reset environment
     states, _ = env.reset()
@@ -690,6 +712,7 @@ if is_eval:
 
     episode_count = 0
     faces_discovered_list = []
+    crashes_list = []
     eval_dir = os.path.join(os.path.dirname(CONFIG.checkpoint_path), "eval_results")
     os.makedirs(eval_dir, exist_ok=True)
     print(f"[INFO] Evaluation results will be saved to: {eval_dir}")
@@ -699,8 +722,10 @@ if is_eval:
             while simulation_app.is_running():
                 # Get actions using the agent (handles RNN state internally via _rnn_initial_states)
                 # The agent.act() method uses _rnn_initial_states, computes output, and populates _rnn_final_states
-                actions, _, _ = agent.act(states, timestep=0, timesteps=0)
-                
+                actions, _, outputs = agent.act(states, timestep=0, timesteps=0)
+                if deterministic_eval:
+                    actions = outputs["mean_actions"]
+
                 # Step environment
                 next_states, rewards, terminated, truncated, infos = env.step(actions)
 
@@ -715,6 +740,15 @@ if is_eval:
                             # For single env eval, it's straightforward.
                             val = infos["log"]["faces_discovered"]
                             val_dist = infos["log"].get("max_distance", None)
+                            crashes = infos["log"].get("crashes", None)
+
+                            if crashes is not None:
+                                if isinstance(crashes, torch.Tensor):
+                                    crashes_list.extend(
+                                        crashes.detach().cpu().reshape(-1).tolist()
+                                    )
+                                else:
+                                    crashes_list.append(crashes)
 
                             if isinstance(val, torch.Tensor):
                                  if val.numel() > 1:
@@ -772,6 +806,21 @@ if is_eval:
     # Print Final Statistics
     if len(faces_discovered_list) > 0:
         faces_array = np.array(faces_discovered_list)
+        summary = {
+            "checkpoint": CONFIG.checkpoint_path,
+            "evaluation_mode": "deterministic" if deterministic_eval else "stochastic",
+            "episodes": int(len(faces_array)),
+            "faces": {
+                "mean": float(np.mean(faces_array)),
+                "std": float(np.std(faces_array)),
+                "median": float(np.median(faces_array)),
+                "min": int(np.min(faces_array)),
+                "max": int(np.max(faces_array)),
+                "p01": float(np.percentile(faces_array, 1)),
+                "p05": float(np.percentile(faces_array, 5)),
+                "p95": float(np.percentile(faces_array, 95)),
+            },
+        }
         print("\n" + "="*50)
         print(f"EVALUATION RESULTS ({len(faces_discovered_list)} Episodes)")
         print("="*50)
@@ -779,7 +828,39 @@ if is_eval:
         print(f"Std Deviation:         {np.std(faces_array):.2f}")
         print(f"Min Faces:             {np.min(faces_array)}")
         print(f"Max Faces:             {np.max(faces_array)}")
+        if crashes_list:
+            crashes_array = np.asarray(crashes_list)
+            summary["crashes"] = {
+                "mean": float(np.mean(crashes_array)),
+                "median": float(np.median(crashes_array)),
+                "episodes_with_crash_percent": float(
+                    np.mean(crashes_array > 0) * 100
+                ),
+            }
+            print(f"Mean Crashes: {np.mean(crashes_array):.2f}")
+            print(f"Median Crashes: {np.median(crashes_array):.2f}")
+            print(
+                "Episodes With Crash: "
+                f"{np.mean(crashes_array > 0) * 100:.2f}%"
+            )
         print("="*50 + "\n")
+
+        result_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        result_mode = "deterministic" if deterministic_eval else "stochastic"
+        result_stem = f"eval_{result_mode}_{result_timestamp}"
+        summary_path = os.path.join(eval_dir, f"{result_stem}.json")
+        raw_path = os.path.join(eval_dir, f"{result_stem}.npz")
+
+        with open(summary_path, "w", encoding="utf-8") as summary_file:
+            json.dump(summary, summary_file, indent=2)
+
+        raw_results = {"faces_discovered": faces_array}
+        if crashes_list:
+            raw_results["crashes"] = crashes_array
+        np.savez_compressed(raw_path, **raw_results)
+
+        print(f"[INFO] Evaluation summary saved to: {summary_path}")
+        print(f"[INFO] Raw episode results saved to: {raw_path}")
     else:
         print("[WARNING] No episodes completed to calculate statistics.")
 
@@ -787,4 +868,3 @@ else:
     # path = "/home/tosin/IsaacLab_inspection/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2025-09-07_11-42-53_ppo_gru_128/checkpoints/agent_450000.pt"
     # agent.load(path)
     trainer.train()
-

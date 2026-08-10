@@ -9,7 +9,7 @@ path_local0 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct
 #new
 path_local1 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-19_21-31-18_ppo_gru_128/checkpoints/agent_369000.pt"
 path_local2 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-25_14-04-51_ppo_gru_128/checkpoints/agent_420000.pt"
-path_pretrained = "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline/SEEIR-2026-06-19_20-58-14/checkpoints/agent_390000.pt"
+path_pretrained = "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline/SEEIR-2026-07-25_07-06-26/checkpoints/agent_273000.pt"
 path_finetune = ""
 class TrainingConfig_PreTrain:
     optimizer_class = "adam" # "adam" or "muon"
@@ -20,21 +20,22 @@ class TrainingConfig_PreTrain:
     reset_std = True
     batch_size = 8192 # 8192
     use_attention_fusion = True
-    use_transformer_encoder = False
+    use_transformer_encoder = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef = 3e-5#0.00006# Moderately increased for better exploration with diverse objects
+    entropy_coef =  0.0003
     value_loss_scale = 1.0 #1.0 
-    learning_rate = 6e-5
-    std_learning_rate = 3e-4
+    learning_rate = 0.00003
+    std_learning_rate = 3e-5
     grad_clip_norm = 0.7
-    init_log_std =  0.0# 0.0 
-    manual_std_decay = True
-    final_log_std = -3.0#-2.0  # Decays std to ~0.13
+    init_log_std =  0.0 # 0.0 
+    manual_std_decay = False
+    final_log_std = -0.5#-2.0  # Decays std to ~0.13
+    std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 50_000_000
+    global_timesteps = 30_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -60,16 +61,17 @@ class TrainingConfig_FineTune(TrainingConfig_PreTrain):
 class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
+    deterministic_eval = True
     headless = True
     # Example path, user should update
-    checkpoint_path = os.path.join(ISAACLAB_ROOT, path_finetune)
-    num_envs = 1
+    checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
+    num_envs = 128
     use_wandb = False
     reset_std = False
     use_attention_fusion = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
-    activation_fn = "silu"
+    activation_fn = "elu"
     batch_size = 8192
     entropy_coef = 3e-7
     learning_rate = 3e-5
@@ -83,8 +85,10 @@ class EvaluationConfig:
         "total_iters": -1,
     }
     data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval")
-    save_depth = True
+    save_depth = False
 
 # Select the configuration to use
-configs_ = [TrainingConfig_PreTrain(), TrainingConfig_FineTune(), EvaluationConfig()]   
+configs_ = [TrainingConfig_PreTrain(), 
+            TrainingConfig_FineTune(),
+              EvaluationConfig()]   
 CONFIG = configs_[0]

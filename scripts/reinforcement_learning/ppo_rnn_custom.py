@@ -439,6 +439,25 @@ class PPO_RNN(Agent):
         # write tracking data and checkpoints
         super().post_interaction(timestep, timesteps)
 
+        try:
+            if self.cfg.get("manual_std_decay", False) and timestep % 100 ==0:
+                import math
+                decay_fraction = self.cfg.get("std_decay_fraction", 0.25)
+                progress = min(1.0, timestep / (timesteps* decay_fraction))
+                init_log_std = self.cfg.get("init_log_std", 0.0)
+                final_log_std = self.cfg.get("final_log_std", -2.0)
+                
+                init_std = math.exp(init_log_std)
+                final_std = math.exp(final_log_std)
+                current_std = init_std + (final_std - init_std) * progress
+                current_log_std = math.log(current_std)
+                
+                with torch.no_grad():
+                    if hasattr(self, "policy") and hasattr(self.policy, "log_std_parameter"):
+                        self.policy.log_std_parameter.fill_(current_log_std)
+        except Exception as e:
+            print(f"[SKRL Library Warning]: Manual std decay fail {e}")
+
     def _update(self, timestep: int, timesteps: int) -> None:
         """Algorithm's main update step
 

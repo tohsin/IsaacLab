@@ -102,7 +102,7 @@ def main():
                 
                 fwd_speed = 0.7
                 turn_speed = -0.8
-                for i in range(800):
+                for i in range(1000):
                     # spend some time tilting to the side
                     if i < Tilt_T:
                         actions = torch.tensor([[0.0, 0.0, -1.0, 0.03, 0.0]], device=env.unwrapped.device)

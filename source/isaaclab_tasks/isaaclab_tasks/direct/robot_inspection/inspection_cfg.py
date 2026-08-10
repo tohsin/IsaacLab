@@ -48,8 +48,8 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     use_camera_obs: bool = True
 
 
-
-    decimation = 6
+    decimation = 12 # 10.75 Hz control frequency (New)
+    # decimation = 6  # 21.5 Hz control frequency (Old)
     # semantic_config_path = "source/isaaclab_tasks/isaaclab_tasks/direct/robot_inspection/semantic_config_warehouse.json"
     episode_length_s = 42
     action_scale = 0.8  # [N]
@@ -86,12 +86,13 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         ))
 
 
-    max_obstacles: int = 6    # Cap obstacles around 10 depending on the environment scale
+    max_obstacles: int = getattr(cfg_mode, "max_obstacles", 6)    # Cap obstacles around 10 depending on the environment scale
 
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
             usd_path=ROBOT_CONFIGS["jackal_ptz"]["usd_path"],
+            activate_contact_sensors=True,
         ),
         actuators={
             "wheel_acts": ImplicitActuatorCfg(

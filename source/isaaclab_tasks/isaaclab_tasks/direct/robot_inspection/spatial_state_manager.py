@@ -427,6 +427,32 @@ class SpatialStateManager:
                                             center=True)
         return occupied_centers
 
+    def get_collision_bounds(self, shift_x=None, shift_y=None, shift_z=None):
+        """
+        Returns the bounding box (min_x, max_x, min_y, max_y, min_z, max_z) in local map indices
+        for the collision check zone.
+        """
+        local_dims = self.local_map_dims
+        center_x = local_dims[0] // 2
+        center_y = local_dims[1] // 2
+        center_z = 0 # Robot is at the floor level in the local map
+        
+        target_radius_m = 0.3
+        calculated_shift = max(1, int(np.ceil(target_radius_m / self.resolution)))
+        
+        sx = shift_x if shift_x is not None else calculated_shift
+        sy = shift_y if shift_y is not None else calculated_shift
+        sz = shift_z if shift_z is not None else calculated_shift
+
+        min_x = max(0, center_x - sx)
+        max_x = min(local_dims[0], center_x + sx + 1)
+        min_y = max(0, center_y - sy)
+        max_y = min(local_dims[1], center_y + sy + 1)
+        min_z = max(1, center_z) # Skip the floor level (z=0)
+        max_z = min(local_dims[2], center_z + sz + 1)
+
+        return min_x, max_x, min_y, max_y, min_z, max_z
+
     def get_voxel_states_as_points(self, env_id: int, robot_pos_w: torch.Tensor = None, robot_quat_w: torch.Tensor = None):
         """
         Retrieves the states of voxels for visualization based on the map mode and channel.
@@ -457,6 +483,38 @@ class SpatialStateManager:
             elif self.visualization_mode.channel == map_channels.VISITATION:
                 local_map_np = local_visit[env_id].cpu().numpy()
                 mask = local_map_np > 0
+            elif self.visualization_mode.channel == map_channels.COLLISION:
+                local_map_np = local_occ[env_id].cpu().numpy()
+                mask = local_map_np > 0.0 # Standard threshold for log-odds occupancy
+                
+                # Add bounding box mask
+                min_x, max_x, min_y, max_y, min_z, max_z = self.get_collision_bounds()
+                
+                boundary_mask = np.zeros_like(local_map_np, dtype=bool)
+                # Wireframe edges for the bounding box
+                mx = max_x - 1 if max_x > 0 else 0
+                my = max_y - 1 if max_y > 0 else 0
+                mz = max_z - 1 if max_z > 0 else 0
+                
+                # Z edges
+                boundary_mask[min_x, min_y, min_z:max_z] = True
+                boundary_mask[min_x, my, min_z:max_z] = True
+                boundary_mask[mx, min_y, min_z:max_z] = True
+                boundary_mask[mx, my, min_z:max_z] = True
+
+                # Y edges
+                boundary_mask[min_x, min_y:max_y, min_z] = True
+                boundary_mask[min_x, min_y:max_y, mz] = True
+                boundary_mask[mx, min_y:max_y, min_z] = True
+                boundary_mask[mx, min_y:max_y, mz] = True
+
+                # X edges
+                boundary_mask[min_x:max_x, min_y, min_z] = True
+                boundary_mask[min_x:max_x, min_y, mz] = True
+                boundary_mask[min_x:max_x, my, min_z] = True
+                boundary_mask[min_x:max_x, my, mz] = True
+                
+                mask = mask | boundary_mask
             else:
                 return np.array([]), np.array([])
 
@@ -475,6 +533,22 @@ class SpatialStateManager:
                     norm_c = np.clip(counts / visitation_threshold, 0, 1)
                     colors[:, 0] = norm_c # Red
                     colors[:, 2] = 1.0 - norm_c # Blue
+                elif self.visualization_mode.channel == map_channels.COLLISION:
+                    min_x, max_x, min_y, max_y, min_z, max_z = self.get_collision_bounds()
+                    
+                    for i in range(len(x)):
+                        in_box = (min_x <= x[i] < max_x) and \
+                                 (min_y <= y[i] < max_y) and \
+                                 (min_z <= z[i] < max_z)
+                        is_occupied = local_map_np[x[i], y[i], z[i]] > 1.1
+                        
+                        if in_box and is_occupied:
+                            colors[i] = [1.0, 0.0, 0.0] # Red for collision
+                        elif local_map_np[x[i], y[i], z[i]] > 0.0:
+                            # colors[i] = [0.8, 0.8, 0.8] # Light grey for normal occupancy
+                            colors[i] = [1.0, 1.0, 1.0] # White for normal occupancy
+                        else:
+                            colors[i] = [0.0, 0.0, 1.0] # Blue for boundary box
 
                 # Convert indices to local coordinates
                 # Z starts at 0 (the floor), so we do not shift Z by half the dimension
