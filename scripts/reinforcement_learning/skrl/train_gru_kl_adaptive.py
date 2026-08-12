@@ -42,7 +42,7 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Number of environments to simulate.")
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
-parser.add_argument("--max_episodes", type=int, default=20, help="Maximum number of episodes to run in evaluation mode.")
+parser.add_argument("--max_episodes", type=int, default=getattr(CONFIG, "max_episodes", 20), help="Maximum number of episodes to run in evaluation mode.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
 # append AppLauncher cli args
 
@@ -830,19 +830,34 @@ if is_eval:
         print(f"Max Faces:             {np.max(faces_array)}")
         if crashes_list:
             crashes_array = np.asarray(crashes_list)
+            total_terminated = int(np.sum(crashes_array > 0))
+            
+            # Calculate coverage only for successful episodes
+            successful_episodes_mask = crashes_array == 0
+            if np.any(successful_episodes_mask):
+                faces_successful = faces_array[successful_episodes_mask]
+                mean_faces_successful = float(np.mean(faces_successful))
+            else:
+                mean_faces_successful = 0.0
+
             summary["crashes"] = {
                 "mean": float(np.mean(crashes_array)),
                 "median": float(np.median(crashes_array)),
                 "episodes_with_crash_percent": float(
                     np.mean(crashes_array > 0) * 100
                 ),
+                "total_terminated_due_to_crash": total_terminated,
             }
+            summary["faces"]["mean_successful_only"] = mean_faces_successful
+            
             print(f"Mean Crashes: {np.mean(crashes_array):.2f}")
             print(f"Median Crashes: {np.median(crashes_array):.2f}")
             print(
                 "Episodes With Crash: "
                 f"{np.mean(crashes_array > 0) * 100:.2f}%"
             )
+            print(f"Total Terminated Due to Crash: {total_terminated} / {len(crashes_array)}")
+            print(f"Mean Faces Discovered (NO CRASHES): {mean_faces_successful:.2f}")
         print("="*50 + "\n")
 
         result_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

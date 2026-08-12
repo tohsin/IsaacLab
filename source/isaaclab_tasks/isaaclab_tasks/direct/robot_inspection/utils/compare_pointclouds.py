@@ -44,19 +44,24 @@ def compute_metrics(source_points, target_points):
         "Target -> Source Max": np.max(dist_t2s)
     }
     
-    # Calculate Coverage at thresholds
-    # Coverage = % of Source (GT) points that have a neighbor in Target (Recon) within threshold
+    # Precision = % of Recon points close to GT
+    # Coverage (Recall) = % of GT points close to Recon
     thresholds = [0.01, 0.02, 0.05, 0.1, 0.2]
     for thresh in thresholds:
-        covered_count = np.sum(dist_s2t < thresh)
-        coverage_pct = (covered_count / len(source_points)) * 100
-        metrics[f"Coverage @ {thresh:.2f}"] = coverage_pct
+        precision_count = np.sum(dist_s2t < thresh)
+        precision_pct = (precision_count / len(source_points)) * 100
+        
+        coverage_count = np.sum(dist_t2s < thresh)
+        coverage_pct = (coverage_count / len(target_points)) * 100
+        
+        metrics[f"Precision @ {thresh:.2f}"] = precision_pct
+        metrics[f"Coverage (Recall) @ {thresh:.2f}"] = coverage_pct
         
     # Calculate AUC (Area Under Curve) of Coverage up to 0.2m
     max_thresh_auc = 0.2
     dense_thresholds = np.linspace(0.0, max_thresh_auc, 100)
-    # Compute coverage proportion (0.0 to 1.0) for each threshold
-    coverages = [np.sum(dist_s2t < d) / len(source_points) for d in dense_thresholds]
+    # Compute coverage proportion (0.0 to 1.0) for each threshold (using GT points -> dist_t2s)
+    coverages = [np.sum(dist_t2s < d) / len(target_points) for d in dense_thresholds]
     
     # Calculate the area underneath the plotted curve using trapezoidal rule
     auc_area = np.trapz(coverages, dense_thresholds)
@@ -145,25 +150,29 @@ def main():
     # Green = Covered (< 0.05)
     # Red = Missed (> 0.05)
     
-    print(f"[INFO] Computing visualization cloud...")
-    tree_target = cKDTree(points_target)
-    dist_s2t, _ = tree_target.query(points_source, k=1, workers=-1)
+    print(f"[INFO] Computing visualization cloud (Ground Truth Colored by Coverage)...")
+    # For visualization, we want to color the TARGET (Ground Truth) to see what we missed!
+    tree_source = cKDTree(points_source)
+    dist_t2s, _ = tree_source.query(points_target, k=1, workers=-1)
     
-    colors = np.zeros((points_source.shape[0], 4), dtype=np.uint8)
+    colors = np.zeros((points_target.shape[0], 4), dtype=np.uint8)
     
-    # Standard Green for Covered, Red for Missed
-    # Distance mapped to color intensity
     # Threshold at 0.05 (5cm)
-    mask_covered = dist_s2t < 0.05
+    mask_covered = dist_t2s < 0.05
     
-    # Green (0, 255, 0, 255)
+    # Green (0, 255, 0, 255) for Covered
     colors[mask_covered] = [0, 255, 0, 255]
     
-    # Red (255, 0, 0, 255)
+    # Red (255, 0, 0, 255) for Missed
     colors[~mask_covered] = [255, 0, 0, 255]
     
-    pcd_vis = trimesh.points.PointCloud(points_source, colors=colors)
-    vis_path = "data/point_clouds/compare/small_corner_bracket_physics.ply"
+    pcd_vis = trimesh.points.PointCloud(points_target, colors=colors)
+    
+    import os
+    base_name = os.path.basename(args.source)
+    vis_path = os.path.join("data/point_clouds/compare", base_name)
+    os.makedirs(os.path.dirname(vis_path), exist_ok=True)
+    
     pcd_vis.export(vis_path)
     print(f"[INFO] Saved visualization to: {vis_path}")
     print(f"       Use view_pointcloud.py to see Green (Covered) vs Red (Missed).")

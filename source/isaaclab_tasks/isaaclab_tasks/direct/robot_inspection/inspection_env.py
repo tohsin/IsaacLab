@@ -1336,33 +1336,43 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             0.0
         )
 
-        # --- Adaptive Reward Scaling ---
-        # Decay the face discovery reward as curriculum progresses
-        # We want it high initially (to learn what faces are) and lower later (to prioritize exploration)
-        # progress = self.curriculum.get_progress()
-        
-        # # Linear Decay: Scales from 1.0 down to 0.2 (20% of original)
-        # decay_factor = 1.0 - (progress * 0.8) 
-        # current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale * decay_factor
-        current_face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
+        face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
+        info_reward_scale = self.cfg.reward_cfg.information_gain_reward_scale
+        visit_reward_scale = self.cfg.reward_cfg.visitation_reward_scale
+        action_penalty_scale = self.cfg.reward_cfg.action_penalty_scale
+        ptz_penalty_scale = self.cfg.reward_cfg.ptz_penalty_scale
+        time_penalty = self.cfg.reward_cfg.time_penalty
+        occupancy_penalty_scale = self.cfg.reward_cfg.occupancy_penalty_scale
+        terminal_collision_penalty =  self.cfg.reward_cfg.terminal_collision_penalty
 
-        base_reward = (current_face_reward_scale * face_discovery_raw
-                        + self.cfg.reward_cfg.information_gain_reward_scale * information_gain_reward
-                        + self.cfg.reward_cfg.visitation_reward_scale * visitation_reward # Added visitation reward
-                        - self.cfg.reward_cfg.action_penalty_scale * base_action_delta
-                        - self.cfg.reward_cfg.ptz_penalty_scale * ptz_action_delta
+
+        positive_rewards = (face_reward_scale * face_discovery_raw
+                        + info_reward_scale * information_gain_reward
+                        + visit_reward_scale * visitation_reward # Added visitation reward
                         + success_bonus
-                        -self.cfg.reward_cfg.time_penalty
                         )
-        scaled_occupancy_penalty = getattr(self.cfg.reward_cfg, 'occupancy_penalty_scale', 1.0) * occupancy_penalty
+                        
+        # If proxy penalty is active (robot is too close to obstacle), mask positive rewards
+        proxy_active = occupancy_penalty < 0.0
+        positive_rewards = torch.where(proxy_active, torch.zeros_like(positive_rewards), positive_rewards)
+        
+        penalties = (- action_penalty_scale * base_action_delta
+                     - ptz_penalty_scale * ptz_action_delta
+                     - time_penalty
+                     )
+                     
+        # Emergency Brake Penalty: Active punishment for driving forward in the danger zone
+        forward_velocity = self.actions[:, 0]
+        emergency_brake_penalty = torch.where(proxy_active & (forward_velocity > 0.0), -0.05 * forward_velocity, torch.zeros_like(forward_velocity))
+                     
+        base_reward = positive_rewards + penalties + emergency_brake_penalty
+        scaled_occupancy_penalty = occupancy_penalty_scale * occupancy_penalty
         shaped_reward = base_reward + scaled_occupancy_penalty
 
         # The map-based proxy is additive shaping. A confirmed physical crash,
         # however, receives an exclusive terminal reward so a large inspection
         # reward on the impact step cannot make crashing profitable.
-        terminal_collision_penalty = getattr(
-            self.cfg.reward_cfg, "terminal_collision_penalty", 1.0
-        )
+        
         total_reward = torch.where(
             self.current_crashes,
             torch.full_like(shaped_reward, -terminal_collision_penalty),
@@ -1378,7 +1388,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             visitation_reward,
             occupancy_penalty,
             total_reward,
-            current_face_reward_scale # Pass the dynamic scale for logging
+            face_reward_scale # Pass the dynamic scale for logging
             )
         # print(f"[DEBUG] Total Reward before scaling: {total_reward}")
         # Logging

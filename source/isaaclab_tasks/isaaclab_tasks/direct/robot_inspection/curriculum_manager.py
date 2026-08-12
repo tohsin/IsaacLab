@@ -7,10 +7,10 @@ class Curriculum:
                 self,
 
                 start_coverage_ratio: float = cfg_mode.inspection_goal,
-                max_coverage_ratio: float = 0.95,
+                max_coverage_ratio: float = 0.90,
                 
                 # Asymmetric increments
-                coverage_increment_up: float = 0.05,
+                coverage_increment_up: float = 0.075,
                 coverage_increment_down: float = 0.025,
                 success_rate_increase_thresh = 0.7,
                 success_rate_decrease_thresh = 0.57,

@@ -86,18 +86,18 @@ class train_Cfg_pretrain(train_Cfg_base):
     
 
 class train_Cfg_finetune(train_Cfg_base):
-    inspection_goal =  0.95
+    inspection_goal =  0.90
     min_episode_length: int = 2300
     # max_episode_length: int = 2300
     # min_obstacles: int = 
     # min_spawn_max_y: float = 9.0
 
 class eval_Cfg:
-    debug = True
-    max_episode_length: int = 2500
-    min_episode_length: int = 2500
+    debug = False
+    max_episode_length: int = 1250
+    min_episode_length: int = 1250
     logging_interval: int = 1500
-    inspection_goal =  0.95
+    inspection_goal =  0.9
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -112,7 +112,7 @@ class eval_Cfg:
     use_optical_flow_as_quality = False
     randomize_spawns = True
     use_hardest_curriculum = True
-    reset_on_crash = False
+    reset_on_crash = True
     enable_voxel_visualization = False
 
 class record_Cfg:
@@ -144,10 +144,10 @@ class record_Cfg:
 
 class record_depth_Cfg:
     debug = False
-    min_episode_length: int = 2500
+    min_episode_length: int = 1250
     logging_interval: int = 100
-    max_episode_length: int = 2500
-    inspection_goal =  0.95
+    max_episode_length: int = 1250
+    inspection_goal =  1.0
     visualisation_mode = None
     display_ray_counts = False
     visualise_point_cloud = False
@@ -155,9 +155,9 @@ class record_depth_Cfg:
     display_cameras = False
     enable_voxel_visualization = True
     use_wandb =  False 
-    headless = False
+    headless = True
     num_envs = 1
-    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval/small_corner_bracket_physics")
+    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval/rubiks_cube")
     save_images = False
     save_depth = True
     save_interval = 5 # Save every 5 steps to avoid huge data

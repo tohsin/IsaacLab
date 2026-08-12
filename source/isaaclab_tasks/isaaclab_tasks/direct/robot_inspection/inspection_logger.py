@@ -96,7 +96,7 @@ class InspectionLogger:
             # Clear the reward logging buffer after logging
             self.reward_logging_buffer.clear()
             
-            if self.use_wandb:
+            if self.use_wandb and wandb.run is not None:
                 if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
                     wandb.log(log_data)
     

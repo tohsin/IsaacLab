@@ -9,8 +9,9 @@ path_local0 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct
 #new
 path_local1 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-19_21-31-18_ppo_gru_128/checkpoints/agent_369000.pt"
 path_local2 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-25_14-04-51_ppo_gru_128/checkpoints/agent_420000.pt"
-path_pretrained = "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline/SEEIR-2026-07-25_07-06-26/checkpoints/agent_273000.pt"
-path_finetune = ""
+path_pretrained = "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline/SEEIR-2026-08-10_22-18-18/checkpoints/agent_117000.pt"
+# path_pretrained = "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline/SEEIR-2026-08-10_22-18-18/checkpoints/best_agent.pt"
+
 class TrainingConfig_PreTrain:
     optimizer_class = "adam" # "adam" or "muon"
     is_eval = False
@@ -24,7 +25,7 @@ class TrainingConfig_PreTrain:
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef =  0.0003
+    entropy_coef =  3e-5
     value_loss_scale = 1.0 #1.0 
     learning_rate = 0.00003
     std_learning_rate = 3e-5
@@ -35,7 +36,7 @@ class TrainingConfig_PreTrain:
     std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 30_000_000
+    global_timesteps = 60_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -62,6 +63,7 @@ class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
     deterministic_eval = True
+    max_episodes = 1024  # Added this so you can set the number of sims here!
     headless = True
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
@@ -69,6 +71,7 @@ class EvaluationConfig:
     use_wandb = False
     reset_std = False
     use_attention_fusion = True
+    use_transformer_encoder = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"
@@ -91,4 +94,4 @@ class EvaluationConfig:
 configs_ = [TrainingConfig_PreTrain(), 
             TrainingConfig_FineTune(),
               EvaluationConfig()]   
-CONFIG = configs_[0]
+CONFIG = configs_[0] # <-- Changed to 2 so EvaluationConfig is active

@@ -437,7 +437,7 @@ class SpatialStateManager:
         center_y = local_dims[1] // 2
         center_z = 0 # Robot is at the floor level in the local map
         
-        target_radius_m = 0.3
+        target_radius_m = 0.35
         calculated_shift = max(1, int(np.ceil(target_radius_m / self.resolution)))
         
         sx = shift_x if shift_x is not None else calculated_shift
