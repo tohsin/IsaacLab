@@ -139,6 +139,12 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             # Shape is (X, Y, Z, Channels). We have 2 channels: Occupancy, Visibility, Visitation
             shape=(*mapping_cfg.local_map_dims, 3), 
             dtype=np.float32,
+        ),
+        "global-map": spaces.Box(
+            low=float("-inf"),
+            high=float("inf"), 
+            shape=(x_dim, y_dim, z_dim, 3), 
+            dtype=np.float32,
         )
     })
 
