@@ -513,7 +513,7 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 2  #8
+cfg["learning_epochs"] = 2 # increased from 2 to extract more signal per batch
 cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.97 #0.95 0.97

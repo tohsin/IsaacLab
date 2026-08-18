@@ -71,7 +71,7 @@ class Curriculum:
         self.spawn_max_x = -self.spawn_min_x 
         self.spawn_min_y = -5.0
         self.spawn_max_y_init = -self.spawn_min_y
-        self.spawn_max_y_final = 8.0
+        self.spawn_max_y_final = 8.0 # 8.0 for training
 
 
     #Task curriculum

@@ -28,7 +28,7 @@ class RewardsCfg:
     optical_flow_threshold: float = 12.5
 
     # Penalties
-    time_penalty: float = 0.3e-3 # original: 1e-3
+    time_penalty: float = 1.0e-3 # Increased from 0.3e-3 to discourage wasting time in circles
     
 
     # visitation_reward_scale: float = 0.5e-3

@@ -275,7 +275,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Clone heavily populated structures immediately to build parallel env branches
         
         self.inspection_goals = {}
-        self.goal_prims_dict = {}
 
         for target_name, target_cfg in self.cfg.inspection_goal_cfg.inspection_targets.items():
             usd_path = target_cfg.usd_path
@@ -298,33 +297,28 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 orientation=orientation,
             )
 
-            # Force collision
-            self.goal_prims_dict[target_name] = []
-            for i in range(self.num_envs):
-                if "env_.*" in prim_path_template:
-                    obj_prim_path = prim_path_template.replace("env_.*", f"env_{i}")
-                else:
-                    obj_prim_path = f"{prim_path_template}_{i}" # fallback
-                
-                obj_prim = stage.GetPrimAtPath(obj_prim_path)
-                if obj_prim.IsValid():
-                    if not obj_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                        UsdPhysics.RigidBodyAPI.Apply(obj_prim)
+            # Force collision (Apply to source template env_0 only before cloning)
+            if "env_.*" in prim_path_template:
+                obj_prim_path = prim_path_template.replace("env_.*", "env_0")
+            else:
+                obj_prim_path = f"{prim_path_template}_0" # fallback
+            
+            obj_prim = stage.GetPrimAtPath(obj_prim_path)
+            if obj_prim.IsValid():
+                if not obj_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    UsdPhysics.RigidBodyAPI.Apply(obj_prim)
 
-                    for child in Usd.PrimRange(obj_prim):
-                        if child.IsA(UsdGeom.Mesh):
-                            if not child.HasAPI(UsdPhysics.CollisionAPI):
-                                UsdPhysics.CollisionAPI.Apply(child)
-                            if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
-                                mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
-                                mesh_collision.GetApproximationAttr().Set("convexHull")
-                            if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
-                                PhysxSchema.PhysxCollisionAPI.Apply(child)
-                                
-                    self.goal_prims_dict[target_name].append(UsdGeom.Xformable(obj_prim))
-                else:
-                    print(f"[WARNING] Goal prim not found at {obj_prim_path}")
-                    self.goal_prims_dict[target_name].append(None)
+                for child in Usd.PrimRange(obj_prim):
+                    if child.IsA(UsdGeom.Mesh):
+                        if not child.HasAPI(UsdPhysics.CollisionAPI):
+                            UsdPhysics.CollisionAPI.Apply(child)
+                        if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
+                            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
+                            mesh_collision.GetApproximationAttr().Set("convexHull")
+                        if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
+                            PhysxSchema.PhysxCollisionAPI.Apply(child)
+            else:
+                print(f"[WARNING] Source goal prim not found at {obj_prim_path}")
                     
             # Create RigidObject wrapper
             self.inspection_goals[target_name] = RigidObject(
@@ -353,7 +347,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.face_raycaster)
         self.scene.sensors["raycaster_camera"] = self._raycaster_camera
 
-        self.scene.clone_environments(copy_from_source=False)
+        self.scene.clone_environments(copy_from_source=True)
         # clone and replicate
     
         # we need to explicitly filter collisions for CPU simulation
@@ -1677,34 +1671,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             self.inspection_goals[target_name].write_root_pose_to_sim(mixed_state[:, :7], env_ids)
             self.inspection_goals[target_name].write_root_velocity_to_sim(mixed_state[:, 7:], env_ids)
-
-            mixed_pos_cpu = mixed_state[:, :3].cpu().numpy().astype(float)
-            mixed_ori_cpu = mixed_state[:, 3:7].cpu().numpy().astype(float)
-            for i, env_id in enumerate(env_ids_local):
-                xf = self.goal_prims_dict[target_name][env_id]
-                if xf:
-                    found_translate = False
-                    found_orient = False
-                    for op in xf.GetOrderedXformOps():
-                        if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                            try:
-                                op.Set(Gf.Vec3d(*mixed_pos_cpu[i]))
-                            except Exception:
-                                op.Set(Gf.Vec3f(*mixed_pos_cpu[i]))
-                            found_translate = True
-                        elif op.GetOpType() in [UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeTransform]:
-                            if op.GetOpType() == UsdGeom.XformOp.TypeOrient:
-                                q_w, q_x, q_y, q_z = float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])
-                                try:
-                                    op.Set(Gf.Quatd(q_w, q_x, q_y, q_z))
-                                except Exception:
-                                    op.Set(Gf.Quatf(q_w, q_x, q_y, q_z))
-                                found_orient = True
-                                
-                    if not found_translate:
-                        xf.AddTranslateOp().Set(Gf.Vec3d(*mixed_pos_cpu[i]))
-                    if not found_orient:
-                        xf.AddOrientOp().Set(Gf.Quatd(float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])))
         # ------------------------------------------
 
         # --- Base Spawning Logic ---
