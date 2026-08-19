@@ -26,6 +26,7 @@ class RewardsCfg:
 
     optical_flow_penalty_scale: float = 0.0 # 1e-3
     optical_flow_threshold: float = 12.5
+    min_inspection_distance: float = 1.5
 
     # Penalties
     time_penalty: float = 1.0e-3 # Increased from 0.3e-3 to discourage wasting time in circles

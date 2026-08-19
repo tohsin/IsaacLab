@@ -826,6 +826,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         elif nav_modality == "depth":
              if "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
                 front_camera_data = self._nav_camera.data.output["distance_to_image_plane"].clone()
+                if getattr(run_cfg, "enable_sensor_noise", False):
+                    std_mult = getattr(run_cfg, "pixel_std_dev_multiplier", 0.01)
+                    dropout_prob = getattr(run_cfg, "pixel_dropout_prob", 0.01)
+                    front_camera_data = torch.normal(mean=front_camera_data, std=std_mult * front_camera_data)
+                    front_camera_data[torch.bernoulli(torch.ones_like(front_camera_data) * dropout_prob) > 0] = 35.0
                 # Replace Inf and clamp large distances to keep inputs sane, then normalize to [0, 1]
                 front_camera_data[torch.isinf(front_camera_data)] = 35.0
                 front_camera_data = torch.clamp(front_camera_data, max=35.0) / 35.0
@@ -837,6 +842,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
                 rgb = self._nav_camera.data.output["rgb"] / 255.0
                 depth = self._nav_camera.data.output["distance_to_image_plane"].clone()
+                if getattr(run_cfg, "enable_sensor_noise", False):
+                    std_mult = getattr(run_cfg, "pixel_std_dev_multiplier", 0.01)
+                    dropout_prob = getattr(run_cfg, "pixel_dropout_prob", 0.01)
+                    depth = torch.normal(mean=depth, std=std_mult * depth)
+                    depth[torch.bernoulli(torch.ones_like(depth) * dropout_prob) > 0] = 35.0
                 depth[torch.isinf(depth)] = 35.0
                 depth = torch.clamp(depth, max=35.0) / 35.0
                 if depth.dim() == 3:
@@ -1085,13 +1095,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Apply Distance Mask to Weights
         if getattr(run_cfg, "use_depth_mask", False):
             depth = self._raycaster_camera.data.output["distance_to_image_plane"].squeeze(-1)
-            max_dist = self.cfg.reward_cfg.max_inspection_distance
-            sigma = self.cfg.reward_cfg.depth_sigma
+            min_dist = getattr(self.cfg.reward_cfg, "min_inspection_distance", 1.5)
             
+            # Hard 0.0 or 1.0 mask. If closer than min_dist, weight becomes exactly 0.0
             depth_mask = torch.where(
-                depth <= max_dist,
+                depth >= min_dist,
                 torch.ones_like(depth),
-                torch.exp(-0.5 * torch.square((depth - max_dist) / sigma))
+                torch.zeros_like(depth)
             )
 
             weights = weights * depth_mask

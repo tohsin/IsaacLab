@@ -43,7 +43,7 @@ path_local2 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct
 
 path_pretrained = get_checkpoint_path(
     project_name="SEEIR-Baseline",
-    run_name="SEEIR-2026-08-16_16-13-12",
+    run_name="SEEIR-2026-08-18_12-27-13",
     checkpoint_type=0  # 0 for best_agent.pt, 1 for the latest agent_*.pt step
 )
 
@@ -52,15 +52,15 @@ class TrainingConfig_PreTrain:
     is_eval = False
     headless = True
     checkpoint_path = None
-    num_envs = 32
+    num_envs = 128
     reset_std = True
-    batch_size = 4096 # 8192
+    batch_size = 8192 # 8192
     use_attention_fusion = True
     use_transformer_encoder = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef =  0.00003
+    entropy_coef =  3e-5
     value_loss_scale = 1.0 #1.0 
     learning_rate = 3e-5
     std_learning_rate = 3e-5
@@ -71,7 +71,7 @@ class TrainingConfig_PreTrain:
     std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 50_000_000
+    global_timesteps = 20_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -81,12 +81,12 @@ class TrainingConfig_PreTrain:
 
 class TrainingConfig_FineTune(TrainingConfig_PreTrain):
     num_envs = 64
+    batch_size = 8192 # 8192
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
-    entropy_coef = 3e-6
-    learning_rate = 6e-5
-    global_timesteps = 5_000_000
-    reset_std = True
-    init_log_std = -1.6  # log(0.2) approx -1.6, giving an std of ~0.2
+    entropy_coef = 3e-5
+    learning_rate = 1e-5
+    global_timesteps = 30_000_000
+    reset_std = False # log(0.2) approx -1.6, giving an std of ~0.2
     
     # Explicitly overriding the scheduler so it evaluates based on the NEW learning rate
     scheduler_kwargs = {

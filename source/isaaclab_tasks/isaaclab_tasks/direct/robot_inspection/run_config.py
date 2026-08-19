@@ -47,7 +47,7 @@ class debug_Cfg:
     reset_on_crash = False
     collision_consecutive_steps: int = 2
 
-class train_Cfg_base:
+class train_Cfg_base: # For pretriaing as a base
     debug = False
     min_episode_length: int = 500
     max_episode_length: int = 1250
@@ -60,8 +60,10 @@ class train_Cfg_base:
     display_cameras = False
     use_wandb =  True #not debug
     headless = True
-    num_envs = 64
     nav_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
+    enable_sensor_noise = False
+    pixel_dropout_prob = 0.01
+    pixel_std_dev_multiplier = 0.01
     use_depth_mask = False
     use_optical_flow_as_quality = True
     fixed_spawns = False
@@ -79,6 +81,14 @@ class train_Cfg_base:
     min_dist_to_objective: float = 2.0
     min_dist_between_obstacles: float = 2.2
 
+class train_Cfg_finetune(train_Cfg_base):
+    min_episode_length: int = 1250
+    logging_interval: int = 1000
+    inspection_goal =  0.9
+    use_hardest_curriculum = True
+    reset_on_crash = True
+    start_crashes: int = 1
+    min_obstacles: int = 8
 
 class eval_Cfg:
     debug = False
@@ -162,8 +172,9 @@ class record_depth_Cfg:
     high_res_camera_height = 512
 
 modes = [debug_Cfg, #0
-    train_Cfg_base, #2
-    eval_Cfg, #1
-    record_Cfg, #2
-    record_depth_Cfg] #3
+    train_Cfg_base, #1
+    train_Cfg_finetune, #2
+    eval_Cfg, #3
+    record_Cfg, #4
+    record_depth_Cfg] #5
 cfg_mode = modes[1]
