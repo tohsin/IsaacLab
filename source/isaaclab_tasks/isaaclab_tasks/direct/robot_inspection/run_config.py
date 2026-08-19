@@ -103,13 +103,13 @@ class eval_Cfg:
     display_cameras = False
     use_wandb =  False #not debug
     headless = False # Set to False for visual inspection
-    num_envs = 1 # Single environment for easier debugging
+    num_envs = 4 # Single environment for easier debugging
     nav_camera_modality = "rgbd"
     use_depth_mask = False
     use_optical_flow_penalty = False
     use_optical_flow_as_quality = False
     randomize_spawns = True
-    use_hardest_curriculum = True
+    use_hardest_curriculum = False
     reset_on_crash = False
     enable_voxel_visualization = False
     is_simplified = True
@@ -177,4 +177,4 @@ modes = [debug_Cfg, #0
     eval_Cfg, #3
     record_Cfg, #4
     record_depth_Cfg] #5
-cfg_mode = modes[1]
+cfg_mode = modes[3]

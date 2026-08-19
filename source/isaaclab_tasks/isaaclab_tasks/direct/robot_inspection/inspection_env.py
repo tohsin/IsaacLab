@@ -53,16 +53,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     cfg: Isaac3dinspectionEnvCfg
 
     def __init__(self, cfg: Isaac3dinspectionEnvCfg, render_mode: str | None = None, **kwargs):
+        # Assign targets early since _setup_scene accesses them during super().__init__
+        target_keys = list(cfg.inspection_goal_cfg.inspection_targets.keys())
+        self.env_target_names = np.random.choice(target_keys, cfg.scene.num_envs)
+        print(f"\n[DEBUG] Selected Targets for the 4 Environments: {self.env_target_names}\n")
+
+        # Disable physics replication because we are spawning heterogeneous/different targets per environment.
+        # If true, the cloner will force all environments to be an exact identical instance of env_0!
+        cfg.scene.replicate_physics = False
+
         super().__init__(cfg, render_mode, **kwargs)
     
         self._wheel_joint_indices, self._wheel_joint_names = self.robot.find_joints(".*wheel.*")
         self._ptz_joint_indices, _ = self.robot.find_joints(".*ptz.*")
 
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
-
-        # Assign targets
-        target_keys = list(self.cfg.inspection_goal_cfg.inspection_targets.keys())
-        self.env_target_names = np.random.choice(target_keys, self.num_envs)
         
         # Setup specific faces for environments
         self.total_mesh_faces = torch.zeros(self.num_envs, device=self.device)
@@ -191,6 +196,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
         
+        # Voxel Grid properties for target inspection mapping
+        self.target_grid_size_m = 1.5
+        self.target_voxel_size = 0.05
+        self.target_grid_dim = int(self.target_grid_size_m / self.target_voxel_size)  # 30
+        self.target_voxel_coverage = torch.zeros(
+            (self.num_envs, self.target_grid_dim, self.target_grid_dim, self.target_grid_dim), 
+            dtype=torch.bool, 
+            device=self.device
+        )
+
         # Allocate enough capacity to avoid re-allocating dynamically on the CPU
         # USD mesh Face IDs can be sparse/non-contiguous, requiring large array bounds
         max_faces = int(self.total_mesh_faces.max().item())
@@ -268,73 +283,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self._base_contact_sensor = ContactSensor(self.cfg.sensor_cfg.base_contact_sensor)
             self.scene.sensors["base_contact_sensor"] = self._base_contact_sensor
 
-        # --- RESTORED MANUAL SPAWN LOGIC ---
+        # --- NEW MANUAL SPAWN LOGIC (Random Object Spawning) ---
         stage = get_current_stage()
         import re
         
-        # Clone heavily populated structures immediately to build parallel env branches
-        
-        self.inspection_goals = {}
-        self.goal_prims_dict = {}
+        self.goal_prims_list = []
 
-        for target_name, target_cfg in self.cfg.inspection_goal_cfg.inspection_targets.items():
-            usd_path = target_cfg.usd_path
-            prim_path_template = target_cfg.prim_path
-            scale = target_cfg.scale
-            orientation = target_cfg.orientation
-
-            obj_cfg = sim_utils.UsdFileCfg(
-                usd_path=usd_path,
-                scale=scale,
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True, kinematic_enabled=False),
-                mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
-                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-                semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type, target_name)]
-            )
-            obj_cfg.func(
-                prim_path_template,
-                obj_cfg,
-                translation=(2.0, 0.0, 0.4),
-                orientation=orientation,
-            )
-
-            # Force collision
-            self.goal_prims_dict[target_name] = []
-            for i in range(self.num_envs):
-                if "env_.*" in prim_path_template:
-                    obj_prim_path = prim_path_template.replace("env_.*", f"env_{i}")
-                else:
-                    obj_prim_path = f"{prim_path_template}_{i}" # fallback
-                
-                obj_prim = stage.GetPrimAtPath(obj_prim_path)
-                if obj_prim.IsValid():
-                    if not obj_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                        UsdPhysics.RigidBodyAPI.Apply(obj_prim)
-
-                    for child in Usd.PrimRange(obj_prim):
-                        if child.IsA(UsdGeom.Mesh):
-                            if not child.HasAPI(UsdPhysics.CollisionAPI):
-                                UsdPhysics.CollisionAPI.Apply(child)
-                            if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
-                                mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
-                                mesh_collision.GetApproximationAttr().Set("convexHull")
-                            if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
-                                PhysxSchema.PhysxCollisionAPI.Apply(child)
-                                
-                    self.goal_prims_dict[target_name].append(UsdGeom.Xformable(obj_prim))
-                else:
-                    print(f"[WARNING] Goal prim not found at {obj_prim_path}")
-                    self.goal_prims_dict[target_name].append(None)
-                    
-            # Create RigidObject wrapper
-            self.inspection_goals[target_name] = RigidObject(
-                RigidObjectCfg(
-                    prim_path=prim_path_template,
-                    spawn=None,
-                    init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
-                )
-            )
-            self.scene.rigid_objects[f"inspection_goal_{target_name}"] = self.inspection_goals[target_name]
         # Spawn obstacles dynamically
         from .utils.dataset_handler import ObstacleDatasetHandler
         max_obstacles = self.cfg.max_obstacles
@@ -350,10 +304,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.obstacles.append(obs)
             self.scene.rigid_objects[f"obstacle_{i}"] = obs
 
-        self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.face_raycaster)
-        self.scene.sensors["raycaster_camera"] = self._raycaster_camera
+        # Raycaster Disabled
+        # self._raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.face_raycaster)
+        # self.scene.sensors["raycaster_camera"] = self._raycaster_camera
+        self._raycaster_camera = None
 
-        self.scene.clone_environments(copy_from_source=False)
+        self.scene.clone_environments(copy_from_source=True)
         # clone and replicate
     
         # we need to explicitly filter collisions for CPU simulation
@@ -362,6 +318,60 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+        
+        # --- SPAWN TARGETS PER ENVIRONMENT ---
+        for i in range(self.num_envs):
+            target_name = self.env_target_names[i]
+            target_cfg = self.cfg.inspection_goal_cfg.inspection_targets[target_name]
+            
+            usd_path = target_cfg.usd_path
+            prim_path_env = f"/World/envs/env_{i}/inspection_target"
+            
+            obj_cfg = sim_utils.UsdFileCfg(
+                usd_path=usd_path,
+                scale=target_cfg.scale,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True, kinematic_enabled=False),
+                mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
+                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+                semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type, target_name)]
+            )
+            obj_cfg.func(
+                prim_path_env,
+                obj_cfg,
+                translation=(2.0, 0.0, 0.4),
+                orientation=target_cfg.orientation,
+            )
+
+            # Force collision
+            obj_prim = stage.GetPrimAtPath(prim_path_env)
+            if obj_prim.IsValid():
+                if not obj_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    UsdPhysics.RigidBodyAPI.Apply(obj_prim)
+
+                for child in Usd.PrimRange(obj_prim):
+                    if child.IsA(UsdGeom.Mesh):
+                        if not child.HasAPI(UsdPhysics.CollisionAPI):
+                            UsdPhysics.CollisionAPI.Apply(child)
+                        if not child.HasAPI(UsdPhysics.MeshCollisionAPI):
+                            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(child)
+                            mesh_collision.GetApproximationAttr().Set("convexHull")
+                        if not child.HasAPI(PhysxSchema.PhysxCollisionAPI):
+                            PhysxSchema.PhysxCollisionAPI.Apply(child)
+                            
+                self.goal_prims_list.append(UsdGeom.Xformable(obj_prim))
+            else:
+                self.goal_prims_list.append(None)
+                print(f"[WARNING] Goal prim not found at {prim_path_env}")
+
+        # Create ONE RigidObject wrapper for ALL targets
+        self.inspection_target = RigidObject(
+            RigidObjectCfg(
+                prim_path="/World/envs/env_.*/inspection_target",
+                spawn=None,
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
+            )
+        )
+        self.scene.rigid_objects["inspection_target"] = self.inspection_target
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.previous_action_for_rewards.copy_(self.last_action)
@@ -506,6 +516,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self._high_res_ptz_camera._update_intrinsic_matrices(update_indices)
         
     def _zoom_ray_caster(self, env_ids=None):
+        if getattr(self, "_raycaster_camera", None) is None:
+            return
         if env_ids is None:
             f = self.committed_focal_lengths.to(self.device)
             num_updates = self.num_envs
@@ -1029,6 +1041,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         """
         Compute the reward for discovering new faces.
         """
+        # [BYPASS] Early return to avoid crashing while raycaster is disabled for voxel iterations
+        return (torch.zeros(self.num_envs, device=self.device), 
+                torch.zeros(self.num_envs, dtype=torch.long, device=self.device))
+                
         face_ids = self._raycaster_camera.data.output.get("face_ids")
         target_mask = self._get_semantic_mask(self._ptz_camera)
         if run_cfg.debug and run_cfg.visualise_face_ids:
@@ -1669,52 +1685,47 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         env_ids_local = env_ids.cpu().numpy()
 
+        mixed_state = torch.zeros((num_resets, 13), device=self.device)
+        mixed_state[:, :3] = obj_state[:, :3]
+        mixed_state[:, 7:] = obj_state[:, 7:]
+        
         for target_name, target_cfg in self.cfg.inspection_goal_cfg.inspection_targets.items():
-            # Boolean mask for environments assigned this target
             assigned_mask_np = (self.env_target_names[env_ids_local] == target_name)
             assigned_mask = torch.from_numpy(assigned_mask_np).to(device=self.device, dtype=torch.bool)
-            
-            mixed_state = torch.zeros((num_resets, 13), device=self.device)
-            hidden_pos = torch.tensor([0, 0, -100.0], device=self.device)
-            mixed_state[:, :3] = hidden_pos + self.scene.env_origins[env_ids]
-            mixed_state[:, 3] = 1.0  # Identity quat w
-            
             if assigned_mask.any():
-                mixed_state[assigned_mask, :3] = obj_state[assigned_mask, :3]
                 target_ori = torch.tensor(target_cfg.orientation, device=self.device, dtype=torch.float32)
                 mixed_state[assigned_mask, 3:7] = target_ori
-                mixed_state[assigned_mask, 7:] = obj_state[assigned_mask, 7:]
-            
-            self.inspection_goals[target_name].write_root_pose_to_sim(mixed_state[:, :7], env_ids)
-            self.inspection_goals[target_name].write_root_velocity_to_sim(mixed_state[:, 7:], env_ids)
+        
+        self.inspection_target.write_root_pose_to_sim(mixed_state[:, :7], env_ids)
+        self.inspection_target.write_root_velocity_to_sim(mixed_state[:, 7:], env_ids)
 
-            mixed_pos_cpu = mixed_state[:, :3].cpu().numpy().astype(float)
-            mixed_ori_cpu = mixed_state[:, 3:7].cpu().numpy().astype(float)
-            for i, env_id in enumerate(env_ids_local):
-                xf = self.goal_prims_dict[target_name][env_id]
-                if xf:
-                    found_translate = False
-                    found_orient = False
-                    for op in xf.GetOrderedXformOps():
-                        if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+        mixed_pos_cpu = mixed_state[:, :3].cpu().numpy().astype(float)
+        mixed_ori_cpu = mixed_state[:, 3:7].cpu().numpy().astype(float)
+        for i, env_id in enumerate(env_ids_local):
+            xf = self.goal_prims_list[env_id]
+            if xf:
+                found_translate = False
+                found_orient = False
+                for op in xf.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        try:
+                            op.Set(Gf.Vec3d(*mixed_pos_cpu[i]))
+                        except Exception:
+                            op.Set(Gf.Vec3f(*mixed_pos_cpu[i]))
+                        found_translate = True
+                    elif op.GetOpType() in [UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeTransform]:
+                        if op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                            q_w, q_x, q_y, q_z = float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])
                             try:
-                                op.Set(Gf.Vec3d(*mixed_pos_cpu[i]))
+                                op.Set(Gf.Quatd(q_w, q_x, q_y, q_z))
                             except Exception:
-                                op.Set(Gf.Vec3f(*mixed_pos_cpu[i]))
-                            found_translate = True
-                        elif op.GetOpType() in [UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeTransform]:
-                            if op.GetOpType() == UsdGeom.XformOp.TypeOrient:
-                                q_w, q_x, q_y, q_z = float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])
-                                try:
-                                    op.Set(Gf.Quatd(q_w, q_x, q_y, q_z))
-                                except Exception:
-                                    op.Set(Gf.Quatf(q_w, q_x, q_y, q_z))
-                                found_orient = True
-                                
-                    if not found_translate:
-                        xf.AddTranslateOp().Set(Gf.Vec3d(*mixed_pos_cpu[i]))
-                    if not found_orient:
-                        xf.AddOrientOp().Set(Gf.Quatd(float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])))
+                                op.Set(Gf.Quatf(q_w, q_x, q_y, q_z))
+                            found_orient = True
+                            
+                if not found_translate:
+                    xf.AddTranslateOp().Set(Gf.Vec3d(*mixed_pos_cpu[i]))
+                if not found_orient:
+                    xf.AddOrientOp().Set(Gf.Quatd(float(mixed_ori_cpu[i, 0]), float(mixed_ori_cpu[i, 1]), float(mixed_ori_cpu[i, 2]), float(mixed_ori_cpu[i, 3])))
         # ------------------------------------------
 
         # --- Base Spawning Logic ---

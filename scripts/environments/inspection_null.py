@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environ
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=4, help="Number of environments to simulate.")
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -78,7 +78,7 @@ def main():
                     # print(f"[INFO]: Step {i}")  
                     # Brush the obstacles
                     if i < 100:
-                        actions = torch.tensor([[0.5, 0.9, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                        actions = torch.tensor([[0.0, 0.5, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # else:
                     #     actions = torch.tensor([[0.4, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # Hit obstacles
