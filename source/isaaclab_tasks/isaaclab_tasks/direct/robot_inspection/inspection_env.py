@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from collections import deque
-import os
 import gymnasium as gym
 import torch
 from collections.abc import Sequence
@@ -30,6 +29,8 @@ from isaaclab.utils.math import quat_mul, quat_apply, quat_conjugate, quat_apply
 # from semanc_manager import SemanticManager, add_semantic_tags_from_config
 from .inspection_cfg import Isaac3dinspectionEnvCfg
 from .spatial_state_manager import SpatialStateManager
+from .utils.primitive_domain_randomization import apply_primitive_domain_randomization
+from .utils.tessellated_primitives import build_tessellated_primitive_cfg
 # import wandb
 from .curriculum_manager import Curriculum
 from .utils import  NormalizeReward, visualise_faces, _show_face_ids_
@@ -60,15 +61,26 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
 
-        # Assign targets
+        # Assign targets once at startup. Cycling before shuffling guarantees
+        # that every configured target is represented as evenly as possible.
         target_keys = list(self.cfg.inspection_goal_cfg.inspection_targets.keys())
-        self.env_target_names = np.random.choice(target_keys, self.num_envs)
-        
-        # Setup specific faces for environments
+        if not target_keys:
+            raise ValueError("At least one inspection target must be configured")
+        target_indices = np.arange(self.num_envs, dtype=np.int64) % len(target_keys)
+        assignment_rng = np.random.default_rng(int(getattr(self.cfg, "seed", 42) or 42))
+        assignment_rng.shuffle(target_indices)
+        self.target_index_to_name = tuple(target_keys)
+        self.env_target_names = np.asarray(target_keys, dtype=object)[target_indices]
+        self.env_target_indices = torch.tensor(target_indices, device=self.device, dtype=torch.long)
+
+        # Keep the reachable coverage denominator separate from the actual
+        # triangle count needed for raycast face-ID storage.
+        self.coverage_num_faces = torch.zeros(self.num_envs, device=self.device)
         self.total_mesh_faces = torch.zeros(self.num_envs, device=self.device)
         for i, target_name in enumerate(self.env_target_names):
-            faces = self.cfg.inspection_goal_cfg.inspection_targets[target_name].num_faces
-            self.total_mesh_faces[i] = faces
+            target_cfg = self.cfg.inspection_goal_cfg.inspection_targets[target_name]
+            self.coverage_num_faces[i] = target_cfg.num_faces
+            self.total_mesh_faces[i] = target_cfg.mesh_num_faces
 
         self.robot_pos = self.robot.data.root_pos_w
         self.robot_vel = self.robot.data.root_lin_vel_w
@@ -96,6 +108,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             device=self.device,
     
         )
+
+        self._task_area_draw_interface = None
+        if run_cfg.debug and getattr(run_cfg, "visualise_task_area", False):
+            self._draw_task_area_bounds()
 
         # Scale spatial rewards dynamically based on map resolution (computed once at init)
         res_ratio = self.cfg.mapping_cfg.resolution / 0.25
@@ -135,6 +151,58 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         if hasattr(run_cfg, "data_recording_path") and getattr(run_cfg, "save_depth", False):
              self.pc_collector = ReconstructionDataCollector(run_cfg, device=self.device)
+
+    def _draw_task_area_bounds(self):
+        """Draw the maximum curriculum spawn area in the debug viewport."""
+        import isaacsim.util.debug_draw._debug_draw as omni_debug_draw
+
+        env_id = int(getattr(run_cfg, "visualize_env_id", 0))
+        env_id = max(0, min(env_id, self.num_envs - 1))
+        origin = self.scene.env_origins[env_id].detach().cpu().numpy()
+
+        min_x = float(self.curriculum.spawn_min_x + origin[0])
+        max_x = float(self.curriculum.spawn_max_x + origin[0])
+        min_y = float(self.curriculum.spawn_min_y + origin[1])
+        max_y = float(self.curriculum.spawn_max_y_final + origin[1])
+        z = float(origin[2] + 0.05)
+
+        # A red perimeter plus a one-meter grid makes both the extent and area
+        # legible without adding physical geometry to the scene or observations.
+        starts = [
+            (min_x, min_y, z),
+            (max_x, min_y, z),
+            (max_x, max_y, z),
+            (min_x, max_y, z),
+        ]
+        ends = [
+            (max_x, min_y, z),
+            (max_x, max_y, z),
+            (min_x, max_y, z),
+            (min_x, min_y, z),
+        ]
+        colors = [(1.0, 0.0, 0.0, 1.0)] * 4
+        thicknesses = [5.0] * 4
+
+        for x in np.arange(min_x + 1.0, max_x, 1.0):
+            starts.append((float(x), min_y, z))
+            ends.append((float(x), max_y, z))
+            colors.append((1.0, 0.0, 0.0, 0.25))
+            thicknesses.append(1.0)
+        for y in np.arange(min_y + 1.0, max_y, 1.0):
+            starts.append((min_x, float(y), z))
+            ends.append((max_x, float(y), z))
+            colors.append((1.0, 0.0, 0.0, 0.25))
+            thicknesses.append(1.0)
+
+        self._task_area_draw_interface = omni_debug_draw.acquire_debug_draw_interface()
+        self._task_area_draw_interface.draw_lines(starts, ends, colors, thicknesses)
+
+        width = max_x - min_x
+        height = max_y - min_y
+        print(
+            f"[DEBUG] Maximum task area (env {env_id}): "
+            f"{width:.1f} m x {height:.1f} m = {width * height:.1f} m^2"
+        )
 
 
     def close(self):
@@ -191,10 +259,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
         
-        # Allocate enough capacity to avoid re-allocating dynamically on the CPU
-        # USD mesh Face IDs can be sparse/non-contiguous, requiring large array bounds
+        # Warp returns contiguous triangle indices for the procedural meshes, so
+        # they only require the exact largest topology. Keep the historical
+        # safety capacity for imported USD assets whose authored counts have not
+        # yet been audited against their merged Warp meshes.
         max_faces = int(self.total_mesh_faces.max().item())
-        self.q_capacity = max(1_700_000, max_faces + 1000)
+        targets = self.cfg.inspection_goal_cfg.inspection_targets.values()
+        procedural_only = all(target.primitive is not None for target in targets)
+        self.q_capacity = max_faces if procedural_only else max(1_700_000, max_faces + 1000)
         self.best_q_per_face = torch.zeros((self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32)
 
         self.episode_goal_achieved = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
@@ -276,6 +348,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         self.inspection_goals = {}
         self.goal_prims_dict = {}
+        self.primitive_sizes = {}
+        self.primitive_colors = {}
+        self.primitive_root_heights = {}
 
         for target_name, target_cfg in self.cfg.inspection_goal_cfg.inspection_targets.items():
             usd_path = target_cfg.usd_path
@@ -283,20 +358,46 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             scale = target_cfg.scale
             orientation = target_cfg.orientation
 
-            obj_cfg = sim_utils.UsdFileCfg(
-                usd_path=usd_path,
-                scale=scale,
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True, kinematic_enabled=False),
-                mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
-                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-                semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type, target_name)]
-            )
+            primitive_cfg = getattr(target_cfg, "primitive", None)
+            common_spawn_kwargs = {
+                "rigid_props": sim_utils.RigidBodyPropertiesCfg(
+                    rigid_body_enabled=True, kinematic_enabled=False
+                ),
+                "mass_props": sim_utils.MassPropertiesCfg(density=5.0, mass=1000.0),
+                "collision_props": sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+                "semantic_tags": [(self.cfg.inspection_goal_cfg.semantics_type, target_name)],
+            }
+            if primitive_cfg is None:
+                obj_cfg = sim_utils.UsdFileCfg(
+                    usd_path=usd_path,
+                    scale=scale,
+                    **common_spawn_kwargs,
+                )
+            else:
+                obj_cfg = build_tessellated_primitive_cfg(primitive_cfg, **common_spawn_kwargs)
             obj_cfg.func(
                 prim_path_template,
                 obj_cfg,
-                translation=(2.0, 0.0, 0.4),
+                translation=(2.0, 0.0, 0.4 if primitive_cfg is None else 0.0),
                 orientation=orientation,
             )
+
+            if primitive_cfg is not None:
+                randomization = apply_primitive_domain_randomization(
+                    stage=stage,
+                    target_name=target_name,
+                    prim_path_template=prim_path_template,
+                    primitive_cfg=primitive_cfg,
+                    num_envs=self.num_envs,
+                    seed=getattr(self.cfg, "seed", 42),
+                )
+                self.primitive_sizes[target_name] = torch.tensor(
+                    randomization.sizes, device=self.device, dtype=torch.float32
+                )
+                self.primitive_root_heights[target_name] = torch.tensor(
+                    randomization.root_heights, device=self.device, dtype=torch.float32
+                )
+                self.primitive_colors[target_name] = randomization.colors
 
             # Force collision
             self.goal_prims_dict[target_name] = []
@@ -327,11 +428,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     self.goal_prims_dict[target_name].append(None)
                     
             # Create RigidObject wrapper
+            default_root_z = 0.4
+            if primitive_cfg is not None:
+                primitive_type = primitive_cfg.get("type")
+                primitive_axis = str(primitive_cfg.get("axis", "Z")).upper()
+                if primitive_type == "tessellated_cone" and primitive_axis == "Z":
+                    default_root_z = 0.0
             self.inspection_goals[target_name] = RigidObject(
                 RigidObjectCfg(
                     prim_path=prim_path_template,
                     spawn=None,
-                    init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
+                    init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, default_root_z))
                 )
             )
             self.scene.rigid_objects[f"inspection_goal_{target_name}"] = self.inspection_goals[target_name]
@@ -826,14 +933,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         elif nav_modality == "depth":
              if "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
                 front_camera_data = self._nav_camera.data.output["distance_to_image_plane"].clone()
-                if getattr(run_cfg, "enable_sensor_noise", False):
-                    std_mult = getattr(run_cfg, "pixel_std_dev_multiplier", 0.01)
-                    dropout_prob = getattr(run_cfg, "pixel_dropout_prob", 0.01)
+                front_camera_data[~torch.isfinite(front_camera_data)] = 35.0
+                if getattr(run_cfg, "enable_depth_sensor_noise", False):
+                    std_mult = getattr(run_cfg, "depth_pixel_std_dev_multiplier", 0.01)
+                    dropout_prob = getattr(run_cfg, "depth_pixel_dropout_prob", 0.01)
                     front_camera_data = torch.normal(mean=front_camera_data, std=std_mult * front_camera_data)
                     front_camera_data[torch.bernoulli(torch.ones_like(front_camera_data) * dropout_prob) > 0] = 35.0
-                # Replace Inf and clamp large distances to keep inputs sane, then normalize to [0, 1]
-                front_camera_data[torch.isinf(front_camera_data)] = 35.0
-                front_camera_data = torch.clamp(front_camera_data, max=35.0) / 35.0
+                # Clamp noisy samples to the sensor's valid range, then normalize to [0, 1].
+                front_camera_data = torch.clamp(front_camera_data, min=0.0, max=35.0) / 35.0
                 front_camera_data = front_camera_data.unsqueeze(-1)
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera Depth Data!")
@@ -842,13 +949,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
                 rgb = self._nav_camera.data.output["rgb"] / 255.0
                 depth = self._nav_camera.data.output["distance_to_image_plane"].clone()
-                if getattr(run_cfg, "enable_sensor_noise", False):
-                    std_mult = getattr(run_cfg, "pixel_std_dev_multiplier", 0.01)
-                    dropout_prob = getattr(run_cfg, "pixel_dropout_prob", 0.01)
+                depth[~torch.isfinite(depth)] = 35.0
+                if getattr(run_cfg, "enable_depth_sensor_noise", False):
+                    std_mult = getattr(run_cfg, "depth_pixel_std_dev_multiplier", 0.01)
+                    dropout_prob = getattr(run_cfg, "depth_pixel_dropout_prob", 0.01)
                     depth = torch.normal(mean=depth, std=std_mult * depth)
                     depth[torch.bernoulli(torch.ones_like(depth) * dropout_prob) > 0] = 35.0
-                depth[torch.isinf(depth)] = 35.0
-                depth = torch.clamp(depth, max=35.0) / 35.0
+                depth = torch.clamp(depth, min=0.0, max=35.0) / 35.0
                 if depth.dim() == 3:
                      depth = depth.unsqueeze(-1)
                 
@@ -869,6 +976,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             if target_mask is not None:
                 semantic_channel = target_mask.float()
+
+                # Corrupt only the policy observation. Reward computation obtains
+                # a fresh, clean semantic mask directly from the PTZ camera.
+                if getattr(run_cfg, "enable_semantic_mask_noise", False):
+                    false_negative_prob = getattr(run_cfg, "semantic_mask_false_negative_prob", 0.01)
+                    false_positive_prob = getattr(run_cfg, "semantic_mask_false_positive_prob", 0.001)
+                    false_negatives = torch.rand_like(semantic_channel) < false_negative_prob
+                    false_positives = torch.rand_like(semantic_channel) < false_positive_prob
+                    semantic_channel = torch.where(
+                        semantic_channel.bool(), ~false_negatives, false_positives
+                    ).float()
 
                 if torch.isnan(semantic_channel).any():
                     print("[ENV DEBUG] NaN detected in Semantic Channel (Target Mask)!")
@@ -1178,7 +1296,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             num_faces_inspected[env_idx] = (self.best_q_per_face[env_idx] > 0).sum()
             
             # Normalize face reward by the total number of mesh faces
-            face_rewards[env_idx] /= self.total_mesh_faces[env_idx].float()
+            face_rewards[env_idx] /= self.coverage_num_faces[env_idx].float()
         
         self.logger.log_visible_faces(np.mean(visible_faces_counts))
         if len(optical_flow_means) > 0:
@@ -1337,7 +1455,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         ), dim=1)
 
         # Inpsection Coverage Ratio and Success Bonus
-        current_coverage_ratio = total_num_faces_inspected / self.total_mesh_faces
+        current_coverage_ratio = total_num_faces_inspected / self.coverage_num_faces
         self.prev_coverage_ratio = current_coverage_ratio.clone()
        
         success_bonus = torch.where(
@@ -1478,7 +1596,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         mean_quality = torch.zeros_like(total_quality)
         mask = num_faces_inspected > 0
         mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
-        coverage_achieved = (num_faces_inspected / self.total_mesh_faces) >= self.curriculum.get_current_coverage_goal()
+        coverage_achieved = (num_faces_inspected / self.coverage_num_faces) >= self.curriculum.get_current_coverage_goal()
         current_max_crashes = self.curriculum.get_current_max_crashes()
         collision_failure = (self.episode_crashes >= current_max_crashes) & bool(
             getattr(run_cfg, "reset_on_crash", False)
@@ -1528,7 +1646,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             mask = num_faces_inspected > 0
             mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
 
-            achieved_coverage_ratios = num_faces_inspected / self.total_mesh_faces[env_ids].float()
+            achieved_coverage_ratios = num_faces_inspected / self.coverage_num_faces[env_ids].float()
+            self.extras["log"]["coverage_percent"] = achieved_coverage_ratios * 100.0
+            self.extras["log"]["target_index"] = self.env_target_indices[env_ids].clone()
             current_cov_goal = self.curriculum.get_current_coverage_goal()
             current_max_crashes = self.curriculum.get_current_max_crashes()
             collision_failures = (self.episode_crashes[env_ids] >= current_max_crashes) & bool(
@@ -1681,6 +1801,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             if assigned_mask.any():
                 mixed_state[assigned_mask, :3] = obj_state[assigned_mask, :3]
+                if target_name in self.primitive_root_heights:
+                    # Each generator reports the correct root height for its
+                    # local origin. Cones use base-origin Z=0; centered meshes
+                    # use half their vertical extent.
+                    assigned_root_heights = self.primitive_root_heights[target_name][env_ids]
+                    mixed_state[assigned_mask, 2] = (
+                        self.scene.env_origins[env_ids][assigned_mask, 2]
+                        + assigned_root_heights[assigned_mask]
+                    )
                 target_ori = torch.tensor(target_cfg.orientation, device=self.device, dtype=torch.float32)
                 mixed_state[assigned_mask, 3:7] = target_ori
                 mixed_state[assigned_mask, 7:] = obj_state[assigned_mask, 7:]

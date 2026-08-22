@@ -23,16 +23,18 @@ class visualisation_mode:
 
 class debug_Cfg:
     debug = True
+    egocentric_map = True
     min_episode_length: int = 500
     logging_interval: int = 1500
-    max_episode_length: int = 1500
+    max_episode_length: int = 1250
     inspection_goal =  0.95
-    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.GLOBAL)
+    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
     display_cameras = False
     enable_voxel_visualization = True
+    visualise_task_area = True
     visualize_env_id = 0
     use_wandb =  False #not debug
     headless = False
@@ -44,11 +46,13 @@ class debug_Cfg:
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = True
+    max_obstacles: int = 15
     reset_on_crash = False
     collision_consecutive_steps: int = 2
 
 class train_Cfg_base: # For pretriaing as a base
     debug = False
+    egocentric_map = True
     min_episode_length: int = 500
     max_episode_length: int = 1250
     logging_interval: int = 1000
@@ -61,9 +65,15 @@ class train_Cfg_base: # For pretriaing as a base
     use_wandb =  True #not debug
     headless = True
     nav_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
-    enable_sensor_noise = False
-    pixel_dropout_prob = 0.01
-    pixel_std_dev_multiplier = 0.01
+
+    enable_depth_sensor_noise = True
+    depth_pixel_dropout_prob = 0.01
+    depth_pixel_std_dev_multiplier = 0.01
+
+    enable_semantic_mask_noise = False
+    semantic_mask_false_negative_prob = 0.01
+    semantic_mask_false_positive_prob = 0.001
+
     use_depth_mask = False
     use_optical_flow_as_quality = True
     fixed_spawns = False
@@ -76,7 +86,7 @@ class train_Cfg_base: # For pretriaing as a base
     # collision terminates immediately after this many consecutive detections.
     collision_consecutive_steps: int = 2
     min_obstacles: int = 2
-    max_obstacles: int = 8
+    max_obstacles: int = 9
     min_spawn_max_y: float = 5.0
     min_dist_to_objective: float = 2.0
     min_dist_between_obstacles: float = 2.2
@@ -92,10 +102,11 @@ class train_Cfg_finetune(train_Cfg_base):
 
 class eval_Cfg:
     debug = False
+    egocentric_map = False
     max_episode_length: int = 1250
     min_episode_length: int = 1250
     logging_interval: int = 1500
-    inspection_goal =  0.9
+    inspection_goal =  0.95
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -116,6 +127,7 @@ class eval_Cfg:
 
 class record_Cfg:
     debug = False
+    egocentric_map = False
     min_episode_length: int = 900
     logging_interval: int = 100
     max_episode_length: int = 900
@@ -143,6 +155,7 @@ class record_Cfg:
 
 class record_depth_Cfg:
     debug = False
+    egocentric_map = True
     min_episode_length: int = 1250
     logging_interval: int = 100
     max_episode_length: int = 1250
@@ -177,4 +190,4 @@ modes = [debug_Cfg, #0
     eval_Cfg, #3
     record_Cfg, #4
     record_depth_Cfg] #5
-cfg_mode = modes[1]
+cfg_mode = modes[3]

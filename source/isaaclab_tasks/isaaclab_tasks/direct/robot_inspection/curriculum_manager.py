@@ -7,7 +7,7 @@ class Curriculum:
                 self,
 
                 start_coverage_ratio: float = cfg_mode.inspection_goal,
-                max_coverage_ratio: float = 0.90,
+                max_coverage_ratio: float = 0.95,
                 
                 # Asymmetric increments
                 coverage_increment_up: float = 0.075,
@@ -267,9 +267,11 @@ class Curriculum:
                 selected_positions[i, 0] = self.spawn_min_x
                 selected_positions[i, 1] = current_spawn_max_y
 
-        # For the object, we use identity quaternion to not break the raycaster
+        # Keep the objective orientation fixed. The custom multi-mesh
+        # raycaster caches procedural meshes at startup and currently loses
+        # face/semantic alignment when target rotation changes at runtime.
         selected_ori = torch.zeros((num_resets, 4), device=self.device)
-        selected_ori[:, 0] = 1.0  # w
+        selected_ori[:, 0] = 1.0  # identity quaternion (w, x, y, z)
                 
         return selected_positions, selected_ori
 

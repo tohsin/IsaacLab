@@ -71,7 +71,7 @@ class TrainingConfig_PreTrain:
     std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 20_000_000
+    global_timesteps = 50_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -98,8 +98,8 @@ class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
     deterministic_eval = True
-    max_episodes = 512  # Added this so you can set the number of sims here!
-    headless = True
+    max_episodes = 20  # Added this so you can set the number of sims here!
+    headless = False
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
     num_envs = 1
@@ -129,4 +129,4 @@ class EvaluationConfig:
 configs_ = [TrainingConfig_PreTrain(), 
             TrainingConfig_FineTune(),
               EvaluationConfig()]   
-CONFIG = configs_[0] # <-- Changed to 2 so EvaluationConfig is active
+CONFIG = configs_[2] # <-- Changed to 2 so EvaluationConfig is active

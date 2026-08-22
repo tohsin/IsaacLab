@@ -77,8 +77,8 @@ def main():
                     #     actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # print(f"[INFO]: Step {i}")  
                     # Brush the obstacles
-                    if i < 100:
-                        actions = torch.tensor([[0.5, 0.9, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    # if i < 100:
+                    #     actions = torch.tensor([[0.5, 0.9, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # else:
                     #     actions = torch.tensor([[0.4, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # Hit obstacles
@@ -86,6 +86,13 @@ def main():
                     #     actions = torch.tensor([[0.0, 0.4, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # else:
                     #     actions = torch.tensor([[0.5, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    #spin in place
+                    if i < 20:
+                        actions = torch.tensor([[0.0, -1.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    elif i < 100:
+                        actions = torch.tensor([[0.2, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    else:
+                        actions = torch.tensor([[0.0, 0.6, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

@@ -26,13 +26,19 @@ ROBOT_CONFIGS = {
     },
 }
 class Inpsection_Target:
-    def __init__(self, custom_name, num_faces, usd_path, prim_path, scale=10.0,
+    def __init__(self, custom_name, num_faces, prim_path, usd_path=None, primitive=None,
+                mesh_num_faces=None, scale=10.0,
                 semantics_type = "class", semantics_name = "inspection_goal", orientation=(1.0, 0.0, 0.0, 0.0)):
         self.custom_name = custom_name
+        # Expected reachable faces, used as the coverage/curriculum denominator.
         self.num_faces = num_faces
+        # Actual mesh triangles, used for face-ID storage. Existing datasets
+        # retain their previous behavior when no separate value is provided.
+        self.mesh_num_faces = num_faces if mesh_num_faces is None else mesh_num_faces
         self.semantics_type = semantics_type
         self.semantics_name = semantics_name
         self.usd_path = usd_path
+        self.primitive = primitive
         self.prim_path = prim_path
         self.scale = (float(scale), float(scale), float(scale)) if isinstance(scale, (int, float)) else scale
         self.orientation = orientation
@@ -56,8 +62,10 @@ for key, value in usd_data_set.items():
     inspection_datasets[key] = Inpsection_Target(
         custom_name = key,
         num_faces = value["num_faces"],
-        usd_path = value["usd_path"],
+        usd_path = value.get("usd_path"),
         prim_path = value["prim_path"],
+        primitive = value.get("primitive"),
+        mesh_num_faces = value.get("mesh_num_faces"),
         scale = value.get("scale", 10.0),
         orientation = value.get("orientation", (1.0, 0.0, 0.0, 0.0))
     )

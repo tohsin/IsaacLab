@@ -113,6 +113,8 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     sensor_cfg : SensorsCfg = SensorsCfg()
     robot_phys_cfg: RobotPhysicsCfg = RobotPhysicsCfg()
     mapping_cfg: MappingCfg = MappingCfg()
+    # Direct/debug runs take their map-frame selection from run_config.py.
+    mapping_cfg.egocentric_map = getattr(cfg_mode, "egocentric_map", mapping_cfg.egocentric_map)
     
     action_dim = NotImplementedError
     if isinstance(action_space, spaces.Discrete):
@@ -157,4 +159,3 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     # Logging
     logging_interval: int = cfg_mode.logging_interval
-

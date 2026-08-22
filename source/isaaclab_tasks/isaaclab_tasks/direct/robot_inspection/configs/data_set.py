@@ -1,107 +1,12 @@
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-   
-#     "forklift": {
-#         "num_faces": 38695,
-#         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Forklift/forklift.usd",
-#         "prim_path": "/World/envs/env_.*/forklift",
-#         "scale": 0.6,
-#     },
+"""Select the active inspection dataset here; no CLI argument is required."""
 
-pretrain_data_set = {
-    "rubiks_cube": {
-        "num_faces": 3800,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-        "prim_path": "/World/envs/env_.*/rubiks_cube",
-    },
-     "red_bowl": {
-        "num_faces": 5831,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/024_bowl.usd", 
-        "prim_path": "/World/envs/env_.*/red_bowl",
-        "scale": 10.0,
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
-    "sortbot_housing": {
-        "num_faces": 1779,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Sortbot_Housing/sortbot_housing.usd",
-        "prim_path": "/World/envs/env_.*/sortbot_housing",
-        "scale": 1.0,
-    },
-}
-fine_tune_data_set = {  
+from .eval_dataset import evaluation_data_set
+from .primitive_dataset import primitive_data_set, primitive_test_data_set
 
-    "tuna_fish_can": {
-        "num_faces": 15000, #15000
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/007_tuna_fish_can.usd",
-        "prim_path": "/World/envs/env_.*/tuna_fish_can",
-    },
-    "tuna_fish_can_flat": {
-        "num_faces": 4643,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/007_tuna_fish_can.usd",
-        "prim_path": "/World/envs/env_.*/tuna_fish_can_flat",
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
 
-    "ur10_mount": {
-        "num_faces": 12494, # 11910
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ur10_mount.usd",
-        "prim_path": "/World/envs/env_.*/ur10_mount",
-        "scale": 3.0,
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
-   "pallet": {
-        "num_faces": 10054,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Pallet/o3dyn_pallet.usd",
-        "prim_path": "/World/envs/env_.*/pallet",
-        "scale": 1.0,
-    },
-   
-    "potted_meat_can": {
-        "num_faces": 10763,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/010_potted_meat_can.usd",
-        "prim_path": "/World/envs/env_.*/potted_meat_can",
-        "scale": 10.0,
-         "orientation": (0.7071068, -0.7071068, 0.0, 0.0),
-    },
-    "wood_block": {
-        "num_faces": 12319,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/036_wood_block.usd",
-        "prim_path": "/World/envs/env_.*/wood_block",
-        "scale": 6.0,
-    }, 
+# Backward-compatible name for any code that imported this directly.
+train_data_set = primitive_data_set
 
-    "caster": {
-        "num_faces": 11397,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/caster.usd",
-        "prim_path": "/World/envs/env_.*/caster",
-        "scale": 15.0,
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
-}
-
-val_data_set = {
-    "small_corner_bracket_physics": {
-        "num_faces": 2442,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/small_corner_bracket_physics.usd",
-        "prim_path": "/World/envs/env_.*/small_corner_bracket_physics",
-        "scale": 50.0,
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
-    "blue_cup": {
-        "num_faces": 10803,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/019_pitcher_base.usd",
-        "prim_path": "/World/envs/env_.*/blue_cup",
-        "scale": 4.0,
-        "orientation": (-0.7071068, 0.7071068, 0.0, 0.0),
-    },
-}
-
-#     "forklift": {
-#         "num_faces": 38695,
-#         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Forklift/forklift.usd",
-#         "prim_path": "/World/envs/env_.*/forklift",
-#         "scale": 0.6,
-#     },
-# }
-fine_tune_data_set.update(pretrain_data_set)
-
-usd_data_set = pretrain_data_set
+# Manually change only this assignment when switching experiments.
+usd_data_set = primitive_test_data_set
+# usd_data_set = evaluation_data_set

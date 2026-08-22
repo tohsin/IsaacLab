@@ -4,6 +4,8 @@ import open3d as o3d
 import torch
 from scipy.spatial.transform import Rotation
 
+from isaaclab.utils.math import convert_quat
+
 from .kernels.reset_kernel import reset_maps_kernel
 from .kernels.occ_map_kernel import update_occupancy_fast
 from .kernels.surface_visiliblity_kernel import mark_visible_voxels
@@ -208,6 +210,7 @@ class SpatialStateManager:
         print(f"  - Voxel Size: {self.voxel_size} m")
         print(f"  - Total Voxels: {total_voxels}")
         print(f"  - Map Origin (World Coords): {self.map_origin}")
+        print(f"  - Local Map Frame: {'egocentric' if self.egocentric_map else 'allocentric'}")
 
     def world_to_grid(self,  world_coords: np.ndarray, env_id) -> np.ndarray:
         is_1d = world_coords.ndim == 1
@@ -437,7 +440,7 @@ class SpatialStateManager:
         center_y = local_dims[1] // 2
         center_z = 0 # Robot is at the floor level in the local map
         
-        target_radius_m = 0.6 # Increased to 0.6m (3 voxels) to enforce a larger personal space
+        target_radius_m = 0.3 # Increased to 0.6m (3 voxels) to enforce a larger personal space
         calculated_shift = max(1, int(np.ceil(target_radius_m / self.resolution)))
         
         sx = shift_x if shift_x is not None else calculated_shift
@@ -615,6 +618,7 @@ class SpatialStateManager:
         return np.array([]), np.array([])
 
     def get_local_maps(self, robot_positions_w: torch.Tensor, robot_quats_w: torch.Tensor):
+        """Extract robot-centered maps using Isaac Lab ``wxyz`` quaternions."""
         
         num_req_envs = robot_positions_w.shape[0]
         if num_req_envs != self.num_envs:
@@ -627,7 +631,12 @@ class SpatialStateManager:
 
         # Prepare inputs for the kernel
         wp_robot_pos = wp.from_torch(robot_positions_w.contiguous(), dtype=wp.vec3)
-        wp_robot_quat = wp.from_torch(robot_quats_w.contiguous(), dtype=wp.quat)
+        # Isaac Lab stores quaternions as (w, x, y, z), whereas Warp's
+        # ``wp.quat`` memory layout is (x, y, z, w). Convert at this boundary
+        # so both egocentric yaw rotations and the allocentric identity are
+        # interpreted correctly by ``wp.quat_rotate`` in the extraction kernel.
+        robot_quats_xyzw = convert_quat(robot_quats_w, to="xyzw").contiguous()
+        wp_robot_quat = wp.from_torch(robot_quats_xyzw, dtype=wp.quat)
         wp_global_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
         # Launch the extraction kernel

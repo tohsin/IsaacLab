@@ -13,6 +13,11 @@ if "LOCAL_RANK" in os.environ:
     # 2. Trick Omniverse and SKRL into thinking they are running on device 0
     os.environ["LOCAL_RANK"] = "0"
 
+# Keep every worker reproducible while preventing the two GPU processes from
+# generating identical reset trajectories. RANK is globally unique under
+# torchrun; REAL_LOCAL_RANK is the single-node fallback preserved above.
+PROCESS_RANK = int(os.environ.get("RANK", os.environ.get("REAL_LOCAL_RANK", "0")))
+
 # Remove --loca_rank to prevent AppLauncher from reading it
 sys.argv = [arg for arg in sys.argv if not arg.startswith("--local_rank") and not arg.startswith("--local-rank")]
 
@@ -48,9 +53,9 @@ parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-
 
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
+args_cli = parser.parse_args()
 _use_wandb = CONFIG.use_wandb
 _headless = CONFIG.headless
-args_cli = parser.parse_args()
 args_cli.enable_cameras =  True
 args_cli.headless = _headless
 #multi GPU Code
@@ -100,8 +105,10 @@ from muon import Muon
 
 # sys.argv.append("--headless")
 sys.argv.append("--enable_cameras")
-# set_seed(42)
-set_seed(42, deterministic=True)
+BASE_SEED = int(getattr(CONFIG, "seed", 42))
+WORKER_SEED = BASE_SEED + PROCESS_RANK
+set_seed(WORKER_SEED, deterministic=True)
+print(f"[INFO] Distributed rank {PROCESS_RANK} using seed {WORKER_SEED}")
 # for some reason changing the clip actionsvarialbe to true in thr training script causes this error
 
 class ContinuousPositionalEncoding(nn.Module):
@@ -474,7 +481,7 @@ env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
 )
 
-env_cfg.seed = 42
+env_cfg.seed = WORKER_SEED
 env = gym.make(args_cli.task, cfg=env_cfg)
 env = wrap_env(env)
 
@@ -662,6 +669,8 @@ agent = PPO(models=models,
 # agent.load(path)
 
 if args_cli.checkpoint:
+    if not os.path.isfile(args_cli.checkpoint):
+        raise FileNotFoundError(f"Checkpoint does not exist: {args_cli.checkpoint}")
     print(f"[INFO] Loading checkpoint from: {args_cli.checkpoint}")
     agent.load(args_cli.checkpoint)
     if args_cli.reset_std:
@@ -672,23 +681,18 @@ if args_cli.checkpoint:
                  agent.policy.log_std_parameter.fill_(getattr(CONFIG, "init_log_std", 0.0)) # Reset to initial configured value
              else:
                  print("[WARNING] Could not find log_std_parameter to reset.")
+elif is_eval:
+    raise ValueError("Evaluation requires --checkpoint PATH (or an evaluation CONFIG with checkpoint_path set).")
 cfg_trainer ={"timesteps": total_timesteps,  # total timesteps to train the agent
                 "headless": _headless,
                }#  "stochastic_evaluation": False
 
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
-print("[INFO] Starting training...")
+print("[INFO] Starting evaluation..." if is_eval else "[INFO] Starting training...")
 print_dict(cfg_trainer, nesting=4)
 if is_eval: 
     print("[INFO] Running in evaluation mode. No training will be performed.")
-    if CONFIG.checkpoint_path:
-        path = CONFIG.checkpoint_path
-    else:
-         # Fallback or error if you prefer, but aiming for minimal disruption
-         path = "/home/tosin/logs/skrl/3DInspection_direct/2026-01-18_18-56-03_ppo_gru_128/checkpoints/agent_155000.pt" 
-         print(f"[WARNING] No checkpoint path in CONFIG, using default: {path}")
-
-    agent.load(path)
+    path = args_cli.checkpoint
     # Custom evaluation loop to handle RNN states
     print("[INFO] Starting custom evaluation loop with RNN state management...")
     
@@ -712,8 +716,12 @@ if is_eval:
 
     episode_count = 0
     faces_discovered_list = []
+    coverage_percent_list = []
+    target_index_list = []
     crashes_list = []
-    eval_dir = os.path.join(os.path.dirname(CONFIG.checkpoint_path), "eval_results")
+    base_env = env.unwrapped if hasattr(env, "unwrapped") else env
+    target_index_to_name = tuple(getattr(base_env, "target_index_to_name", ()))
+    eval_dir = os.path.join(os.path.dirname(path), "eval_results")
     os.makedirs(eval_dir, exist_ok=True)
     print(f"[INFO] Evaluation results will be saved to: {eval_dir}")
 
@@ -739,8 +747,26 @@ if is_eval:
                             # We need to extract the value for the terminated env(s)
                             # For single env eval, it's straightforward.
                             val = infos["log"]["faces_discovered"]
+                            coverage_percent = infos["log"].get("coverage_percent", None)
+                            target_indices = infos["log"].get("target_index", None)
                             val_dist = infos["log"].get("max_distance", None)
                             crashes = infos["log"].get("crashes", None)
+
+                            if coverage_percent is not None:
+                                if isinstance(coverage_percent, torch.Tensor):
+                                    coverage_percent_list.extend(
+                                        coverage_percent.detach().cpu().reshape(-1).tolist()
+                                    )
+                                else:
+                                    coverage_percent_list.append(coverage_percent)
+
+                            if target_indices is not None:
+                                if isinstance(target_indices, torch.Tensor):
+                                    target_index_list.extend(
+                                        target_indices.detach().cpu().reshape(-1).tolist()
+                                    )
+                                else:
+                                    target_index_list.append(target_indices)
 
                             if crashes is not None:
                                 if isinstance(crashes, torch.Tensor):
@@ -807,7 +833,7 @@ if is_eval:
     if len(faces_discovered_list) > 0:
         faces_array = np.array(faces_discovered_list)
         summary = {
-            "checkpoint": CONFIG.checkpoint_path,
+            "checkpoint": path,
             "evaluation_mode": "deterministic" if deterministic_eval else "stochastic",
             "episodes": int(len(faces_array)),
             "faces": {
@@ -821,6 +847,34 @@ if is_eval:
                 "p95": float(np.percentile(faces_array, 95)),
             },
         }
+        coverage_array = np.asarray(coverage_percent_list, dtype=np.float64)
+        target_index_array = np.asarray(target_index_list, dtype=np.int64)
+        if len(coverage_array) == len(faces_array):
+            summary["coverage_percent"] = {
+                "mean": float(np.mean(coverage_array)),
+                "std": float(np.std(coverage_array)),
+                "median": float(np.median(coverage_array)),
+                "min": float(np.min(coverage_array)),
+                "max": float(np.max(coverage_array)),
+            }
+
+        if len(target_index_array) == len(faces_array) and target_index_to_name:
+            per_target = {}
+            for target_index, target_name in enumerate(target_index_to_name):
+                target_mask = target_index_array == target_index
+                if not np.any(target_mask):
+                    continue
+                target_faces = faces_array[target_mask]
+                target_summary = {
+                    "episodes": int(np.sum(target_mask)),
+                    "mean_faces": float(np.mean(target_faces)),
+                }
+                if len(coverage_array) == len(faces_array):
+                    target_summary["mean_coverage_percent"] = float(
+                        np.mean(coverage_array[target_mask])
+                    )
+                per_target[target_name] = target_summary
+            summary["per_target"] = per_target
         print("\n" + "="*50)
         print(f"EVALUATION RESULTS ({len(faces_discovered_list)} Episodes)")
         print("="*50)
@@ -828,6 +882,19 @@ if is_eval:
         print(f"Std Deviation:         {np.std(faces_array):.2f}")
         print(f"Min Faces:             {np.min(faces_array)}")
         print(f"Max Faces:             {np.max(faces_array)}")
+        if len(coverage_array) == len(faces_array):
+            print(f"Mean Coverage:          {np.mean(coverage_array):.2f}%")
+            print(f"Std Coverage:           {np.std(coverage_array):.2f}%")
+        if "per_target" in summary:
+            print("Per-target results:")
+            for target_name, target_summary in summary["per_target"].items():
+                coverage_text = ""
+                if "mean_coverage_percent" in target_summary:
+                    coverage_text = f" | Coverage: {target_summary['mean_coverage_percent']:.2f}%"
+                print(
+                    f"  {target_name}: {target_summary['episodes']} episodes"
+                    f" | Faces: {target_summary['mean_faces']:.2f}{coverage_text}"
+                )
         if crashes_list:
             crashes_array = np.asarray(crashes_list)
             total_terminated = int(np.sum(crashes_array > 0))
@@ -870,6 +937,11 @@ if is_eval:
             json.dump(summary, summary_file, indent=2)
 
         raw_results = {"faces_discovered": faces_array}
+        if len(coverage_array) == len(faces_array):
+            raw_results["coverage_percent"] = coverage_array
+        if len(target_index_array) == len(faces_array):
+            raw_results["target_index"] = target_index_array
+            raw_results["target_names"] = np.asarray(target_index_to_name)
         if crashes_list:
             raw_results["crashes"] = crashes_array
         np.savez_compressed(raw_path, **raw_results)
