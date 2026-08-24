@@ -58,39 +58,82 @@ def cluster_frontiers(frontiers_mask: np.ndarray) -> list:
     return clusters
 
 
-def select_best_frontier(clusters: list, robot_pose_px: tuple) -> tuple:
+from a_star import a_star
+
+def select_best_frontier(clusters, robot_pose_px, occupancy_grid=None, is_global=False, resolution=0.2, blacklist=None):
     """
-    Selects the best frontier cluster based on a simple heuristic (e.g., closest distance to robot).
+    Selects the best frontier based on A* path distance.
     
     Args:
-        clusters: List of frontier clusters (list of (y, x) coordinates).
-        robot_pose_px: The robot's position in grid coordinates (y, x).
+        clusters: List of frontiers (which are lists of pixel coordinates).
+        robot_pose_px: The (x, y) pixel coordinates of the robot.
+        occupancy_grid: 2D numpy array representing the map.
+        is_global: Boolean indicating if it's a global map.
+        resolution: Map resolution in meters/pixel.
+        blacklist: List of (x, y) coordinates of blacklisted frontiers.
         
     Returns:
-        The centroid (y, x) of the best frontier cluster, or None if no frontiers.
+        The centroid (x, y) of the best frontier cluster, or None if no reachable frontiers.
     """
     if not clusters:
         return None
+        
+    if blacklist is None:
+        blacklist = []
         
     best_dist = float('inf')
     best_centroid = None
     
     ry, rx = robot_pose_px
     
+    obstacle_grid = None
+    if occupancy_grid is not None:
+        # Assuming values > 0.1 represent occupied space
+        obstacle_grid = occupancy_grid > 0.1
+    
+    cluster_info = []
     for cluster in clusters:
         # Calculate centroid of the cluster
         y_coords = [p[0] for p in cluster]
         x_coords = [p[1] for p in cluster]
-        
         centroid_y = int(np.mean(y_coords))
         centroid_x = int(np.mean(x_coords))
+        centroid = (centroid_y, centroid_x)
         
-        # Calculate distance to robot
-        dist = np.sqrt((centroid_y - ry)**2 + (centroid_x - rx)**2)
+        # Check against blacklist (3 pixel radius = 0.6m)
+        is_blacklisted = False
+        for by, bx in blacklist:
+            if np.hypot(centroid_x - bx, centroid_y - by) < 3.0:
+                is_blacklisted = True
+                break
         
-        # Favor closer frontiers. (You can also incorporate cluster size into the heuristic).
+        if is_blacklisted:
+            continue
+            
+        # Fallback/heuristic Euclidean distance
+        euclid_dist = np.sqrt((centroid_x - rx)**2 + (centroid_y - ry)**2)
+        cluster_info.append((euclid_dist, centroid))
+        
+    cluster_info.sort(key=lambda x: x[0])
+    
+    # Only A* the top 3 closest Euclidean frontiers to save CPU
+    for euclid_dist, centroid in cluster_info[:3]:
+        if obstacle_grid is not None:
+            path = a_star(robot_pose_px, centroid, obstacle_grid)
+            if path is None:
+                continue # Path is unreachable
+                
+            # Calculate path length
+            dist = 0.0
+            for i in range(len(path) - 1):
+                p1, p2 = path[i], path[i+1]
+                dist += np.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        else:
+            dist = euclid_dist
+        
+        # Favor closer frontiers
         if dist < best_dist:
             best_dist = dist
-            best_centroid = (centroid_y, centroid_x)
+            best_centroid = centroid
             
     return best_centroid

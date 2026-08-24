@@ -37,7 +37,7 @@ class SensorsCfg:
             rot=(-0.5, 0.5, -0.5, 0.5),
             convention="ros"
         ),
-        debug_vis=cfg_mode.debug
+        debug_vis=True
     )
     
     ptz_camera: TiledCameraCfg = TiledCameraCfg(
@@ -60,7 +60,7 @@ class SensorsCfg:
         colorize_semantic_segmentation=False,
         semantic_filter=[f'class:{name}' for name in env_parameters.semantics_name] if isinstance(env_parameters.semantics_name, list) else f'class:{env_parameters.semantics_name}',
         update_latest_camera_pose=True,
-        debug_vis=cfg_mode.debug
+        debug_vis=True
     )
     base_contact_sensor: ContactSensorCfg = ContactSensorCfg(
         # Monitor the chassis only. Matching every Jackal link also captures

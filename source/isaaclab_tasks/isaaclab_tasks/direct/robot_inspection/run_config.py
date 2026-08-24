@@ -17,7 +17,7 @@ class map_channels:
 class visualisation_mode:
     def __init__(self,
                 channel=map_channels.OCCUPANCY, 
-                map_mode=map_view_mode.LOCAL):
+                map_mode=map_view_mode.GLOBAL):
         self.channel = channel
         self.map_mode = map_mode
 
@@ -27,7 +27,7 @@ class debug_Cfg:
     logging_interval: int = 1500
     max_episode_length: int = 1500
     inspection_goal =  0.95
-    visualisation_mode = visualisation_mode(channel=map_channels.COLLISION, map_mode=map_view_mode.LOCAL)
+    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.GLOBAL)
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -43,7 +43,7 @@ class debug_Cfg:
     use_optical_flow_as_quality = False
     fixed_spawns = False
     randomize_spawns = True
-    use_hardest_curriculum = False
+    use_hardest_curriculum = True
     reset_on_crash = False
     collision_consecutive_steps: int = 2
 
@@ -178,4 +178,4 @@ modes = [debug_Cfg, #0
     eval_Cfg, #3
     record_Cfg, #4
     record_depth_Cfg] #5
-cfg_mode = modes[1]
+cfg_mode = modes[0]

@@ -120,6 +120,10 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     else:
         action_dim = action_space.shape[0]
 
+    _x_dim = int(np.ceil((mapping_cfg.bounds["x_max"] - mapping_cfg.bounds["x_min"]) / mapping_cfg.resolution))
+    _y_dim = int(np.ceil((mapping_cfg.bounds["y_max"] - mapping_cfg.bounds["y_min"]) / mapping_cfg.resolution))
+    _z_dim = int(np.ceil((mapping_cfg.bounds["z_max"] - mapping_cfg.bounds["z_min"]) / mapping_cfg.resolution))
+
     observation_space = spaces.Dict({
 
         "robot-pose": spaces.Box(
@@ -143,7 +147,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "global-map": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
-            shape=(x_dim, y_dim, z_dim, 3), 
+            shape=(_x_dim, _y_dim, _z_dim, 3), 
             dtype=np.float32,
         )
     })

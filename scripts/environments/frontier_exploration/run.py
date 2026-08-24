@@ -77,12 +77,10 @@ def main():
                     #     actions = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # print(f"[INFO]: Step {i}")  
                     # Brush the obstacles
-                    actions = torch.tensor([[0.0, 0.605, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
-
-                    # if i < 100:
-                    #     actions = torch.tensor([[0.0, 0.605, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
-                    # else:
-                    #     actions = torch.tensor([[0.4, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    if i < 100:
+                        actions = torch.tensor([[0.0, 0.65, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
+                    else:
+                        actions = torch.tensor([[0.4, 0.0, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
                     # Hit obstacles
                     # if i < 100:
                     #     actions = torch.tensor([[0.0, 0.4, 0.0, 0.0, 0.0]], device=env.unwrapped.device)

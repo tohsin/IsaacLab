@@ -810,6 +810,32 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 raise ValueError(msg)
         return torch.stack([local_occ_map, local_vis_map, local_visit], dim=-1).to(self.device)
 
+    def _compute_global_map_observation(self) -> torch.Tensor:
+        if not self.cfg.mapping_cfg.use_occupancy_map:
+            raise ValueError("Occupancy map is not enabled in the configuration.")
+            
+        global_occ_map = wp.to_torch(self.map_manager.occupancy_map).clone()
+        global_vis_map = wp.to_torch(self.map_manager.visibility_map).clone()
+        global_visit = wp.to_torch(self.map_manager.visitation_map).clone()
+        
+        # Reshape to (num_envs, X, Y, Z)
+        map_dims = self.map_manager.map_dims
+        global_occ_map = global_occ_map.view(self.num_envs, map_dims[0], map_dims[1], map_dims[2])
+        global_vis_map = global_vis_map.view(self.num_envs, map_dims[0], map_dims[1], map_dims[2])
+        global_visit = global_visit.view(self.num_envs, map_dims[0], map_dims[1], map_dims[2])
+        
+        # Normalize maps for neural network stability
+        global_occ_map = global_occ_map / 5.0  # clamp_max is 5.0, so this makes it approx [-1, 1]
+        global_visit = torch.clamp(global_visit / 10.0, max=2.0)
+        
+        for name, tensor in {"global_occ": global_occ_map, "global_vis": global_vis_map, "global_visit": global_visit}.items():
+            if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+                msg = f"Invalid value (NaN or Inf) in Global Map: {name}"
+                print(msg)
+                raise ValueError(msg)
+                
+        return torch.stack([global_occ_map, global_vis_map, global_visit], dim=-1).to(self.device)
+
     def _get_observations(self) -> dict:
         # return  {"policy": None}
         front_camera_data = torch.empty(0, device=self.device)
@@ -867,6 +893,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             front_camera_data, ptz_camera_data, semantic_channel], dim=-1)
         pose_obs = self._compute_pose_observation()
         map_obs = self._compute_local_map_observation()
+        global_map_obs = self._compute_global_map_observation()
+        
         if torch.isinf(pose_obs).any() or torch.isnan(pose_obs).any():
             print("\n[CRITICAL FAILURE] Infinite or NaN detected in ROBOT POSE")
             print(f"  > Min Value: {pose_obs.min().item()}")
@@ -891,7 +919,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             obs =   {
                 'robot-pose': pose_obs,
                 'cameras': combined_camera_data.clone(),
-                'local-map': map_obs
+                'local-map': map_obs,
+                'global-map': global_map_obs
                 }
             
             # obs = {
