@@ -67,11 +67,11 @@ class Curriculum:
         self.init_z_goal = 0.3
         
         # Fixed room coordinates for continuous randomized spawning
-        self.spawn_min_x = -5.0
+        self.spawn_min_x = -6.0
         self.spawn_max_x = -self.spawn_min_x 
         self.spawn_min_y = -5.0
         self.spawn_max_y_init = -self.spawn_min_y
-        self.spawn_max_y_final = 8.0 # 8.0 for training
+        self.spawn_max_y_final = 10.0 # 8.0 for training
 
 
     #Task curriculum
@@ -267,18 +267,28 @@ class Curriculum:
                 selected_positions[i, 0] = self.spawn_min_x
                 selected_positions[i, 1] = current_spawn_max_y
 
-        # Keep the objective orientation fixed. The custom multi-mesh
-        # raycaster caches procedural meshes at startup and currently loses
-        # face/semantic alignment when target rotation changes at runtime.
+        # Target-specific orientation augmentation is applied by the
+        # environment after assignment. Keeping this base pose at identity
+        # avoids rotating targets that do not opt into yaw randomization.
         selected_ori = torch.zeros((num_resets, 4), device=self.device)
         selected_ori[:, 0] = 1.0  # identity quaternion (w, x, y, z)
                 
         return selected_positions, selected_ori
 
-    def get_obstacle_start_pos(self, num_resets: int, existing_positions: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    def get_obstacle_start_pos(
+        self,
+        num_resets: int,
+        existing_positions: list[torch.Tensor],
+        existing_radii: list[torch.Tensor | float] | None = None,
+        obstacle_radius: torch.Tensor | float | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Gets random start positions for an obstacle within bounds using batched sampling.
-        Ensures the obstacle is not placed too close to existing positions.
+        Ensures the obstacle is not placed too close to existing entities.
+
+        When footprint radii are supplied, clearance is measured surface to
+        surface and differs for the robot, target, and other obstacles. The
+        legacy center-distance rule remains available for older callers.
         """
         if (getattr(cfg_mode, "data_recording_path", None) is not None or getattr(cfg_mode, "fixed_spawns", False)) and not getattr(cfg_mode, "randomize_spawns", False):
             pos = torch.zeros((num_resets, 3), device=self.device)
@@ -305,13 +315,37 @@ class Curriculum:
             ori[:, 0] = 1.0 
             return pos, ori
 
+        use_radius_clearance = existing_radii is not None and obstacle_radius is not None
+        if use_radius_clearance and len(existing_radii) != len(existing_positions):
+            raise ValueError("existing_radii must have one entry per existing position")
+
         min_dist = getattr(cfg_mode, "min_dist_between_obstacles", 2.0)
+        target_clearance = getattr(cfg_mode, "target_obstacle_surface_clearance", 0.45)
+        obstacle_clearance = getattr(cfg_mode, "obstacle_obstacle_surface_clearance", 0.50)
+        robot_clearance = getattr(cfg_mode, "robot_obstacle_surface_clearance", 0.40)
+
+        def _radius_tensor(value: torch.Tensor | float) -> torch.Tensor:
+            if isinstance(value, torch.Tensor):
+                radius = value.to(device=self.device, dtype=torch.float32).reshape(-1)
+                if radius.numel() == 1:
+                    return radius.expand(num_resets)
+                if radius.numel() != num_resets:
+                    raise ValueError(
+                        f"Expected one radius or {num_resets} per-environment radii, got {radius.numel()}"
+                    )
+                return radius
+            return torch.full((num_resets,), float(value), device=self.device)
+
+        obstacle_radii = _radius_tensor(obstacle_radius) if use_radius_clearance else None
+        entity_radii = [_radius_tensor(radius) for radius in existing_radii] if use_radius_clearance else None
         selected_positions = torch.zeros((num_resets, 3), device=self.device)
         selected_positions[:, 2] = self.init_z_goal
         current_spawn_max_y = self.get_current_spawn_max_y()
         
         # Track which environments still need a valid position
         needs_spawn = torch.ones(num_resets, dtype=torch.bool, device=self.device)
+        best_positions = torch.zeros((num_resets, 2), device=self.device)
+        best_clearance_margin = torch.full((num_resets,), -torch.inf, device=self.device)
         
         max_attempts = 100
         for _ in range(max_attempts):
@@ -327,16 +361,38 @@ class Curriculum:
             
             # Check collisions with all existing entities
             valid = torch.ones(num_needed, dtype=torch.bool, device=self.device)
-            for existing_pos in existing_positions:
+            proposal_margin = torch.full((num_needed,), torch.inf, device=self.device)
+            for entity_idx, existing_pos in enumerate(existing_positions):
                 # Get the relevant existing pos for the envs that need spawn
                 relevant_existing = existing_pos[needs_spawn, :2]
                 dists = torch.norm(proposals - relevant_existing, dim=-1)
-                valid &= (dists > min_dist)
+                if use_radius_clearance:
+                    if entity_idx == 0:
+                        free_clearance = robot_clearance
+                    elif entity_idx == 1:
+                        free_clearance = target_clearance
+                    else:
+                        free_clearance = obstacle_clearance
+                    required_dists = (
+                        obstacle_radii[needs_spawn]
+                        + entity_radii[entity_idx][needs_spawn]
+                        + free_clearance
+                    )
+                else:
+                    required_dists = torch.full_like(dists, min_dist)
+                margins = dists - required_dists
+                proposal_margin = torch.minimum(proposal_margin, margins)
+                valid &= margins > 0.0
+
+            needed_indices = needs_spawn.nonzero().squeeze(-1)
+            improves_fallback = proposal_margin > best_clearance_margin[needed_indices]
+            improved_indices = needed_indices[improves_fallback]
+            best_positions[improved_indices] = proposals[improves_fallback]
+            best_clearance_margin[improved_indices] = proposal_margin[improves_fallback]
             
             # For the ones that are valid, assign them
             valid_indices_in_needed = valid.nonzero().squeeze(-1)
             # Map back to original env indices
-            needed_indices = needs_spawn.nonzero().squeeze(-1)
             actual_valid_indices = needed_indices[valid_indices_in_needed]
             
             selected_positions[actual_valid_indices, 0] = proposals[valid_indices_in_needed, 0]
@@ -346,9 +402,21 @@ class Curriculum:
         # Fallback for any that didn't find a spot
         if needs_spawn.any():
             fallback_indices = needs_spawn.nonzero().squeeze(-1)
-            print(f"[Curriculum WARN] Could not find valid spawn for {len(fallback_indices)} obstacles. Using fallback.")
-            selected_positions[fallback_indices, 0] = self.spawn_min_x
-            selected_positions[fallback_indices, 1] = current_spawn_max_y
+            if use_radius_clearance:
+                print(
+                    f"[Curriculum WARN] Could not find valid spawn for {len(fallback_indices)} obstacles. "
+                    "Using the sampled positions with the greatest clearance."
+                )
+                selected_positions[fallback_indices, :2] = best_positions[fallback_indices]
+            else:
+                # Preserve the original fallback exactly for evaluations of
+                # policies trained with center-distance spawning.
+                print(
+                    f"[Curriculum WARN] Could not find valid spawn for {len(fallback_indices)} "
+                    "obstacles. Using legacy fallback."
+                )
+                selected_positions[fallback_indices, 0] = self.spawn_min_x
+                selected_positions[fallback_indices, 1] = current_spawn_max_y
             
         # For obstacles, we use identity quaternion (w=1) since they are symmetric or fine in default pose
         selected_ori = torch.zeros((num_resets, 4), device=self.device)

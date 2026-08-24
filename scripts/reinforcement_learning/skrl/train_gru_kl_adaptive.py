@@ -749,7 +749,6 @@ if is_eval:
                             val = infos["log"]["faces_discovered"]
                             coverage_percent = infos["log"].get("coverage_percent", None)
                             target_indices = infos["log"].get("target_index", None)
-                            val_dist = infos["log"].get("max_distance", None)
                             crashes = infos["log"].get("crashes", None)
 
                             if coverage_percent is not None:
@@ -786,19 +785,12 @@ if is_eval:
                                      faces_discovered_list.append(val.item())
                                      current_faces = val.item()
                                      
-                                     dist_str = ""
-                                     if val_dist is not None:
-                                         d_val = val_dist.item() if isinstance(val_dist, torch.Tensor) else val_dist
-                                         dist_str = f" | Max Distance: {d_val:.2f}"
-                                     print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}{dist_str}")
+                                     print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}")
                             else:
                                  faces_discovered_list.append(val)
                                  current_faces = val
                                  
-                                 dist_str = ""
-                                 if val_dist is not None:
-                                     dist_str = f" | Max Distance: {val_dist:.2f}"
-                                 print(f"[INFO] Episode {episode_count} Faces Discovered: {val}{dist_str}")
+                                 print(f"[INFO] Episode {episode_count} Faces Discovered: {val}")
 
                     if args_cli.max_episodes is not None and episode_count >= args_cli.max_episodes:
                         print(f"[INFO] strict max_episodes reached: {episode_count}")

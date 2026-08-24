@@ -212,15 +212,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         if hasattr(self, 'pc_collector') and self.pc_collector:
             try:
-                # Try to safely get the latest max distance / faces for Env 0
-                max_dist = self.max_distance_reached[0].item() if hasattr(self, 'max_distance_reached') else 0.0
-                
                 # Best attempt at getting the max faces discovered so far in this current episode
                 faces = 0
                 if hasattr(self, 'best_q_per_face'):
                     faces = (self.best_q_per_face[0] > 0.0).sum().item()
-                    
-                self.pc_collector.flush_if_best(faces, max_dist)
+
+                self.pc_collector.flush_if_best(faces)
             except Exception as e:
                 print(f"[ERROR] Could not save summary during close: {e}")
 
@@ -319,8 +316,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if hasattr(self.cfg.mapping_cfg, 'compute_global_map_entropy') and self.cfg.mapping_cfg.compute_global_map_entropy:
             self.prev_global_map_entropy = torch.zeros(self.num_envs, device=self.device)
-        if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
-            self.max_distance_reached = torch.zeros(self.num_envs, device=self.device)
 
     def _setup_scene(self):
         #Add robot, camera and terain to the scene
@@ -361,7 +356,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             primitive_cfg = getattr(target_cfg, "primitive", None)
             common_spawn_kwargs = {
                 "rigid_props": sim_utils.RigidBodyPropertiesCfg(
-                    rigid_body_enabled=True, kinematic_enabled=False
+                    # Procedural training targets keep their sampled pose and
+                    # cannot roll or tip after contact. Preserve the existing
+                    # dynamic behavior of non-primitive USD evaluation assets.
+                    rigid_body_enabled=True, kinematic_enabled=primitive_cfg is not None
                 ),
                 "mass_props": sim_utils.MassPropertiesCfg(density=5.0, mass=1000.0),
                 "collision_props": sim_utils.CollisionPropertiesCfg(collision_enabled=True),
@@ -450,6 +448,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         handler = ObstacleDatasetHandler(max_obstacles=max_obstacles)
         obstacle_cfgs = handler.get_obstacle_configs()
+        self.obstacle_footprint_radii = torch.tensor(
+            handler.get_horizontal_radii(), device=self.device, dtype=torch.float32
+        )
         
         self.obstacles = []
         for i, obs_cfg in enumerate(obstacle_cfgs):
@@ -1059,11 +1060,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                  else:
                      self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask)
 
-        # Record max distance from origin taking into account X and Y
-        current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self.scene.env_origins[:, :2], dim=-1)
-        if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
-            self.max_distance_reached = torch.maximum(self.max_distance_reached, current_dist)
-
         try:
             res = super().step(action)
             torch.cuda.synchronize()
@@ -1637,9 +1633,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.extras["log"]["collision_proxy_steps"] = self.episode_collision_proxy_steps[env_ids].clone()
             self.extras["log"]["collision_contact_steps"] = self.episode_collision_contact_steps[env_ids].clone()
             self.extras["log"]["crashes"] = self.episode_crashes[env_ids].clone()
-            if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
-                self.extras["log"]["max_distance"] = self.max_distance_reached[env_ids]
-            
             total_quality = current_q_values.sum(dim=1)
 
             mean_quality = torch.zeros_like(total_quality)
@@ -1674,19 +1667,46 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             mean_quality_cpu = mean_quality.cpu().tolist()
             episode_crashes_cpu = self.episode_crashes[env_ids].cpu().tolist()
             
-            if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
-                max_distance_reached_cpu = self.max_distance_reached[env_ids].cpu().tolist()
-            else:
-                max_distance_reached_cpu = None
-
             # Logging
             for i, env_id in enumerate(env_ids_cpu):
                 if env_id == 0:
                     final_face_count = num_faces_inspected_cpu[i]
-                    if max_distance_reached_cpu is not None:
-                        max_dist = max_distance_reached_cpu[i]
-                        if hasattr(self, 'pc_collector') and self.pc_collector is not None:
-                            self.pc_collector.flush_if_best(final_face_count, max_dist)
+                    if hasattr(self, 'pc_collector') and self.pc_collector is not None:
+                        episode_steps = int(self.episode_length_buf[env_id].item())
+                        duration_seconds = (
+                            episode_steps * self.cfg.sim.dt * self.cfg.decimation
+                        )
+                        crashed = bool(collision_failures[i].item())
+                        face_goal_reached = bool(
+                            achieved_coverage_ratios[i].item() >= current_cov_goal
+                        )
+                        max_steps = int(self.curriculum.get_current_episode_length())
+                        timed_out = episode_steps >= max_steps - 1
+                        if crashed:
+                            termination_reason = "crash"
+                        elif face_goal_reached:
+                            termination_reason = "face_goal"
+                        elif timed_out:
+                            termination_reason = "timeout"
+                        else:
+                            termination_reason = "reset"
+                        self.pc_collector.flush_if_best(
+                            final_face_count,
+                            episode_metadata={
+                                "target_name": str(self.env_target_names[env_id]),
+                                "target_index": int(self.env_target_indices[env_id].item()),
+                                "episode_steps": episode_steps,
+                                "duration_seconds": float(duration_seconds),
+                                "crash_count": int(episode_crashes_cpu[i]),
+                                "crashed": crashed,
+                                "timed_out": bool(timed_out),
+                                "face_goal_reached": face_goal_reached,
+                                "face_coverage_percent": float(
+                                    achieved_coverage_ratios_cpu[i] * 100.0
+                                ),
+                                "termination_reason": termination_reason,
+                            },
+                        )
                             
                     if getattr(run_cfg, 'debug', False):
                         print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {final_face_count} ---")
@@ -1756,8 +1776,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0
-                if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
-                    self.max_distance_reached[env_ids] = 0.0
 
 
         super()._reset_idx(env_ids)
@@ -1810,8 +1828,35 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         self.scene.env_origins[env_ids][assigned_mask, 2]
                         + assigned_root_heights[assigned_mask]
                     )
-                target_ori = torch.tensor(target_cfg.orientation, device=self.device, dtype=torch.float32)
-                mixed_state[assigned_mask, 3:7] = target_ori
+                base_ori = torch.tensor(
+                    target_cfg.orientation, device=self.device, dtype=torch.float32
+                ).expand(num_resets, -1)
+                target_ori = base_ori
+
+                primitive_cfg = getattr(target_cfg, "primitive", None)
+                randomization_cfg = (
+                    primitive_cfg.get("domain_randomization", {})
+                    if primitive_cfg is not None
+                    else {}
+                )
+                yaw_range = randomization_cfg.get("yaw_range")
+                fixed_target_pose = (
+                    (
+                        getattr(run_cfg, "data_recording_path", None) is not None
+                        or getattr(run_cfg, "fixed_spawns", False)
+                    )
+                    and not getattr(run_cfg, "randomize_spawns", False)
+                )
+                if yaw_range is not None and not fixed_target_pose:
+                    yaw_min, yaw_max = map(float, yaw_range)
+                    yaw = yaw_min + torch.rand(num_resets, device=self.device) * (yaw_max - yaw_min)
+                    yaw_ori = torch.zeros((num_resets, 4), device=self.device)
+                    yaw_ori[:, 0] = torch.cos(0.5 * yaw)
+                    yaw_ori[:, 3] = torch.sin(0.5 * yaw)
+                    # Apply world-Z yaw on top of any authored target pose.
+                    target_ori = quat_mul(yaw_ori, base_ori)
+
+                mixed_state[assigned_mask, 3:7] = target_ori[assigned_mask]
                 mixed_state[assigned_mask, 7:] = obj_state[assigned_mask, 7:]
             
             self.inspection_goals[target_name].write_root_pose_to_sim(mixed_state[:, :7], env_ids)
@@ -1850,16 +1895,47 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         existing_positions = [new_pos]
         existing_positions.append(obj_pos)
 
+        robot_radius = getattr(run_cfg, "robot_footprint_radius", 0.45)
+        fallback_target_radius = getattr(run_cfg, "fallback_target_footprint_radius", 0.8)
+        target_radii = torch.full(
+            (num_resets,), fallback_target_radius, device=self.device, dtype=torch.float32
+        )
+        for target_name in self.cfg.inspection_goal_cfg.inspection_targets:
+            assigned_mask_np = self.env_target_names[env_ids_local] == target_name
+            assigned_mask = torch.from_numpy(assigned_mask_np).to(device=self.device, dtype=torch.bool)
+            if assigned_mask.any() and target_name in self.primitive_sizes:
+                # Circumscribed XY circles remain valid for every primitive
+                # shape and for the fixed target orientations used at reset.
+                sizes = self.primitive_sizes[target_name][env_ids]
+                radii = 0.5 * torch.linalg.vector_norm(sizes[:, :2], dim=-1)
+                target_radii[assigned_mask] = radii[assigned_mask]
+
+        existing_radii: list[torch.Tensor | float] = [robot_radius, target_radii]
+
         # Spawn obstacles dynamically
         num_active_obstacles = self.curriculum.get_num_active_obstacles(self.cfg.max_obstacles)
         
         for i, obstacle in enumerate(self.obstacles):
             obstacle_state = torch.zeros((num_resets, 13), device=self.device)
             if i < num_active_obstacles:
-                obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(num_resets, existing_positions)
+                obstacle_radius = self.obstacle_footprint_radii[i]
+                if getattr(run_cfg, "use_radius_aware_obstacle_spawning", True):
+                    obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(
+                        num_resets,
+                        existing_positions,
+                        existing_radii=existing_radii,
+                        obstacle_radius=obstacle_radius,
+                    )
+                else:
+                    # Compatibility path used by policies trained before
+                    # geometry-aware surface clearances were introduced.
+                    obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(
+                        num_resets, existing_positions
+                    )
                 obstacle_state[:, :3] = obs_pos + self.scene.env_origins[env_ids]
                 obstacle_state[:, 3:7] = obs_quat
                 existing_positions.append(obs_pos)
+                existing_radii.append(obstacle_radius)
             else:
                 # Place inactive obstacles far below the ground plane
                 hidden_pos = torch.zeros((num_resets, 3), device=self.device)

@@ -4,6 +4,7 @@ import json
 import torch
 import numpy as np
 import shutil
+from datetime import datetime, timezone
 from PIL import Image
 from scipy.spatial.transform import Rotation
 
@@ -18,7 +19,12 @@ class ReconstructionDataCollector:
     def __init__(self, cfg, device="cpu"):
         self.cfg = cfg
         self.device = device
-        self.output_path = getattr(cfg, "data_recording_path", "data/recorded_point_clouds")
+        base_output_path = getattr(cfg, "data_recording_path", "data/recorded_point_clouds")
+        if getattr(cfg, "create_timestamped_run", False):
+            run_name = datetime.now().strftime("run_%Y-%m-%d_%H-%M-%S")
+            self.output_path = os.path.join(base_output_path, run_name)
+        else:
+            self.output_path = base_output_path
         self.save_interval = getattr(cfg, "save_interval", 1)
         
         self.depth_path = os.path.join(self.output_path, "depth")
@@ -49,6 +55,8 @@ class ReconstructionDataCollector:
         
         self.intrinsics_set = False
         self.frame_idx = 0
+        self.episode_idx = 0
+        self.episode_results = []
         
     def collect(self, camera, step_idx, semantic_mask=None, nav_camera=None):
         """
@@ -101,7 +109,9 @@ class ReconstructionDataCollector:
         # Buffer the data
         rgb_np = None
         rgb_cameras_np = None
-        if "rgb" in camera.data.output:
+        # RGB and stitched videos are useful for demonstrations, but retaining
+        # them duplicates most of the per-frame memory during depth-only runs.
+        if getattr(self.cfg, "save_images", False) and "rgb" in camera.data.output:
             rgb_tensor = camera.data.output["rgb"][env_id] # (H, W, 4) or (H, W, 3)
             rgb_np = rgb_tensor.cpu().numpy()
             if rgb_np.shape[-1] == 4:
@@ -194,30 +204,57 @@ class ReconstructionDataCollector:
         mat[:3, 3] = pos
         return mat
 
-    def flush_if_best(self, faces_discovered, max_distance):
-        """Flushes the buffer to disk if this is the best episode so far."""
+    def flush_if_best(self, faces_discovered, episode_metadata=None):
+        """Flush reconstruction data and record optional episode metrics.
+
+        With ``record_all_episodes`` enabled, every completed episode is written
+        to its own directory while RAM remains bounded to one episode. The
+        legacy mode keeps only the best face-proxy episode.
+        """
+        episode_result = None
+        if episode_metadata is not None:
+            episode_result = self._record_episode_result(
+                faces_discovered, episode_metadata
+            )
+
         if not hasattr(self, 'best_faces_discovered'):
             self.best_faces_discovered = 0
-            
-        if faces_discovered > self.best_faces_discovered:
+
+        is_best = faces_discovered > self.best_faces_discovered
+        record_all = bool(getattr(self.cfg, "record_all_episodes", False))
+        should_write = is_best or (record_all and episode_result is not None)
+
+        if is_best:
             self.best_faces_discovered = faces_discovered
-            print(f"[ReconstructionDataCollector] Flushing new best episode to disk. Faces: {faces_discovered}")
-            
+
+        if should_write:
+            if record_all and episode_result is not None:
+                write_output_path = os.path.join(
+                    self.output_path,
+                    "episodes",
+                    f"episode_{episode_result['episode_index']:05d}",
+                )
+                print(
+                    "[ReconstructionDataCollector] Flushing completed episode "
+                    f"{episode_result['episode_index']} to disk. Faces: {faces_discovered}"
+                )
+            else:
+                write_output_path = self.output_path
+                print(
+                    "[ReconstructionDataCollector] Flushing new best episode to disk. "
+                    f"Faces: {faces_discovered}"
+                )
+
+            depth_path = os.path.join(write_output_path, "depth")
+            masks_path = os.path.join(write_output_path, "masks")
+            rgb_path = os.path.join(write_output_path, "rgb")
+            rgb_cameras_path = os.path.join(write_output_path, "rgb_cameras")
+
             # Clear old directories if they exist safely
-            if os.path.exists(self.depth_path):
-                shutil.rmtree(self.depth_path)
-            if os.path.exists(self.masks_path):
-                shutil.rmtree(self.masks_path)
-            if os.path.exists(self.rgb_path):
-                shutil.rmtree(self.rgb_path)
-            if hasattr(self, 'rgb_cameras_path') and os.path.exists(self.rgb_cameras_path):
-                shutil.rmtree(self.rgb_cameras_path)
-            
-            os.makedirs(self.depth_path, exist_ok=True)
-            os.makedirs(self.masks_path, exist_ok=True)
-            os.makedirs(self.rgb_path, exist_ok=True)
-            if hasattr(self, 'rgb_cameras_path'):
-                os.makedirs(self.rgb_cameras_path, exist_ok=True)
+            for path in (depth_path, masks_path, rgb_path, rgb_cameras_path):
+                if os.path.exists(path):
+                    shutil.rmtree(path)
+                os.makedirs(path, exist_ok=True)
             
             data_copy = self.transforms_data.copy()
             data_copy["frames"] = []
@@ -228,14 +265,14 @@ class ReconstructionDataCollector:
                 
                 # Save Depth
                 depth_filename = f"{file_name_base}.npy"
-                depth_filepath = os.path.join(self.depth_path, depth_filename)
+                depth_filepath = os.path.join(depth_path, depth_filename)
                 np.save(depth_filepath, frame["depth"])
                 
                 # Save Mask
                 mask_filename = None
                 if frame["mask"] is not None:
                     mask_filename = f"{file_name_base}.png"
-                    mask_filepath = os.path.join(self.masks_path, mask_filename)
+                    mask_filepath = os.path.join(masks_path, mask_filename)
                     mask_img = Image.fromarray((frame["mask"] * 255).astype(np.uint8))
                     mask_img.save(mask_filepath)
                     
@@ -243,7 +280,7 @@ class ReconstructionDataCollector:
                 rgb_filename = None
                 if frame.get("rgb") is not None:
                     rgb_filename = f"{file_name_base}.png"
-                    rgb_filepath = os.path.join(self.rgb_path, rgb_filename)
+                    rgb_filepath = os.path.join(rgb_path, rgb_filename)
                     # Save natively as 8-bit RGB image
                     rgb_to_save = frame["rgb"]
                     if rgb_to_save.dtype != np.uint8:
@@ -257,9 +294,8 @@ class ReconstructionDataCollector:
                     if rgb_cameras_to_save.dtype != np.uint8:
                         rgb_cameras_to_save = (rgb_cameras_to_save * 255).astype(np.uint8)
                     rgb_frames.append(rgb_cameras_to_save)
-                    if hasattr(self, 'rgb_cameras_path'):
-                        rgb_cameras_filepath = os.path.join(self.rgb_cameras_path, f"{file_name_base}.png")
-                        Image.fromarray(rgb_cameras_to_save).save(rgb_cameras_filepath)
+                    rgb_cameras_filepath = os.path.join(rgb_cameras_path, f"{file_name_base}.png")
+                    Image.fromarray(rgb_cameras_to_save).save(rgb_cameras_filepath)
 
                 # Add Entry
                 frame_entry = {
@@ -276,17 +312,31 @@ class ReconstructionDataCollector:
                 data_copy["frames"].append(frame_entry)
 
             # Write transforms.json entirely
-            json_path = os.path.join(self.output_path, "transforms.json")
+            json_path = os.path.join(write_output_path, "transforms.json")
             with open(json_path, "w") as f:
                 json.dump(data_copy, f, indent=4)
-                
-            self.save_summary(faces_discovered, max_distance)
+
+            self.save_summary(faces_discovered, write_output_path)
+
+            if record_all and is_best and episode_result is not None:
+                best_path = os.path.join(self.output_path, "best_episode.json")
+                with open(best_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "episode_index": episode_result["episode_index"],
+                            "path": os.path.relpath(write_output_path, self.output_path),
+                            "faces_discovered": int(faces_discovered),
+                            "selection_note": "convenience pointer only; not geometric success",
+                        },
+                        f,
+                        indent=2,
+                    )
             
             # Write RGB Video
             if len(rgb_frames) > 0:
                 try:
                     import imageio
-                    video_path = os.path.join(self.output_path, "best_episode.mp4")
+                    video_path = os.path.join(write_output_path, "episode.mp4")
                     # fps calculation: 1 / (dt * decimation * save_interval). 
                     # Assuming standard Isaac Sim (0.0083 * 6 = ~0.05 step).
                     playback_speed = getattr(self.cfg, "video_playback_speed", 1.2)
@@ -303,16 +353,56 @@ class ReconstructionDataCollector:
         self.frame_buffer = []
         self.frame_idx = 0
 
+    def _record_episode_result(self, faces_discovered, metadata):
+        result = {
+            "episode_index": self.episode_idx,
+            "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+            "faces_discovered": int(faces_discovered),
+            **metadata,
+        }
+        self.episode_results.append(result)
+        self.episode_idx += 1
+
+        results_path = os.path.join(self.output_path, "episode_results.json")
+        with open(results_path, "w", encoding="utf-8") as f:
+            json.dump(self.episode_results, f, indent=2)
+
+        durations = np.asarray(
+            [item["duration_seconds"] for item in self.episode_results], dtype=np.float64
+        )
+        crashed = np.asarray(
+            [bool(item["crashed"]) for item in self.episode_results], dtype=np.bool_
+        )
+        face_goal_reached = np.asarray(
+            [bool(item["face_goal_reached"]) for item in self.episode_results], dtype=np.bool_
+        )
+        summary = {
+            "episodes": len(self.episode_results),
+            "crashed_episodes": int(crashed.sum()),
+            "crash_rate_percent": float(crashed.mean() * 100.0),
+            "face_goal_reached_rate_percent": float(face_goal_reached.mean() * 100.0),
+            "duration_seconds": {
+                "mean": float(durations.mean()),
+                "min": float(durations.min()),
+                "max": float(durations.max()),
+            },
+            "note": "face_goal_reached is a proxy; geometric coverage is computed offline",
+        }
+        summary_path = os.path.join(self.output_path, "evaluation_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+
+        return result
+
     def save(self):
         print(f"[ReconstructionDataCollector] Finalized.")
 
-    def save_summary(self, max_faces, max_position):
+    def save_summary(self, max_faces, output_path=None):
         try:
             summary = {
                 "max_faces": int(max_faces),
-                "max_position_distance": float(max_position)
             }
-            summary_path = os.path.join(self.output_path, "summary.json")
+            summary_path = os.path.join(output_path or self.output_path, "summary.json")
             with open(summary_path, "w") as f:
                 json.dump(summary, f, indent=4)
             print(f"[ReconstructionDataCollector] Saved summary to {summary_path}")

@@ -37,13 +37,10 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
         raise ValueError("checkpoint_type must be 0 (best) or 1 (latest)")
 
 # Old hardcoded paths
-path_local0 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-17_07-42-02_ppo_gru_128/checkpoints/agent_234000.pt"
-path_local1 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-19_21-31-18_ppo_gru_128/checkpoints/agent_369000.pt"
-path_local2 = "scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2026-03-25_14-04-51_ppo_gru_128/checkpoints/agent_420000.pt"
 
 path_pretrained = get_checkpoint_path(
     project_name="SEEIR-Baseline",
-    run_name="SEEIR-2026-08-18_12-27-13",
+    run_name="SEEIR-2026-08-23_13-53-01",
     checkpoint_type=0  # 0 for best_agent.pt, 1 for the latest agent_*.pt step
 )
 
@@ -99,7 +96,7 @@ class EvaluationConfig:
     is_eval = True
     deterministic_eval = True
     max_episodes = 20  # Added this so you can set the number of sims here!
-    headless = False
+    headless = True
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
     num_envs = 1

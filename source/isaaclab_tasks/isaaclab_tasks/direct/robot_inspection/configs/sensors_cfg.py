@@ -81,7 +81,10 @@ class SensorsCfg:
             update_period=0.24,
             height=getattr(cfg_mode, "high_res_camera_height", 1024),
             width=getattr(cfg_mode, "high_res_camera_width", 1024),
-            data_types=["rgb", "distance_to_image_plane", "semantic_segmentation"],
+            data_types=(
+                (["rgb"] if getattr(cfg_mode, "save_images", False) else [])
+                + ["distance_to_image_plane", "semantic_segmentation"]
+            ),
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=RobotPhysicsCfg().default_focal_length,
                 focus_distance=400.0,

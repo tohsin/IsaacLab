@@ -85,28 +85,45 @@ class train_Cfg_base: # For pretriaing as a base
     # Debounce contact noise. This is not a collision budget: a confirmed
     # collision terminates immediately after this many consecutive detections.
     collision_consecutive_steps: int = 2
-    min_obstacles: int = 2
-    max_obstacles: int = 9
+    min_obstacles: int = 3
+    max_obstacles: int = 16
     min_spawn_max_y: float = 5.0
     min_dist_to_objective: float = 2.0
+    use_radius_aware_obstacle_spawning: bool = False
+    # Radius-aware spawn clearances. Required center distance is the sum of
+    # both footprint radii and the applicable free-surface clearance.
+    robot_footprint_radius: float = 0.45
+    fallback_target_footprint_radius: float = 0.8
+    target_obstacle_surface_clearance: float = 0.45
+    obstacle_obstacle_surface_clearance: float = 0.50
+    robot_obstacle_surface_clearance: float = 0.40
+    # Backward-compatible center-distance fallback for callers that do not
+    # provide footprint radii.
     min_dist_between_obstacles: float = 2.2
-
-class train_Cfg_finetune(train_Cfg_base):
-    min_episode_length: int = 1250
-    logging_interval: int = 1000
-    inspection_goal =  0.9
-    use_hardest_curriculum = True
-    reset_on_crash = True
-    start_crashes: int = 1
-    min_obstacles: int = 8
 
 class eval_Cfg:
     debug = False
-    egocentric_map = False
+    inspection_dataset = "evaluation"
+    inspection_target = "ur10_mount"
+    # inspection_dataset = "primitive"
+    # inspection_target = "cone_flat"
+    # Match the obstacle-placement distribution used by the older policy so
+    # novel-object evaluation does not also introduce a spawn-method shift.
+
+    egocentric_map = True
+
+    enable_depth_sensor_noise = True
+    depth_pixel_dropout_prob = 0.01
+    depth_pixel_std_dev_multiplier = 0.01
+
+    enable_semantic_mask_noise = False
+    semantic_mask_false_negative_prob = 0.01
+    semantic_mask_false_positive_prob = 0.001
+
     max_episode_length: int = 1250
     min_episode_length: int = 1250
     logging_interval: int = 1500
-    inspection_goal =  0.95
+    inspection_goal =  1.0
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -121,9 +138,20 @@ class eval_Cfg:
     use_optical_flow_as_quality = False
     randomize_spawns = True
     use_hardest_curriculum = True
-    reset_on_crash = False
+    max_obstacles: int = 16
+    reset_on_crash = True
     enable_voxel_visualization = False
-    is_simplified = True
+
+    use_radius_aware_obstacle_spawning: bool = False
+    min_dist_between_obstacles: float = 2.2
+    min_dist_to_objective: float = 2.0
+
+    is_simplified = False
+    robot_footprint_radius: float = 0.45
+    fallback_target_footprint_radius: float = 0.8
+    target_obstacle_surface_clearance: float = 0.45
+    obstacle_obstacle_surface_clearance: float = 0.50
+    robot_obstacle_surface_clearance: float = 0.40
 
 class record_Cfg:
     debug = False
@@ -153,13 +181,25 @@ class record_Cfg:
     use_hardest_curriculum = True
     reset_on_crash = False
 
-class record_depth_Cfg:
+class record_depth_Cfg(eval_Cfg):
     debug = False
+    inspection_dataset = eval_Cfg.inspection_dataset
+    inspection_target = eval_Cfg.inspection_target
     egocentric_map = True
     min_episode_length: int = 1250
     logging_interval: int = 100
     max_episode_length: int = 1250
-    inspection_goal =  1.0
+
+    enable_depth_sensor_noise = True
+    depth_pixel_dropout_prob = 0.01
+    depth_pixel_std_dev_multiplier = 0.01
+
+    enable_semantic_mask_noise = False
+    semantic_mask_false_negative_prob = 0.01
+    semantic_mask_false_positive_prob = 0.001
+    # Point-cloud coverage is evaluated offline. Keep the face-based goal above
+    # 100% so it cannot terminate a recording early and bias trajectory length.
+    inspection_goal =  1.2
     visualisation_mode = None
     display_ray_counts = False
     visualise_point_cloud = False
@@ -169,9 +209,13 @@ class record_depth_Cfg:
     use_wandb =  False 
     headless = True
     num_envs = 1
-    data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval/rubiks_cube")
+    data_recording_path = os.path.join(
+        ISAACLAB_ROOT, "data/recorded_depth_data_eval", inspection_target
+    )
     save_images = False
     save_depth = True
+    record_all_episodes = True
+    create_timestamped_run = True
     save_interval = 5 # Save every 5 steps to avoid huge data
     nav_camera_modality = "rgbd" 
     use_optical_flow_penalty = False
@@ -179,15 +223,16 @@ class record_depth_Cfg:
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = True
-    reset_on_crash = False
+    # End and label crashed episodes so crash rate and time-to-crash can be
+    # reported from the same evaluation run.
+    reset_on_crash = True
     add_high_res_inspection_camera = True
     high_res_camera_width = 512
     high_res_camera_height = 512
 
 modes = [debug_Cfg, #0
     train_Cfg_base, #1
-    train_Cfg_finetune, #2
-    eval_Cfg, #3
-    record_Cfg, #4
-    record_depth_Cfg] #5
-cfg_mode = modes[3]
+    eval_Cfg, #2
+    record_Cfg, #3
+    record_depth_Cfg] #4
+cfg_mode = modes[4]

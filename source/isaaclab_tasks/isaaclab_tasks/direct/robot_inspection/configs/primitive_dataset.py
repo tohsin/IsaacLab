@@ -34,20 +34,25 @@ _CUBOID_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
     "size_min": (0.8, 0.8, 0.8),
     "size_max": (1.2, 1.2, 1.6),
+
+
+    # A cuboid's appearance changes under yaw, unlike a sphere or an upright
+    # axial primitive. Sample the full circle at every randomized reset.
+    "yaw_range": (-3.141592653589793, 3.141592653589793),
 }
 
 _SPHERE_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
-    "radius_min": 0.4,
+    "radius_min": 0.5,
     "radius_max": 0.8,
 }
 
 _AXIAL_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
-    "radius_min": 0.4,
+    "radius_min": 0.5,
     "radius_max": 0.8,
     "height_min": 0.8,
-    "height_max": 1.2,
+    "height_max": 1.8,
 }
 
 
@@ -103,7 +108,11 @@ primitive_data_set = {
             "radius": 0.4,
             "height": 0.8,
             "subdivisions": 2,
-            "domain_randomization": {**_AXIAL_RANDOMIZATION},
+            "domain_randomization": {
+                **_AXIAL_RANDOMIZATION,
+                # Rotate only around world Z so the cylinder remains flat.
+                "yaw_range": (-3.141592653589793, 3.141592653589793),
+            },
         },
     ),
     "cone": _target(
@@ -118,6 +127,25 @@ primitive_data_set = {
             "height": 0.8,
             "subdivisions": 2,
             "domain_randomization": {**_AXIAL_RANDOMIZATION},
+        },
+    ),
+    "cone_flat": _target(
+        "cone_flat",
+        # A sideways cone exposes its base and nearly all of its curved side.
+        # Keep this provisional until the reachability diagnostic calibrates it.
+        reachable_faces=int(_CONE_FACES * 0.9),
+        mesh_faces=_CONE_FACES,
+        primitive={
+            "type": "tessellated_cone",
+            "axis": "X",
+            "radius": 0.4,
+            "height": 0.8,
+            "subdivisions": 2,
+            "domain_randomization": {
+                **_AXIAL_RANDOMIZATION,
+                # Rotate around world Z while preserving the horizontal axis.
+                "yaw_range": (-3.141592653589793, 3.141592653589793),
+            },
         },
     ),
 }
