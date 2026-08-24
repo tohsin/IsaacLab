@@ -449,7 +449,10 @@ class PPO_RNN(Agent):
                 
                 init_std = math.exp(init_log_std)
                 final_std = math.exp(final_log_std)
-                current_std = init_std + (final_std - init_std) * progress
+                
+                # Cosine annealing: starts flat at init_std, smooth drop, flattens at final_std
+                cosine_progress = 0.5 * (1.0 + math.cos(math.pi * progress))
+                current_std = final_std + (init_std - final_std) * cosine_progress
                 current_log_std = math.log(current_std)
                 
                 with torch.no_grad():
