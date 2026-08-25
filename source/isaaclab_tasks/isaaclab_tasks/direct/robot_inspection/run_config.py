@@ -70,7 +70,7 @@ class train_Cfg_base: # For pretriaing as a base
     depth_pixel_dropout_prob = 0.01
     depth_pixel_std_dev_multiplier = 0.01
 
-    enable_semantic_mask_noise = False
+    enable_semantic_mask_noise = True
     semantic_mask_false_negative_prob = 0.01
     semantic_mask_false_positive_prob = 0.001
 
@@ -103,6 +103,10 @@ class train_Cfg_base: # For pretriaing as a base
 
 class eval_Cfg:
     debug = False
+    # Keep imported evaluation targets dynamic so gravity can settle them, but
+    # make them effectively immovable relative to the inspection robot.
+    kinematic_inspection_target = False
+    inspection_target_mass = 100_000.0
     inspection_dataset = "evaluation"
     inspection_target = "ur10_mount"
     # inspection_dataset = "primitive"
@@ -194,7 +198,7 @@ class record_depth_Cfg(eval_Cfg):
     depth_pixel_dropout_prob = 0.01
     depth_pixel_std_dev_multiplier = 0.01
 
-    enable_semantic_mask_noise = False
+    enable_semantic_mask_noise = True
     semantic_mask_false_negative_prob = 0.01
     semantic_mask_false_positive_prob = 0.001
     # Point-cloud coverage is evaluated offline. Keep the face-based goal above
@@ -212,7 +216,7 @@ class record_depth_Cfg(eval_Cfg):
     data_recording_path = os.path.join(
         ISAACLAB_ROOT, "data/recorded_depth_data_eval", inspection_target
     )
-    save_images = False
+    save_images = True
     save_depth = True
     record_all_episodes = True
     create_timestamped_run = True
@@ -235,4 +239,4 @@ modes = [debug_Cfg, #0
     eval_Cfg, #2
     record_Cfg, #3
     record_depth_Cfg] #4
-cfg_mode = modes[4]
+cfg_mode = modes[1]

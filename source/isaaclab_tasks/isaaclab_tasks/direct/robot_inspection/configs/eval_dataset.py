@@ -44,6 +44,9 @@ evaluation_data_set = {
         "prim_path": "/World/envs/env_.*/ur10_mount",
         "scale": 3.0,
         "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
+        # The transformed mesh extends 0.405 m below its root. Spawn at this
+        # height so a kinematic mount rests on, rather than intersects, z=0.
+        "root_height": 0.405,
     },
    "pallet": {
         "num_faces": 10054,

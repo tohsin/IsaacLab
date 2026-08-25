@@ -59,8 +59,8 @@ class TrainingConfig_PreTrain:
     activation_fn = "elu"  # "elu" or "silu"
     entropy_coef =  3e-5
     value_loss_scale = 1.0 #1.0 
-    learning_rate = 3e-5
-    std_learning_rate = 3e-5
+    learning_rate = 5e-5
+    std_learning_rate = 6e-5
     grad_clip_norm = 0.7
     init_log_std =  0.0 # 0.0 
     manual_std_decay = False
@@ -68,7 +68,7 @@ class TrainingConfig_PreTrain:
     std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 50_000_000
+    global_timesteps = 35_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -96,7 +96,7 @@ class EvaluationConfig:
     is_eval = True
     deterministic_eval = True
     max_episodes = 20  # Added this so you can set the number of sims here!
-    headless = True
+    headless = False
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
     num_envs = 1
@@ -126,4 +126,4 @@ class EvaluationConfig:
 configs_ = [TrainingConfig_PreTrain(), 
             TrainingConfig_FineTune(),
               EvaluationConfig()]   
-CONFIG = configs_[2] # <-- Changed to 2 so EvaluationConfig is active
+CONFIG = configs_[0] # <-- Changed to 2 so EvaluationConfig is active

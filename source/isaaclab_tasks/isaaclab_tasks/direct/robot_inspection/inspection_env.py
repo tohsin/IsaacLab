@@ -357,11 +357,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             common_spawn_kwargs = {
                 "rigid_props": sim_utils.RigidBodyPropertiesCfg(
                     # Procedural training targets keep their sampled pose and
-                    # cannot roll or tip after contact. Preserve the existing
-                    # dynamic behavior of non-primitive USD evaluation assets.
-                    rigid_body_enabled=True, kinematic_enabled=primitive_cfg is not None
+                    # cannot roll or tip after contact. Evaluation can request
+                    # the same immovable behavior for imported USD targets.
+                    rigid_body_enabled=True,
+                    kinematic_enabled=bool(
+                        getattr(
+                            run_cfg,
+                            "kinematic_inspection_target",
+                            primitive_cfg is not None,
+                        )
+                    ),
                 ),
-                "mass_props": sim_utils.MassPropertiesCfg(density=5.0, mass=1000.0),
+                "mass_props": sim_utils.MassPropertiesCfg(
+                    density=5.0,
+                    mass=float(getattr(run_cfg, "inspection_target_mass", 1000.0)),
+                ),
                 "collision_props": sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                 "semantic_tags": [(self.cfg.inspection_goal_cfg.semantics_type, target_name)],
             }
@@ -1055,10 +1065,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
              inspection_cam = getattr(self, "_high_res_ptz_camera", self._ptz_camera)
              target_mask = self._get_semantic_mask(inspection_cam)
              if target_mask is not None:
-                 if hasattr(self, '_nav_camera'):
-                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask, nav_camera=self._nav_camera)
-                 else:
-                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask)
+                 target_name = str(self.env_target_names[0])
+                 target = self.inspection_goals[target_name]
+                 self.pc_collector.collect(
+                     inspection_cam,
+                     self.common_step_counter,
+                     semantic_mask=target_mask,
+                     nav_camera=self._nav_camera if hasattr(self, "_nav_camera") else None,
+                     target_position=target.data.root_pos_w[0],
+                     target_orientation=target.data.root_quat_w[0],
+                     episode_step=self.episode_length_buf[0].item(),
+                 )
 
         try:
             res = super().step(action)
@@ -1671,7 +1688,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             for i, env_id in enumerate(env_ids_cpu):
                 if env_id == 0:
                     final_face_count = num_faces_inspected_cpu[i]
-                    if hasattr(self, 'pc_collector') and self.pc_collector is not None:
+                    if (
+                        hasattr(self, "pc_collector")
+                        and self.pc_collector is not None
+                        and self.episode_length_buf[env_id].item() > 0
+                    ):
                         episode_steps = int(self.episode_length_buf[env_id].item())
                         duration_seconds = (
                             episode_steps * self.cfg.sim.dt * self.cfg.decimation
@@ -1713,6 +1734,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
                 self.episode_log_buffer["coverage_percent"].append(achieved_coverage_ratios_cpu[i] * 100)
                 self.episode_log_buffer["faces_discovered"].append(num_faces_inspected_cpu[i])
+                self.logger.log_target_episode(
+                    self.env_target_names[env_id],
+                    achieved_coverage_ratios_cpu[i] * 100.0,
+                    num_faces_inspected_cpu[i],
+                )
                 self.logger.update_episode_stats(num_faces_inspected_cpu[i]) # Update global stats
                 self.episode_log_buffer["mean_inspection_quality"].append(mean_quality_cpu[i])
                 self.episode_log_buffer["curriculum/current_threshold"].append(current_cov_goal)
@@ -1819,7 +1845,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             if assigned_mask.any():
                 mixed_state[assigned_mask, :3] = obj_state[assigned_mask, :3]
-                if target_name in self.primitive_root_heights:
+                configured_root_height = getattr(target_cfg, "root_height", None)
+                if configured_root_height is not None:
+                    mixed_state[assigned_mask, 2] = (
+                        self.scene.env_origins[env_ids][assigned_mask, 2]
+                        + float(configured_root_height)
+                    )
+                elif target_name in self.primitive_root_heights:
                     # Each generator reports the correct root height for its
                     # local origin. Cones use base-origin Z=0; centered meshes
                     # use half their vertical extent.
