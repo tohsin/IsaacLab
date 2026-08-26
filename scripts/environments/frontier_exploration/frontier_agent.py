@@ -218,7 +218,7 @@ def main():
                     resolution = 0.2
                     
                     if is_global:
-                        # Global map is not ego-centric, so compute the robot's pixel coordinates
+                        # compute the robot's pixel coordinates
                         map_origin_x, map_origin_y = -10.5, -12.5
                         rx, ry = robot_pose_0[0].item(), robot_pose_0[1].item()
                         robot_px = (int((rx - map_origin_x) / resolution), int((ry - map_origin_y) / resolution))
