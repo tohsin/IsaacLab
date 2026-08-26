@@ -27,7 +27,7 @@ ROBOT_CONFIGS = {
 }
 class Inpsection_Target:
     def __init__(self, custom_name, num_faces, prim_path, usd_path=None, primitive=None,
-                mesh_num_faces=None, scale=10.0,
+                mesh_num_faces=None, scale=10.0, root_height=None,
                 semantics_type = "class", semantics_name = "inspection_goal", orientation=(1.0, 0.0, 0.0, 0.0)):
         self.custom_name = custom_name
         # Expected reachable faces, used as the coverage/curriculum denominator.
@@ -41,6 +41,7 @@ class Inpsection_Target:
         self.primitive = primitive
         self.prim_path = prim_path
         self.scale = (float(scale), float(scale), float(scale)) if isinstance(scale, (int, float)) else scale
+        self.root_height = root_height
         self.orientation = orientation
 
 class Environment:
@@ -67,6 +68,7 @@ for key, value in usd_data_set.items():
         primitive = value.get("primitive"),
         mesh_num_faces = value.get("mesh_num_faces"),
         scale = value.get("scale", 10.0),
+        root_height = value.get("root_height"),
         orientation = value.get("orientation", (1.0, 0.0, 0.0, 0.0))
     )
 

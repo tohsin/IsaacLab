@@ -58,7 +58,16 @@ class ReconstructionDataCollector:
         self.episode_idx = 0
         self.episode_results = []
         
-    def collect(self, camera, step_idx, semantic_mask=None, nav_camera=None):
+    def collect(
+        self,
+        camera,
+        step_idx,
+        semantic_mask=None,
+        nav_camera=None,
+        target_position=None,
+        target_orientation=None,
+        episode_step=None,
+    ):
         """
         Collects data from the camera.
         
@@ -66,6 +75,9 @@ class ReconstructionDataCollector:
             camera: The TiledCamera object.
             step_idx: Current simulation step.
             semantic_mask: Optional boolean tensor (N, H, W, 1) to filter points.
+            target_position: Optional target root position in world coordinates.
+            target_orientation: Optional target root quaternion (w, x, y, z).
+            episode_step: Optional episode-local policy step.
         """
         if step_idx % self.save_interval != 0:
             return
@@ -147,7 +159,18 @@ class ReconstructionDataCollector:
             "fl_x": fl_x_frame,
             "fl_y": fl_y_frame,
             "cx": cx_frame,
-            "cy": cy_frame
+            "cy": cy_frame,
+            "target_position": (
+                target_position.detach().cpu().tolist()
+                if target_position is not None
+                else None
+            ),
+            "target_orientation": (
+                target_orientation.detach().cpu().tolist()
+                if target_orientation is not None
+                else None
+            ),
+            "episode_step": int(episode_step) if episode_step is not None else None,
         })
         self.frame_idx += 1
         
@@ -307,6 +330,12 @@ class ReconstructionDataCollector:
                     "cx": frame.get("cx", data_copy.get("cx")),
                     "cy": frame.get("cy", data_copy.get("cy"))
                 }
+                if frame.get("target_position") is not None:
+                    frame_entry["target_position"] = frame["target_position"]
+                if frame.get("target_orientation") is not None:
+                    frame_entry["target_orientation"] = frame["target_orientation"]
+                if frame.get("episode_step") is not None:
+                    frame_entry["episode_step"] = frame["episode_step"]
                 if mask_filename:
                     frame_entry["mask_path"] = f"masks/{mask_filename}"
                 data_copy["frames"].append(frame_entry)

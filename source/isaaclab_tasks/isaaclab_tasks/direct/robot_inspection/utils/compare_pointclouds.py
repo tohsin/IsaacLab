@@ -71,12 +71,12 @@ def compute_metrics(source_points, target_points):
     metrics[f"Coverage AUC (up to {max_thresh_auc}m)"] = auc_normalized
         
     return metrics
-source = "data/point_clouds/dataset/small_corner_bracket_physics.ply"
-target = "data/point_clouds/eval/small_corner_bracket_physics.ply"
+source = "data/point_clouds/eval/small_corner_bracket_physics.ply"
+target = "data/point_clouds/dataset/small_corner_bracket_physics.ply"
 def main():
     parser = argparse.ArgumentParser(description="Compare two point clouds.")
-    parser.add_argument("--source", type=str, default=source, help="Path to source PLY (e.g. reconstructed).")
-    parser.add_argument("--target", type=str, default=target, help="Path to target PLY (e.g. baseline/GT).")
+    parser.add_argument("--source", type=str, default=source, help="Path to source PLY (reconstruction).")
+    parser.add_argument("--target", type=str, default=target, help="Path to target PLY (ground truth).")
     parser.add_argument("--visualize", action="store_true", help="Visualize error (requires Open3D/matplotlib - simpler just prints).")
     parser.add_argument("--icp", action=argparse.BooleanOptionalAction, default=True, help="Run ICP alignment before comparison to fix offsets (default: True). Use --no-icp to disable.")
     

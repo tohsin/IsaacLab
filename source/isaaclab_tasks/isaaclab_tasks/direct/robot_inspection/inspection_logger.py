@@ -13,6 +13,7 @@ class InspectionLogger:
         # Default to num_envs * 4 if not provided (old behavior)
         if window_size is None:
              window_size = self.cfg.scene.num_envs * 4
+        self.window_size = window_size
         
         # Buffers
         self.episode_log_buffer = {
@@ -34,6 +35,15 @@ class InspectionLogger:
             "optical_flow_multiplier_per_step": deque(maxlen=window_size),
         }
         self.reward_logging_buffer = defaultdict(list)
+        # Keep target-specific episode metrics separate so the aggregate
+        # coverage curve does not hide primitives with infeasible geometry or
+        # an inaccurate reachable-face denominator.
+        self.per_target_episode_buffers = defaultdict(
+            lambda: {
+                "coverage_percent": deque(maxlen=self.window_size),
+                "faces_discovered": deque(maxlen=self.window_size),
+            }
+        )
         
         # New buffers for per-episode cumulative sums
         # We'll initialize these dynamically on the first update to adapt to device
@@ -88,6 +98,19 @@ class InspectionLogger:
                 "episode_summary/mean_optical_flow_excess": mean_optical_flow_excess,
                 "episode_summary/mean_optical_flow_multiplier": mean_optical_flow_mult,
             }
+
+            # Coverage is deliberately not clamped at 100%. A target whose
+            # mean exceeds 100% likely has an underestimated num_faces value.
+            for target_name, buffers in self.per_target_episode_buffers.items():
+                coverage_values = buffers["coverage_percent"]
+                if not coverage_values:
+                    continue
+                metric_prefix = f"episode_summary/per_target/{target_name}"
+                log_data[f"{metric_prefix}/mean_coverage_percent"] = np.mean(coverage_values)
+                log_data[f"{metric_prefix}/mean_faces_discovered"] = np.mean(
+                    buffers["faces_discovered"]
+                )
+                log_data[f"{metric_prefix}/episodes_in_window"] = len(coverage_values)
             
             # Add reward sum metrics
             log_data.update(reward_sum_metrics)
@@ -158,6 +181,12 @@ class InspectionLogger:
         if faces_discovered_count > self.global_max_faces_discovered:
             self.global_max_faces_discovered = faces_discovered_count
 
+    def log_target_episode(self, target_name: str, coverage_percent: float, faces_discovered: int):
+        """Add one completed episode to the rolling metrics for its target."""
+        buffers = self.per_target_episode_buffers[str(target_name)]
+        buffers["coverage_percent"].append(float(coverage_percent))
+        buffers["faces_discovered"].append(int(faces_discovered))
+
     def log_visible_faces(self, count: float):
         self.episode_log_buffer["visible_faces_per_step"].append(count)
 
@@ -174,4 +203,7 @@ class InspectionLogger:
         """
         for buffer in self.episode_log_buffer.values():
             buffer.clear()
+        for buffers in self.per_target_episode_buffers.values():
+            for buffer in buffers.values():
+                buffer.clear()
         self.episode_cumulative_rewards.clear()
