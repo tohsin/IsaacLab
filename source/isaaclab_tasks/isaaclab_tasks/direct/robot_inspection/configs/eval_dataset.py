@@ -39,10 +39,10 @@ evaluation_data_set = {
     },
 
     "ur10_mount": {
-        "num_faces": 12494, # 11910
+        "num_faces": 11910, #12494
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ur10_mount.usd",
         "prim_path": "/World/envs/env_.*/ur10_mount",
-        "scale": 3.0,
+        "scale": (3.0, 3.0, 2.2),
         "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
         # The transformed mesh extends 0.405 m below its root. Spawn at this
         # height so a kinematic mount rests on, rather than intersects, z=0.

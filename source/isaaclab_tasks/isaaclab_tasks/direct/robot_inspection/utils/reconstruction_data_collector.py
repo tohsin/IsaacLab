@@ -26,6 +26,10 @@ class ReconstructionDataCollector:
         else:
             self.output_path = base_output_path
         self.save_interval = getattr(cfg, "save_interval", 1)
+        self.save_images = bool(getattr(cfg, "save_images", False))
+        # Preserve the old coupled behavior for configurations that do not yet
+        # define save_video explicitly.
+        self.save_video = bool(getattr(cfg, "save_video", self.save_images))
         
         self.depth_path = os.path.join(self.output_path, "depth")
         self.masks_path = os.path.join(self.output_path, "masks")
@@ -37,10 +41,19 @@ class ReconstructionDataCollector:
             shutil.rmtree(self.output_path)
         os.makedirs(self.depth_path, exist_ok=True)
         os.makedirs(self.masks_path, exist_ok=True)
-        os.makedirs(self.rgb_path, exist_ok=True)
-        os.makedirs(self.rgb_cameras_path, exist_ok=True)
+        if self.save_images:
+            os.makedirs(self.rgb_path, exist_ok=True)
+            os.makedirs(self.rgb_cameras_path, exist_ok=True)
         
-        print(f"[ReconstructionDataCollector] Initialized. Saving Depth/Masks/RGB to: {self.output_path}")
+        enabled_outputs = ["Depth", "Masks"]
+        if self.save_images:
+            enabled_outputs.append("RGB images")
+        if self.save_video:
+            enabled_outputs.append("Video")
+        print(
+            "[ReconstructionDataCollector] Initialized. Saving "
+            f"{'/'.join(enabled_outputs)} to: {self.output_path}"
+        )
         
         # Buffer for transforms.json
         self.transforms_data = {
@@ -121,15 +134,18 @@ class ReconstructionDataCollector:
         # Buffer the data
         rgb_np = None
         rgb_cameras_np = None
-        # RGB and stitched videos are useful for demonstrations, but retaining
-        # them duplicates most of the per-frame memory during depth-only runs.
-        if getattr(self.cfg, "save_images", False) and "rgb" in camera.data.output:
+        # Capture RGB when either individual images or an episode video is
+        # requested. Video frames can be buffered without writing frame PNGs.
+        if (self.save_images or self.save_video) and "rgb" in camera.data.output:
             rgb_tensor = camera.data.output["rgb"][env_id] # (H, W, 4) or (H, W, 3)
-            rgb_np = rgb_tensor.cpu().numpy()
-            if rgb_np.shape[-1] == 4:
-                rgb_np = rgb_np[..., :3] # Remove Alpha
+            inspection_rgb_np = rgb_tensor.cpu().numpy()
+            if inspection_rgb_np.shape[-1] == 4:
+                inspection_rgb_np = inspection_rgb_np[..., :3] # Remove Alpha
+
+            if self.save_images:
+                rgb_np = inspection_rgb_np
                 
-            rgb_cameras_np = rgb_np.copy()
+            rgb_cameras_np = inspection_rgb_np.copy()
             # If nav_camera is provided, stitch side-by-side
             if nav_camera is not None and "rgb" in nav_camera.data.output:
                 nav_rgb_tensor = nav_camera.data.output["rgb"][env_id]
@@ -138,14 +154,14 @@ class ReconstructionDataCollector:
                     nav_rgb_np = nav_rgb_np[..., :3]
                 
                 # Resize if heights don't match
-                if rgb_np.shape[0] != nav_rgb_np.shape[0]:
+                if inspection_rgb_np.shape[0] != nav_rgb_np.shape[0]:
                     import cv2
-                    h = rgb_np.shape[0]
+                    h = inspection_rgb_np.shape[0]
                     w = int(nav_rgb_np.shape[1] * (h / nav_rgb_np.shape[0]))
                     nav_rgb_np = cv2.resize(nav_rgb_np, (w, h))
 
                 # Concatenate horizontally
-                rgb_cameras_np = np.concatenate((nav_rgb_np, rgb_np), axis=1)
+                rgb_cameras_np = np.concatenate((nav_rgb_np, inspection_rgb_np), axis=1)
 
         if not hasattr(self, 'frame_buffer'):
             self.frame_buffer = []
@@ -273,8 +289,11 @@ class ReconstructionDataCollector:
             rgb_path = os.path.join(write_output_path, "rgb")
             rgb_cameras_path = os.path.join(write_output_path, "rgb_cameras")
 
-            # Clear old directories if they exist safely
-            for path in (depth_path, masks_path, rgb_path, rgb_cameras_path):
+            # RGB directories are omitted in video-only mode.
+            output_directories = [depth_path, masks_path]
+            if self.save_images:
+                output_directories.extend((rgb_path, rgb_cameras_path))
+            for path in output_directories:
                 if os.path.exists(path):
                     shutil.rmtree(path)
                 os.makedirs(path, exist_ok=True)
@@ -311,14 +330,17 @@ class ReconstructionDataCollector:
                     rgb_img = Image.fromarray(rgb_to_save)
                     rgb_img.save(rgb_filepath)
 
-                # Collect RGB Cameras for video tracing and save to disk
+                # Collect stitched RGB for video. Only retain frame PNGs when
+                # save_images is enabled.
                 if frame.get("rgb_cameras") is not None:
                     rgb_cameras_to_save = frame["rgb_cameras"]
                     if rgb_cameras_to_save.dtype != np.uint8:
                         rgb_cameras_to_save = (rgb_cameras_to_save * 255).astype(np.uint8)
-                    rgb_frames.append(rgb_cameras_to_save)
-                    rgb_cameras_filepath = os.path.join(rgb_cameras_path, f"{file_name_base}.png")
-                    Image.fromarray(rgb_cameras_to_save).save(rgb_cameras_filepath)
+                    if self.save_video:
+                        rgb_frames.append(rgb_cameras_to_save)
+                    if self.save_images:
+                        rgb_cameras_filepath = os.path.join(rgb_cameras_path, f"{file_name_base}.png")
+                        Image.fromarray(rgb_cameras_to_save).save(rgb_cameras_filepath)
 
                 # Add Entry
                 frame_entry = {

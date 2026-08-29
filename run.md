@@ -1,8 +1,4 @@
 conda activate env_isaaclab
-cd /home/tosin/Documents/GitHub/IsaacLab
-scripts/reinforcement_learning/skrl/train_cont_gru_resnet_discrete_mu.py
-Bug might arrise
-conda install -c conda-forge gcc=12 -y
 
 
 

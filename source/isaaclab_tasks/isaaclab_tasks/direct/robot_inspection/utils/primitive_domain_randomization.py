@@ -113,15 +113,28 @@ def _sample_geometry(
     variant_indices = np.arange(num_envs) % num_variants
     rng.shuffle(variant_indices)
 
-    if primitive_type == "tessellated_cuboid":
-        base_size = _vector3(primitive_cfg["size"], "cuboid size")
-        size_min = _vector3(randomization_cfg.get("size_min", base_size), "cuboid size_min")
-        size_max = _vector3(randomization_cfg.get("size_max", base_size), "cuboid size_max")
-        _validate_range(size_min, size_max, "cuboid size")
+    if primitive_type in ("tessellated_cuboid", "tessellated_shell", "tessellated_shell_side", "tessellated_t_block", "tessellated_t_block_flat"):
+        is_flat = primitive_type in ("tessellated_t_block_flat", "tessellated_shell_side")
+        base_type = "tessellated_t_block" if primitive_type == "tessellated_t_block_flat" else "tessellated_shell" if primitive_type == "tessellated_shell_side" else primitive_type
+        base_size = _vector3(primitive_cfg["size"], f"{base_type} size")
+        size_min = _vector3(randomization_cfg.get("size_min", base_size), f"{base_type} size_min")
+        size_max = _vector3(randomization_cfg.get("size_max", base_size), f"{base_type} size_max")
+        _validate_range(size_min, size_max, f"{base_type} size")
+        
         variants = rng.uniform(size_min, size_max, size=(num_variants, 3))
         variants[0] = size_min
         sizes = variants[variant_indices]
         scales = sizes / base_size
+        
+        if is_flat:
+            # The unscaled mesh was rotated around X by -pi/2.
+            # Original geometry: X=width, Y=thickness, Z=height
+            # Rotated geometry: X=width, Y=height, Z=thickness
+            # The sampled 'sizes' are (width, thickness, height).
+            # We map the scales to the rotated geometry axes: X->X, Y->Z, Z->Y
+            scales = np.column_stack((scales[:, 0], scales[:, 2], scales[:, 1]))
+            sizes = np.column_stack((sizes[:, 0], sizes[:, 2], sizes[:, 1]))
+
         root_heights = sizes[:, 2] / 2.0
         return scales, sizes, root_heights, variant_indices
 

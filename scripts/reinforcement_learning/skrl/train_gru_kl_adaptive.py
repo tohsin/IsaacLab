@@ -719,8 +719,10 @@ if is_eval:
     coverage_percent_list = []
     target_index_list = []
     crashes_list = []
+    crash_source_counts_list = []
     base_env = env.unwrapped if hasattr(env, "unwrapped") else env
     target_index_to_name = tuple(getattr(base_env, "target_index_to_name", ()))
+    crash_source_names = tuple(getattr(base_env, "crash_source_names", ()))
     eval_dir = os.path.join(os.path.dirname(path), "eval_results")
     os.makedirs(eval_dir, exist_ok=True)
     print(f"[INFO] Evaluation results will be saved to: {eval_dir}")
@@ -750,6 +752,7 @@ if is_eval:
                             coverage_percent = infos["log"].get("coverage_percent", None)
                             target_indices = infos["log"].get("target_index", None)
                             crashes = infos["log"].get("crashes", None)
+                            crash_source_counts = infos["log"].get("crash_source_counts", None)
 
                             if coverage_percent is not None:
                                 if isinstance(coverage_percent, torch.Tensor):
@@ -774,6 +777,16 @@ if is_eval:
                                     )
                                 else:
                                     crashes_list.append(crashes)
+
+                            if crash_source_counts is not None:
+                                if isinstance(crash_source_counts, torch.Tensor):
+                                    crash_source_counts_list.extend(
+                                        crash_source_counts.detach().cpu().reshape(
+                                            -1, crash_source_counts.shape[-1]
+                                        ).tolist()
+                                    )
+                                else:
+                                    crash_source_counts_list.extend(crash_source_counts)
 
                             if isinstance(val, torch.Tensor):
                                  if val.numel() > 1:
@@ -917,6 +930,29 @@ if is_eval:
             )
             print(f"Total Terminated Due to Crash: {total_terminated} / {len(crashes_array)}")
             print(f"Mean Faces Discovered (NO CRASHES): {mean_faces_successful:.2f}")
+
+            crash_source_counts_array = np.asarray(crash_source_counts_list, dtype=np.int64)
+            if (
+                crash_source_names
+                and crash_source_counts_array.ndim == 2
+                and crash_source_counts_array.shape == (len(faces_array), len(crash_source_names))
+            ):
+                source_totals = crash_source_counts_array.sum(axis=0)
+                summary["crash_sources"] = {
+                    source_name: {
+                        "count": int(source_count),
+                        "percent_of_crashes": float(
+                            100.0 * source_count / max(1, source_totals.sum())
+                        ),
+                    }
+                    for source_name, source_count in zip(crash_source_names, source_totals)
+                }
+                print("Crash Sources (primary base_link contact):")
+                for source_name, source_count in zip(crash_source_names, source_totals):
+                    print(
+                        f"  {source_name}: {int(source_count)} "
+                        f"({100.0 * source_count / max(1, source_totals.sum()):.2f}% of crashes)"
+                    )
         print("="*50 + "\n")
 
         result_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -936,6 +972,12 @@ if is_eval:
             raw_results["target_names"] = np.asarray(target_index_to_name)
         if crashes_list:
             raw_results["crashes"] = crashes_array
+        if (
+            crash_source_counts_list
+            and crash_source_counts_array.shape == (len(faces_array), len(crash_source_names))
+        ):
+            raw_results["crash_source_counts"] = crash_source_counts_array
+            raw_results["crash_source_names"] = np.asarray(crash_source_names)
         np.savez_compressed(raw_path, **raw_results)
 
         print(f"[INFO] Evaluation summary saved to: {summary_path}")
@@ -946,4 +988,12 @@ if is_eval:
 else:
     # path = "/home/tosin/IsaacLab_inspection/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2025-09-07_11-42-53_ppo_gru_128/checkpoints/agent_450000.pt"
     # agent.load(path)
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        env.close()
+
+# Close the Kit application explicitly after the environment. Without this,
+# Python's implicit plugin teardown can unload Replicator and PhysX out of
+# order, producing shutdown warnings and occasionally hanging the process.
+simulation_app.close()

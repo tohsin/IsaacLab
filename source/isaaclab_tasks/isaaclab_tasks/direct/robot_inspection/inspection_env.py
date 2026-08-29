@@ -10,6 +10,7 @@ import gymnasium as gym
 import torch
 from collections.abc import Sequence
 import numpy as np
+import torchvision.transforms as transforms
 
 from datetime import datetime
 import isaaclab.sim as sim_utils
@@ -139,7 +140,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         self.spawn_markers = None
 
-
+        # RGB Augmentation Jitter initialization
+        if getattr(run_cfg, "enable_rgb_sensor_noise", False):
+            self.color_jitter = transforms.ColorJitter(
+                brightness=getattr(run_cfg, "rgb_color_jitter_brightness", 0.2), 
+                contrast=getattr(run_cfg, "rgb_color_jitter_contrast", 0.2), 
+                saturation=getattr(run_cfg, "rgb_color_jitter_saturation", 0.2), 
+                hue=getattr(run_cfg, "rgb_color_jitter_hue", 0.1)
+            )
+        else:
+            self.color_jitter = None
 
         # Initialize Data Collector if needed (saves RGB/images)
         self.data_collector = None
@@ -284,6 +294,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         )
         self.current_collision_force = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float32
+        )
+        self.crash_source_names = tuple(
+            getattr(self.cfg.sensor_cfg, "base_contact_filter_names", ())
+        ) + ("unattributed",)
+        self.current_collision_source_forces = torch.zeros(
+            (self.num_envs, len(self.crash_source_names) - 1),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self.episode_crash_source_counts = torch.zeros(
+            (self.num_envs, len(self.crash_source_names)),
+            device=self.device,
+            dtype=torch.long,
         )
         self.current_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
@@ -712,7 +735,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             intrinsic_matrices=intrinsic_matrices,
             cam_pos=nav_cam_pos,
             cam_quat=nav_cam_quat,
-            K_candidates=4096, # Sample a larger candidate pool to ensure enough valid points
+            K_candidates=None, # Unproject all pixels without downsampling
             filter_floor=getattr(self.cfg.mapping_cfg, "filter_floor_occupancy", True),
             filter_chassis=True,
             chassis_min_dist_sq=chassis_min_dist_sq
@@ -770,7 +793,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             intrinsic_matrices=intrinsic_matrices_insp,
             cam_pos=insp_cam_pos,
             cam_quat=insp_cam_quat,
-            K_candidates=4096,
+            K_candidates=None, # Unproject all pixels without downsampling
             filter_floor=False,
             filter_chassis=True,
             chassis_min_dist_sq=chassis_min_dist_sq
@@ -798,9 +821,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         device = depth_data.device
         
-        # Sample random pixels directly
-        u = torch.randint(0, W, (N, K_candidates), device=device)
-        v = torch.randint(0, H, (N, K_candidates), device=device)
+        if K_candidates is None or K_candidates >= W * H:
+            K_candidates = W * H
+            # Create a full grid of pixels to avoid duplicate samples
+            v_grid, u_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device), indexing='ij')
+            u = u_grid.flatten().unsqueeze(0).expand(N, -1)
+            v = v_grid.flatten().unsqueeze(0).expand(N, -1)
+        else:
+            # Sample random pixels directly
+            u = torch.randint(0, W, (N, K_candidates), device=device)
+            v = torch.randint(0, H, (N, K_candidates), device=device)
         
         # Gather depth
         batch_idx = torch.arange(N, device=device).unsqueeze(1)
@@ -928,6 +958,42 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 raise ValueError(msg)
         return torch.stack([local_occ_map, local_vis_map, local_visit], dim=-1).to(self.device)
 
+    def _apply_rgb_noise(self, rgb: torch.Tensor) -> torch.Tensor:
+        """Applies configured color jitter and gaussian noise to an RGB tensor (..., H, W, C)."""
+        if not getattr(run_cfg, "enable_rgb_sensor_noise", False):
+            return rgb
+            
+        # Color Jitter requires (num_envs, C, H, W)
+        rgb_permuted = rgb.permute(0, 3, 1, 2)
+        if hasattr(self, 'color_jitter') and self.color_jitter is not None:
+            rgb_permuted = self.color_jitter(rgb_permuted)
+            
+        # Convert back
+        rgb_noisy = rgb_permuted.permute(0, 2, 3, 1)
+        
+        # Gaussian Noise
+        noise_std = getattr(run_cfg, "rgb_noise_std", 0.05)
+        if noise_std > 0.0:
+            noise = torch.randn_like(rgb_noisy) * noise_std
+            rgb_noisy = torch.clamp(rgb_noisy + noise, 0.0, 1.0)
+            
+        return rgb_noisy
+
+    def _apply_depth_noise(self, depth: torch.Tensor) -> torch.Tensor:
+        """Applies configured noise, NaN handling, and clamping/normalization to a depth tensor."""
+        depth = depth.clone()
+        depth[~torch.isfinite(depth)] = 35.0
+        if getattr(run_cfg, "enable_depth_sensor_noise", False):
+            std_mult = getattr(run_cfg, "depth_pixel_std_dev_multiplier", 0.01)
+            dropout_prob = getattr(run_cfg, "depth_pixel_dropout_prob", 0.01)
+            depth = torch.normal(mean=depth, std=std_mult * depth)
+            depth[torch.bernoulli(torch.ones_like(depth) * dropout_prob) > 0] = 35.0
+        # Clamp noisy samples to the sensor's valid range, then normalize to [0, 1].
+        depth = torch.clamp(depth, min=0.0, max=35.0) / 35.0
+        if depth.dim() == 3:
+             depth = depth.unsqueeze(-1)
+        return depth
+
     def _get_observations(self) -> dict:
         # return  {"policy": None}
         front_camera_data = torch.empty(0, device=self.device)
@@ -937,47 +1003,45 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         if nav_modality == "rgb":
             if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types:
-                front_camera_data = self._nav_camera.data.output["rgb"] / 255.0
+                front_camera_data = self._apply_rgb_noise(self._nav_camera.data.output["rgb"] / 255.0)
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera Data!")
 
         elif nav_modality == "depth":
              if "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
-                front_camera_data = self._nav_camera.data.output["distance_to_image_plane"].clone()
-                front_camera_data[~torch.isfinite(front_camera_data)] = 35.0
-                if getattr(run_cfg, "enable_depth_sensor_noise", False):
-                    std_mult = getattr(run_cfg, "depth_pixel_std_dev_multiplier", 0.01)
-                    dropout_prob = getattr(run_cfg, "depth_pixel_dropout_prob", 0.01)
-                    front_camera_data = torch.normal(mean=front_camera_data, std=std_mult * front_camera_data)
-                    front_camera_data[torch.bernoulli(torch.ones_like(front_camera_data) * dropout_prob) > 0] = 35.0
-                # Clamp noisy samples to the sensor's valid range, then normalize to [0, 1].
-                front_camera_data = torch.clamp(front_camera_data, min=0.0, max=35.0) / 35.0
-                front_camera_data = front_camera_data.unsqueeze(-1)
+                front_camera_data = self._apply_depth_noise(self._nav_camera.data.output["distance_to_image_plane"])
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera Depth Data!")
 
         elif nav_modality == "rgbd":
             if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
-                rgb = self._nav_camera.data.output["rgb"] / 255.0
-                depth = self._nav_camera.data.output["distance_to_image_plane"].clone()
-                depth[~torch.isfinite(depth)] = 35.0
-                if getattr(run_cfg, "enable_depth_sensor_noise", False):
-                    std_mult = getattr(run_cfg, "depth_pixel_std_dev_multiplier", 0.01)
-                    dropout_prob = getattr(run_cfg, "depth_pixel_dropout_prob", 0.01)
-                    depth = torch.normal(mean=depth, std=std_mult * depth)
-                    depth[torch.bernoulli(torch.ones_like(depth) * dropout_prob) > 0] = 35.0
-                depth = torch.clamp(depth, min=0.0, max=35.0) / 35.0
-                if depth.dim() == 3:
-                     depth = depth.unsqueeze(-1)
+                rgb = self._apply_rgb_noise(self._nav_camera.data.output["rgb"] / 255.0)
+                depth = self._apply_depth_noise(self._nav_camera.data.output["distance_to_image_plane"])
                 
                 front_camera_data = torch.cat([rgb, depth], dim=-1)
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera RGBD Data!")
 
-        if  "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types:
-            ptz_camera_data = self._ptz_camera.data.output["rgb"] / 255.0
-            if torch.isnan(ptz_camera_data).any():
-                print("[ENV DEBUG] NaN detected in PTZ Camera Data!")
+        ptz_modality = getattr(run_cfg, "ptz_camera_modality", "rgb")
+
+        if ptz_modality == "rgb":
+            if "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types:
+                ptz_camera_data = self._apply_rgb_noise(self._ptz_camera.data.output["rgb"] / 255.0)
+                if torch.isnan(ptz_camera_data).any():
+                    print("[ENV DEBUG] NaN detected in PTZ Camera Data!")
+        elif ptz_modality == "depth":
+             if "distance_to_image_plane" in self.cfg.sensor_cfg.ptz_camera.data_types:
+                ptz_camera_data = self._apply_depth_noise(self._ptz_camera.data.output["distance_to_image_plane"])
+                if torch.isnan(ptz_camera_data).any():
+                    print("[ENV DEBUG] NaN detected in PTZ Camera Depth Data!")
+        elif ptz_modality == "rgbd":
+            if "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.ptz_camera.data_types:
+                rgb = self._apply_rgb_noise(self._ptz_camera.data.output["rgb"] / 255.0)
+                depth = self._apply_depth_noise(self._ptz_camera.data.output["distance_to_image_plane"])
+                
+                ptz_camera_data = torch.cat([rgb, depth], dim=-1)
+                if torch.isnan(ptz_camera_data).any():
+                    print("[ENV DEBUG] NaN detected in PTZ Camera RGBD Data!")
         semantic_channel = torch.zeros(
             (self.num_envs, self.cfg.sensor_cfg.ptz_camera.height, self.cfg.sensor_cfg.ptz_camera.width, 1),
             device=self.device
@@ -1393,14 +1457,30 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     def _compute_collision_contact(self) -> torch.Tensor:
         """Return the raw chassis-contact signal before temporal debouncing."""
         self.current_collision_force.zero_()
+        self.current_collision_source_forces.zero_()
         if hasattr(self, '_base_contact_sensor'):
-            net_forces_w = self._base_contact_sensor.data.net_forces_w
+            contact_data = self._base_contact_sensor.data
+            net_forces_w = contact_data.net_forces_w
 
             if net_forces_w.dim()==3:
                 xy_forces = torch.norm(net_forces_w[:, :, 0:2], dim=-1).max(dim=1)[0]
             else:
                 xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
             self.current_collision_force.copy_(xy_forces)
+
+            force_matrix_w = contact_data.force_matrix_w
+            if force_matrix_w is not None and force_matrix_w.numel() > 0:
+                # force_matrix_w: (environments, sensor bodies, filters, xyz)
+                filtered_xy_forces = torch.norm(force_matrix_w[..., 0:2], dim=-1)
+                filtered_xy_forces = filtered_xy_forces.amax(dim=1)
+                if filtered_xy_forces.shape == self.current_collision_source_forces.shape:
+                    self.current_collision_source_forces.copy_(filtered_xy_forces)
+                else:
+                    raise RuntimeError(
+                        "Contact attribution shape mismatch: expected "
+                        f"{tuple(self.current_collision_source_forces.shape)}, got "
+                        f"{tuple(filtered_xy_forces.shape)}"
+                    )
             return xy_forces > self.cfg.reward_cfg.collision_threshold
         return torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
@@ -1599,6 +1679,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # contact does not create a new crash every subsequent step.
         self.current_crashes = self.consecutive_collision_steps == required_contact_steps
         self.episode_crashes += self.current_crashes.long()
+        if self.current_crashes.any():
+            crash_env_ids = self.current_crashes.nonzero(as_tuple=True)[0]
+            source_forces = self.current_collision_source_forces[crash_env_ids]
+            max_source_force, primary_source = source_forces.max(dim=1)
+            # If none of the configured counterparts reports force, retain the
+            # crash but classify it as unattributed instead of guessing.
+            primary_source = torch.where(
+                max_source_force > 0.0,
+                primary_source,
+                torch.full_like(primary_source, len(self.crash_source_names) - 1),
+            )
+            self.episode_crash_source_counts[crash_env_ids, primary_source] += 1
 
         max_steps = self.curriculum.get_current_episode_length()
         time_out = self.episode_length_buf >= max_steps - 1
@@ -1650,6 +1742,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.extras["log"]["collision_proxy_steps"] = self.episode_collision_proxy_steps[env_ids].clone()
             self.extras["log"]["collision_contact_steps"] = self.episode_collision_contact_steps[env_ids].clone()
             self.extras["log"]["crashes"] = self.episode_crashes[env_ids].clone()
+            self.extras["log"]["crash_source_counts"] = self.episode_crash_source_counts[env_ids].clone()
             total_quality = current_q_values.sum(dim=1)
 
             mean_quality = torch.zeros_like(total_quality)
@@ -1759,6 +1852,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.consecutive_collision_steps[env_ids] = 0
             self.current_collision_contact[env_ids] = False
             self.current_collision_force[env_ids] = 0.0
+            self.current_collision_source_forces[env_ids] = 0.0
+            self.episode_crash_source_counts[env_ids] = 0
             self.current_crashes[env_ids] = False
                 
             # Map Logging and Reset

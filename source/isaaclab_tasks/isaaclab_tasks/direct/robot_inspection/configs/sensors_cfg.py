@@ -7,12 +7,22 @@ from .robot_cfg import RobotPhysicsCfg
 @configclass
 class SensorsCfg:
     """Configuration for all robot-mounted sensors."""
+    base_contact_filter_names = [
+        f"inspection_target/{name}" for name in env_parameters.inspection_targets
+    ] + ["warehouse"]
+    base_contact_filter_paths = [
+        target.prim_path for target in env_parameters.inspection_targets.values()
+    ] + [f"{env_parameters.prim_path}/.*"]
+    if not getattr(cfg_mode, "is_simplified", False):
+        base_contact_filter_names.append("obstacle")
+        base_contact_filter_paths.append("/World/envs/env_.*/obstacle_.*")
+
     if cfg_mode == record_Cfg:
         camera_height: int = 512
         camera_width: int = 512
     else:
-        camera_height: int = 128
-        camera_width: int = 128
+        camera_height: int = 86
+        camera_width: int = 96
 
     nav_data_types = ["distance_to_image_plane"]
     if getattr(cfg_mode, "nav_camera_modality", "rgb") in ["rgb", "rgbd"]:
@@ -70,8 +80,9 @@ class SensorsCfg:
         update_period=0.0, # Run every physics step
         history_length=3,
         track_air_time=False,
-        # filter_prim_paths_expr=[".*"],
-          filter_prim_paths_expr=[],
+        # Filtered forces are diagnostic only. Crash detection continues to use
+        # net_forces_w, while force_matrix_w attributes the contact counterpart.
+        filter_prim_paths_expr=base_contact_filter_paths,
         debug_vis=cfg_mode.debug
     )
 
@@ -82,7 +93,18 @@ class SensorsCfg:
             height=getattr(cfg_mode, "high_res_camera_height", 1024),
             width=getattr(cfg_mode, "high_res_camera_width", 1024),
             data_types=(
-                (["rgb"] if getattr(cfg_mode, "save_images", False) else [])
+                (
+                    ["rgb"]
+                    if (
+                        getattr(cfg_mode, "save_images", False)
+                        or getattr(
+                            cfg_mode,
+                            "save_video",
+                            getattr(cfg_mode, "save_images", False),
+                        )
+                    )
+                    else []
+                )
                 + ["distance_to_image_plane", "semantic_segmentation"]
             ),
             spawn=sim_utils.PinholeCameraCfg(

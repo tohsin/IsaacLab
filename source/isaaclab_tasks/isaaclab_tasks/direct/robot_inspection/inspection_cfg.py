@@ -122,6 +122,11 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     else:
         action_dim = action_space.shape[0]
 
+    nav_channels = 4 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgbd" else (3 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgb" else 1)
+    ptz_channels = 4 if getattr(cfg_mode, "ptz_camera_modality", "rgb") == "rgbd" else (3 if getattr(cfg_mode, "ptz_camera_modality", "rgb") == "rgb" else 1)
+    sem_channels = 1
+    total_camera_channels = nav_channels + ptz_channels + sem_channels
+
     observation_space = spaces.Dict({
 
         "robot-pose": spaces.Box(
@@ -133,7 +138,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "cameras": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
-            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, 8 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgbd" else (7 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgb" else 5))
+            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, total_camera_channels)
         ),
         "local-map": spaces.Box(
             low=float("-inf"),

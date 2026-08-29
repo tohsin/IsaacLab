@@ -37,11 +37,13 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
         raise ValueError("checkpoint_type must be 0 (best) or 1 (latest)")
 
 # Old hardcoded paths
+baseline = 'SEEIR-2026-08-25_12-12-09'
+
 
 path_pretrained = get_checkpoint_path(
     project_name="SEEIR-Baseline",
-    run_name="SEEIR-2026-08-23_13-53-01",
-    checkpoint_type=0  # 0 for best_agent.pt, 1 for the latest agent_*.pt step
+    run_name= baseline,
+    checkpoint_type=1 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
 )
 
 class TrainingConfig_PreTrain:
@@ -76,26 +78,26 @@ class TrainingConfig_PreTrain:
     }
 
 
-class TrainingConfig_FineTune(TrainingConfig_PreTrain):
-    num_envs = 64
-    batch_size = 8192 # 8192
-    checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
-    entropy_coef = 3e-5
-    learning_rate = 1e-5
-    global_timesteps = 30_000_000
-    reset_std = False # log(0.2) approx -1.6, giving an std of ~0.2
+# class TrainingConfig_FineTune(TrainingConfig_PreTrain):
+#     num_envs = 64
+#     batch_size = 8192 # 8192
+#     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
+#     entropy_coef = 3e-5
+#     learning_rate = 1e-5
+#     global_timesteps = 30_000_000
+#     reset_std = False # log(0.2) approx -1.6, giving an std of ~0.2
     
-    # Explicitly overriding the scheduler so it evaluates based on the NEW learning rate
-    scheduler_kwargs = {
-        "T_max": -1,  
-        "eta_min": learning_rate * 0.1,  # Decays to 6e-7
-    }
+#     # Explicitly overriding the scheduler so it evaluates based on the NEW learning rate
+#     scheduler_kwargs = {
+#         "T_max": -1,  
+#         "eta_min": learning_rate * 0.1,  # Decays to 6e-7
+#     }
     
 class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
     deterministic_eval = True
-    max_episodes = 20  # Added this so you can set the number of sims here!
+    max_episodes = 8 # Added this so you can set the number of sims here!
     headless = False
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
@@ -107,7 +109,7 @@ class EvaluationConfig:
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"
-    batch_size = 8192
+    batch_size =  8192
     entropy_coef = 3e-7
     learning_rate = 3e-5
     init_log_std = 0.0
@@ -124,6 +126,6 @@ class EvaluationConfig:
 
 # Select the configuration to use
 configs_ = [TrainingConfig_PreTrain(), 
-            TrainingConfig_FineTune(),
+            # TrainingConfig_FineTune(),
               EvaluationConfig()]   
-CONFIG = configs_[0] # <-- Changed to 2 so EvaluationConfig is active
+CONFIG = configs_[0] # <-- Changed to 1 so EvaluationConfig is active
