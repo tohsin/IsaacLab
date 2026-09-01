@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to run an environment with rotation and sine-wave zoom."""
+"""Script to run an environment with rotation and sine-wave PTZ panning."""
 
 """Launch Isaac Sim Simulator first."""
 
@@ -39,7 +39,7 @@ from isaaclab_tasks.utils import parse_env_cfg
 
 
 def main():
-    """Agent with rotation and sine-wave zoom."""
+    """Agent with rotation and sine-wave PTZ panning."""
     # create environment configuration
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
@@ -63,13 +63,13 @@ def main():
                     if not simulation_app.is_running():
                         break
                         
-                    # Calculate zoom using sine wave
+                    # Sweep the inspection camera while rotating the base.
                     # Period of 200 steps
-                    zoom_cmd = math.sin(2 * math.pi * i / 200) 
+                    pan_cmd = math.sin(2 * math.pi * i / 200)
                     
                     # Rotation: Constant 0.5 (Angular Velocity) at index 1
-                    # Actions: [lin_vel, ang_vel, pan, tilt, zoom]
-                    actions_list = [0.0, 0.5, 0.0, 0.0, zoom_cmd]
+                    # Actions: [lin_vel, ang_vel, pan, tilt]
+                    actions_list = [0.0, 0.5, pan_cmd, 0.0]
                     
                     # Replicate for all environments
                     actions = torch.tensor([actions_list] * args_cli.num_envs, device=env.unwrapped.device)

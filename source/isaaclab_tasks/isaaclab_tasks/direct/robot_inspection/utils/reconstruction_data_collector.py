@@ -124,7 +124,7 @@ class ReconstructionDataCollector:
         # Get Transform
         mat = self._get_matrix(cam_pos_w.cpu().numpy(), cam_quat_w.cpu().numpy())
         
-        # Extract per-frame intrinsics for zooming
+        # Extract the camera intrinsics recorded with this frame.
         K_np_frame = intrinsic_matrix.cpu().numpy()
         fl_x_frame = float(K_np_frame[0, 0])
         fl_y_frame = float(K_np_frame[1, 1])

@@ -121,7 +121,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.cfg.reward_cfg.visitation_reward_scale *= res_ratio
 
         self._setup_tensor_buffers()
-        self._setup_camera_zoom()
         
         # Initialize point cloud markers if needed
         self.pc_markers = None
@@ -236,31 +235,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         super().close()
         
-    def _setup_camera_zoom(self):
-        stage = get_current_stage()
-        self.camera_prims = []
-        self.current_focal_lengths = torch.full(
-            (self.num_envs,), 
-            self.cfg.robot_phys_cfg.default_focal_length,
-            device=self.device,
-            dtype=torch.float32
-        )
-        self.committed_focal_lengths = self.current_focal_lengths.clone()
-
-        self.high_res_camera_prims = []
-        for i in range(self.num_envs):
-            cam_prim_path = self.cfg.sensor_cfg.ptz_camera.prim_path.replace("env_.*", f"env_{i}")
-            prim = stage.GetPrimAtPath(cam_prim_path)
-            if not prim:
-                raise RuntimeError(f"Camera prim not found at path: {cam_prim_path}")
-            self.camera_prims.append(UsdGeom.Camera(prim))
-            
-            if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
-                hr_cam_prim_path = self.cfg.sensor_cfg.high_res_ptz_camera.prim_path.replace("env_.*", f"env_{i}")
-                hr_prim = stage.GetPrimAtPath(hr_cam_prim_path)
-                if hr_prim:
-                    self.high_res_camera_prims.append(UsdGeom.Camera(hr_prim))
-
     def _setup_tensor_buffers(self):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
@@ -553,9 +527,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             # Scale the wheel commands
             wheel_targets = self.wheel_commands * self.cfg.action_scale
-            # x = target
-            zoom_cmd = self.actions[:, 4]
-            self._update_zoom(zoom_cmd)
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             '''
@@ -610,67 +581,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         except Exception as e:
             print(f"[DEBUG FATAL] CUDA Error AFTER _apply_action tensor ops: {e}")
             raise
-
-    def _update_zoom(self, zoom_cmd: torch.Tensor):
-        delta_zoom = zoom_cmd * self.cfg.robot_phys_cfg.zoom_speed
-        self.current_focal_lengths += delta_zoom
-
-        self.current_focal_lengths = torch.clamp(
-            self.current_focal_lengths,
-            self.cfg.robot_phys_cfg.min_focal_length,
-            self.cfg.robot_phys_cfg.max_focal_length
-        )
-        
-        # Only update RayCaster and USD if focal length changed by > 1.0
-        # Updating USD attributes at high frequency for all envs triggers Vulkan TDR crashes
-        diff = torch.abs(self.current_focal_lengths - self.committed_focal_lengths)
-        update_mask = diff > 1.0
-        
-        if not torch.any(update_mask):
-            return
-            
-        update_indices = update_mask.nonzero(as_tuple=False).squeeze(-1)
-        
-        focal_lengths_cpu_to_update = self.current_focal_lengths[update_indices].cpu().numpy()
-        for idx_idx, env_idx in enumerate(update_indices.tolist()):
-            self.camera_prims[env_idx].GetFocalLengthAttr().Set(float(focal_lengths_cpu_to_update[idx_idx]))
-            if hasattr(self, "high_res_camera_prims") and len(self.high_res_camera_prims) > env_idx:
-                self.high_res_camera_prims[env_idx].GetFocalLengthAttr().Set(float(focal_lengths_cpu_to_update[idx_idx]))
-
-        self.committed_focal_lengths[update_mask] = self.current_focal_lengths[update_mask].clone()
-
-        self._zoom_ray_caster(update_indices)
-        
-        if hasattr(self, "_ptz_camera"):
-            self._ptz_camera._update_intrinsic_matrices(update_indices)
-        if hasattr(self, "_high_res_ptz_camera"):
-            self._high_res_ptz_camera._update_intrinsic_matrices(update_indices)
-        
-    def _zoom_ray_caster(self, env_ids=None):
-        if env_ids is None:
-            f = self.committed_focal_lengths.to(self.device)
-            num_updates = self.num_envs
-        else:
-            f = self.committed_focal_lengths[env_ids].to(self.device)
-            num_updates = len(env_ids)
-            
-        pcfg = self._raycaster_camera.cfg.pattern_cfg
-        w, h = pcfg.width, pcfg.height
-        ha = pcfg.horizontal_aperture
-        va = pcfg.vertical_aperture if pcfg.vertical_aperture is not None else ha * (h / w)
-
-        fx = w * f / ha
-        fy = h * f / va
-        cx = pcfg.horizontal_aperture_offset * fx + (w / 2.0)
-        cy = pcfg.vertical_aperture_offset * fy + (h / 2.0)
-        
-        K = torch.zeros((num_updates, 3, 3), device=self.device, dtype=torch.float32)
-        K[:, 0, 0] = fx
-        K[:, 1, 1] = fy
-        K[:, 0, 2] = cx
-        K[:, 1, 2] = cy
-        K[:, 2, 2] = 1.0
-        self._raycaster_camera.set_intrinsic_matrices(K, env_ids=env_ids) 
 
     def _update_maps(self, visualise: bool = False):
         
@@ -1193,7 +1103,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     
     def _update_max_ray_counts(self, valid_faces_tensor):
         """
-        Helper: Checks if the current view of any face has more rays (better zoom) 
+        Helper: Checks if the current view of any face has more rays (a better view).
         than previously recorded.
         """
         # Count how many rays are hitting each unique face in this specific frame
@@ -1217,7 +1127,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if batch_max > self.global_max_ray_count[0]:
             self.global_max_ray_count[0] = batch_max
             max_idx = counts.argmax()
-            # print(f"!!! New Global Max Zoom Record: {batch_max.item()} rays (Face {unique_ids[max_idx].item()}) !!!")
+            # print(f"New global max ray count: {batch_max.item()} rays (face {unique_ids[max_idx].item()})")
 
 
     def _compute_face_discovery_reward_fast(self):
@@ -1542,7 +1452,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.actions[:, :2] - self.previous_action_for_rewards[:, :2]
         ), dim=1)
 
-        # Camera Penalty (Pan, Tilt, Zoom which are indices 2, 3, 4)
+        # Camera penalty (pan and tilt, indices 2 and 3).
         ptz_action_delta = torch.sum(torch.square(
             self.actions[:, 2:] - self.previous_action_for_rewards[:, 2:]
         ), dim=1)

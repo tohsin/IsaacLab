@@ -65,7 +65,8 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             - [v_zero, ω_high_right] (Rotate in Place right)
     '''
     # action_space = spaces.Discrete(6)
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
+    # [linear velocity, angular velocity, PTZ pan velocity, PTZ tilt velocity]
+    action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
     viewer = ViewerCfg( eye=(-10, 5, 8.4), lookat=(0, 0, 0.0))
     
     # outside wall

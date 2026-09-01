@@ -49,6 +49,10 @@ PPO_DEFAULT_CONFIG = {
     "entropy_loss_scale": 0.0,      # entropy loss scaling factor
     "value_loss_scale": 1.0,        # value loss scaling factor
 
+    # Optional labels used to log the standard deviation of each action dimension.
+    # If omitted, dimensions are logged as action_0, action_1, etc.
+    "action_std_names": None,
+
     "kl_threshold": 0,              # KL divergence threshold for early stopping
 
     "rewards_shaper": None,         # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
@@ -688,7 +692,20 @@ class PPO_RNN(Agent):
                 "Loss / Entropy loss", cumulative_entropy_loss / (self._learning_epochs * self._mini_batches)
             )
 
-        self.track_data("Policy / Standard deviation", self.policy.distribution(role="policy").stddev.mean().item())
+        policy_stddev = self.policy.distribution(role="policy").stddev.detach()
+        self.track_data("Policy / Standard deviation", policy_stddev.mean().item())
+
+        # Keep the aggregate metric above for backwards-compatible dashboards, but
+        # also expose each action dimension so different exploration levels are not
+        # hidden by the mean.
+        if policy_stddev.ndim > 0:
+            per_action_stddev = policy_stddev.reshape(-1, policy_stddev.shape[-1]).mean(dim=0)
+            action_std_names = self.cfg.get("action_std_names")
+            if not action_std_names or len(action_std_names) != per_action_stddev.numel():
+                action_std_names = [f"action_{i}" for i in range(per_action_stddev.numel())]
+
+            for action_name, stddev in zip(action_std_names, per_action_stddev):
+                self.track_data(f"Policy / Standard deviation ({action_name})", stddev.item())
 
         if self._learning_rate_scheduler:
             self.track_data("Learning / Learning rate", self.scheduler.get_last_lr()[0])

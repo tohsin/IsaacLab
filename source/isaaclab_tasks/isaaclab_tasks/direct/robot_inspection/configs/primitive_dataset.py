@@ -77,8 +77,8 @@ _HIGH_CUBOID_RANDOMIZATION = {
 
 _SPHERE_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
-    "radius_min": 0.65,
-    "radius_max": 0.65,
+    "radius_min": 0.6,
+    "radius_max": 0.6,
 }
 
 _AXIAL_RANDOMIZATION = {
@@ -165,7 +165,7 @@ primitive_data_set = {
     "sphere": _target(
         "sphere",
         # A sphere has no finite-area bottom cap.
-        reachable_faces=_SPHERE_FACES,
+        reachable_faces=_SPHERE_FACES * 0.9,
         mesh_faces=_SPHERE_FACES,
         primitive={
             "type": "tessellated_sphere",

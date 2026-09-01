@@ -37,7 +37,7 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
         raise ValueError("checkpoint_type must be 0 (best) or 1 (latest)")
 
 # Old hardcoded paths
-baseline = 'SEEIR-2026-08-25_12-12-09'
+baseline = 'SEEIR-2026-08-31_20-03-08'
 
 
 path_pretrained = get_checkpoint_path(
@@ -59,7 +59,7 @@ class TrainingConfig_PreTrain:
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef =  3e-5
+    entropy_coef =  2e-5
     value_loss_scale = 1.0 #1.0 
     learning_rate = 5e-5
     std_learning_rate = 6e-5
@@ -98,7 +98,7 @@ class EvaluationConfig:
     is_eval = True
     deterministic_eval = True
     max_episodes = 8 # Added this so you can set the number of sims here!
-    headless = False
+    headless = True
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
     num_envs = 1
@@ -128,4 +128,4 @@ class EvaluationConfig:
 configs_ = [TrainingConfig_PreTrain(), 
             # TrainingConfig_FineTune(),
               EvaluationConfig()]   
-CONFIG = configs_[0] # <-- Changed to 1 so EvaluationConfig is active
+CONFIG = configs_[1] # <-- Changed to 1 so EvaluationConfig is active

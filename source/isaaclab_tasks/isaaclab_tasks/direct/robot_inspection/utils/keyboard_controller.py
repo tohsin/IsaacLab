@@ -31,8 +31,8 @@ class InspectionKeyboardController:
         self._create_key_bindings()
         
         self._pressed_keys = set()
-        # Action space: [linear_vel, angular_vel, pan_vel, tilt_vel, zoom]
-        self._base_command = np.zeros(5, dtype=np.float32)
+        # Action space: [linear_vel, angular_vel, pan_vel, tilt_vel]
+        self._base_command = np.zeros(4, dtype=np.float32)
 
     def __del__(self):
         """Release the keyboard interface."""
@@ -42,9 +42,9 @@ class InspectionKeyboardController:
 
     def advance(self) -> torch.Tensor:
         """Provides the current action tensor based on keyboard state.
-        Shape is (1, 5) to match environment input expectations for 1 environment.
+        Shape is (1, 4) to match environment input expectations for 1 environment.
         """
-        command = np.zeros(5, dtype=np.float32)
+        command = np.zeros(4, dtype=np.float32)
         for key in self._pressed_keys:
             if key in self._INPUT_KEY_MAPPING:
                 command += self._INPUT_KEY_MAPPING[key]
@@ -59,17 +59,17 @@ class InspectionKeyboardController:
 
     def _create_key_bindings(self):
         """Creates default key binding."""
-        # Action mapping: [lin_vel, ang_vel, pan, tilt, zoom]
+        # Action mapping: [lin_vel, ang_vel, pan, tilt]
         self._INPUT_KEY_MAPPING = {
             # Robot Base (Arrow Keys)
-            "UP": np.asarray([self.max_vel_speed, 0.0, 0.0, 0.0, 0.0]),
-            "DOWN": np.asarray([-self.max_vel_speed, 0.0, 0.0, 0.0, 0.0]),
-            "LEFT": np.asarray([0.0, 1.0, 0.0, 0.0, 0.0]),
-            "RIGHT": np.asarray([0.0, -1.0, 0.0, 0.0, 0.0]),
+            "UP": np.asarray([self.max_vel_speed, 0.0, 0.0, 0.0]),
+            "DOWN": np.asarray([-self.max_vel_speed, 0.0, 0.0, 0.0]),
+            "LEFT": np.asarray([0.0, 1.0, 0.0, 0.0]),
+            "RIGHT": np.asarray([0.0, -1.0, 0.0, 0.0]),
             
             # PTZ Camera (A/S/D/X to avoid W entirely)
-            "S": np.asarray([0.0, 0.0, 0.0, -1.0, 0.0]),  # Up
-            "X": np.asarray([0.0, 0.0, 0.0, 1.0, 0.0]),   # Down
-            "A": np.asarray([0.0, 0.0, 1.0, 0.0, 0.0]),   # Left
-            "D": np.asarray([0.0, 0.0, -1.0, 0.0, 0.0]),  # Right
+            "S": np.asarray([0.0, 0.0, 0.0, -1.0]),  # Up
+            "X": np.asarray([0.0, 0.0, 0.0, 1.0]),   # Down
+            "A": np.asarray([0.0, 0.0, 1.0, 0.0]),   # Left
+            "D": np.asarray([0.0, 0.0, -1.0, 0.0]),  # Right
         }

@@ -21,8 +21,8 @@ class SensorsCfg:
         camera_height: int = 512
         camera_width: int = 512
     else:
-        camera_height: int = 86
-        camera_width: int = 96
+        camera_height: int = 128
+        camera_width: int = 128
 
     nav_data_types = ["distance_to_image_plane"]
     if getattr(cfg_mode, "nav_camera_modality", "rgb") in ["rgb", "rgbd"]:

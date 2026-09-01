@@ -91,7 +91,7 @@ class train_Cfg_base: # For pretriaing as a base
     randomize_spawns = True
     use_hardest_curriculum = False
     reset_on_crash = True
-    start_crashes: int = 5
+    start_crashes: int = 1
     end_crashes: int = 1
     # Debounce contact noise. This is not a collision budget: a confirmed
     # collision terminates immediately after this many consecutive detections.
@@ -117,8 +117,10 @@ class eval_Cfg:
     debug = False
     # Evaluate the UR10 mount under the same target physics, sensor noise,
     # spawning, obstacle, and collision settings used by the primitive test.
-    inspection_dataset = "primitive"
-    inspection_target = "tessellated_t_block"
+    # inspection_dataset = "primitive"
+    # inspection_target = "tessellated_t_block"
+    inspection_dataset = "evaluation"
+    inspection_target = "ur10_mount"
     kinematic_inspection_target = True
     inspection_target_mass = 1000.0
 
@@ -159,10 +161,10 @@ class eval_Cfg:
     fixed_spawns = False
     randomize_spawns = True
     use_hardest_curriculum = True
-    start_crashes: int = 5
+    start_crashes: int = 1
     end_crashes: int = 1
     collision_consecutive_steps: int = 2
-    max_obstacles: int = 16
+    max_obstacles: int = 15
     reset_on_crash = True
     enable_voxel_visualization = False
 
@@ -170,7 +172,7 @@ class eval_Cfg:
     min_dist_between_obstacles: float = 2.2
     min_dist_to_objective: float = 2.0
 
-    is_simplified = True
+    is_simplified = False
     robot_footprint_radius: float = 0.45
     fallback_target_footprint_radius: float = 0.8
     target_obstacle_surface_clearance: float = 0.45

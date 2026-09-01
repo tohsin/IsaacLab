@@ -568,6 +568,7 @@ cfg["ratio_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef
 cfg["value_loss_scale"] = getattr(CONFIG, "value_loss_scale", 1.0)
+cfg["action_std_names"] = ["linear_velocity", "angular_velocity", "pan", "tilt"]
 cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 1.0
 cfg["time_limit_bootstrap"] = True
 
