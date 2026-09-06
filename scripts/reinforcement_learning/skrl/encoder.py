@@ -72,7 +72,9 @@ class ResnetEncoder(Encoder):
         print(f"2D ResNet Encoder: Num input channels: {input_ch}")
 
         # configuration from the IMPALA paper
-        resnet_conf = [[16, 2], [32, 2], [32, 2]]
+        # resnet_conf = [[16, 2], [32, 2], [32, 2]] # Original (15 layers, Wide)
+        # resnet_conf = [[2, 2], [4, 2], [4, 2]]      # Narrow (Semantic RL Inspection)
+        resnet_conf = [[16, 1], [32, 1], [32, 1]]   # Optimal for RL Performance (9 layers, Wide)
 
         curr_input_channels = input_ch
         layers = []
@@ -119,10 +121,11 @@ class Resnet3DEncoder(Encoder):
         input_ch = obs_space.shape[0]
         print("Num input channels: %d", input_ch)
 
-            # configuration from the IMPALA paper
         # configuration from the IMPALA paper
         # resnet_conf = [[8, 2], [16, 2], [16, 2]]
-        resnet_conf = [[16, 2], [32, 2], [32, 2]]
+        # resnet_conf = [[16, 2], [32, 2], [32, 2]] # Original (15 layers, Wide)
+        # resnet_conf = [[8, 2], [16, 2], [16, 2]]    # Narrow (Semantic RL Inspection)
+        resnet_conf = [[16, 1], [32, 1], [32, 1]]   # Optimal for RL Performance (9 layers, Wide)
        
         curr_input_channels = input_ch
         layers = []

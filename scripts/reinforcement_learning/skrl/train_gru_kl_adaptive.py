@@ -520,10 +520,10 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 2 # increased from 2 to extract more signal per batch
+cfg["learning_epochs"] = 4# increased from 2 to extract more signal per batch
 cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
-cfg["discount_factor"] = 0.99
-cfg["lambda"] = 0.97 #0.95 0.97
+cfg["discount_factor"] = 0.995
+cfg["lambda"] = 0.95 #0.95 0.97
 
 def get_custom_optimizer(params, lr, **kwargs):
     policy_params = []
@@ -579,14 +579,15 @@ cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-log_root_path = os.path.join(script_dir, "logs", "skrl", "SEEIR-Baseline")
+log_root_path = os.path.join(script_dir, "logs", "skrl", "Alblation-Baseline")
 log_root_path = os.path.abspath(log_root_path)
 
 # experiment_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_ppo_gru_128"
 # experiment_name = "Buld_dataset_2"
 # experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-experiment_name = "SEEIR-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+time_stmp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+experiment_name = "Alblation_baseline" + "_"+time_stmp
 log_dir = os.path.join(log_root_path, experiment_name)
 
 is_main_process = int(os.environ.get("REAL_LOCAL_RANK", 0)) == 0
@@ -614,11 +615,34 @@ if not is_eval and _use_wandb:
     cfg["experiment"]["wandb"] = _use_wandb  # Disable wandb in evaluation mode
 
 if _use_wandb:
+    # Build a comprehensive config dictionary for WandB
+    wandb_config = {}
+    
+    # 1. Log SKRL CONFIG
+    if "CONFIG" in globals():
+        wandb_config["SKRL_CONFIG"] = {k: v for k, v in CONFIG.__dict__.items() if not k.startswith('__') and not callable(v)}
+        
+    # 2. Log Environment config components (rewards, robot, mapping)
+    if "env_cfg" in globals():
+        if hasattr(env_cfg, "reward_cfg"):
+            wandb_config["REWARDS_CFG"] = {k: v for k, v in env_cfg.reward_cfg.__dict__.items() if not k.startswith('__') and not callable(v)}
+        if hasattr(env_cfg, "robot_cfg"):
+            wandb_config["ROBOT_CFG"] = {k: v for k, v in env_cfg.robot_cfg.__dict__.items() if not k.startswith('__') and not callable(v)}
+        if hasattr(env_cfg, "mapping_cfg"):
+            wandb_config["MAPPING_CFG"] = {k: v for k, v in env_cfg.mapping_cfg.__dict__.items() if not k.startswith('__') and not callable(v)}
+        
+    # 3. Log task run_config (from isaaclab_tasks - only logs the active cfg_mode)
+    try:
+        from isaaclab_tasks.direct.robot_inspection.run_config import cfg_mode as env_run_cfg
+        wandb_config["RUN_CONFIG"] = {k: v for k, v in env_run_cfg.__dict__.items() if not k.startswith('__') and not callable(v)}
+    except Exception as e:
+        print(f"[WARNING] Could not load RUN_CONFIG for WandB: {e}")
+
     cfg["experiment"]["wandb_kwargs"] = {
         "project": "Multi_object_inspection",  # Name of the project in WandB dashboard
         "name": experiment_name,           # Name of this specific run
         "tags": ["PPO", "IsaacLab", args_cli.task],
-        # "config": {}
+        "config": wandb_config
     }
 
     # Try to extract curriculum config if available
@@ -721,6 +745,8 @@ if is_eval:
     target_index_list = []
     crashes_list = []
     crash_source_counts_list = []
+    forward_crashes_list = []
+    reverse_crashes_list = []
     base_env = env.unwrapped if hasattr(env, "unwrapped") else env
     target_index_to_name = tuple(getattr(base_env, "target_index_to_name", ()))
     crash_source_names = tuple(getattr(base_env, "crash_source_names", ()))
@@ -754,6 +780,8 @@ if is_eval:
                             target_indices = infos["log"].get("target_index", None)
                             crashes = infos["log"].get("crashes", None)
                             crash_source_counts = infos["log"].get("crash_source_counts", None)
+                            forward_crashes = infos["log"].get("forward_crashes", None)
+                            reverse_crashes = infos["log"].get("reverse_crashes", None)
 
                             if coverage_percent is not None:
                                 if isinstance(coverage_percent, torch.Tensor):
@@ -789,6 +817,18 @@ if is_eval:
                                 else:
                                     crash_source_counts_list.extend(crash_source_counts)
 
+                            if forward_crashes is not None:
+                                if isinstance(forward_crashes, torch.Tensor):
+                                    forward_crashes_list.extend(forward_crashes.detach().cpu().reshape(-1).tolist())
+                                else:
+                                    forward_crashes_list.append(forward_crashes)
+                            
+                            if reverse_crashes is not None:
+                                if isinstance(reverse_crashes, torch.Tensor):
+                                    reverse_crashes_list.extend(reverse_crashes.detach().cpu().reshape(-1).tolist())
+                                else:
+                                    reverse_crashes_list.append(reverse_crashes)
+
                             if isinstance(val, torch.Tensor):
                                  if val.numel() > 1:
                                      faces_discovered_list.extend(val.tolist())
@@ -799,12 +839,28 @@ if is_eval:
                                      faces_discovered_list.append(val.item())
                                      current_faces = val.item()
                                      
-                                     print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}")
+                                     crash_str = ""
+                                     if crashes is not None and crashes.numel() == 1 and crashes.item():
+                                         if crash_source_counts is not None and crash_source_counts.numel() == len(crash_source_names):
+                                             idx = crash_source_counts.argmax().item()
+                                             source = crash_source_names[idx]
+                                             if source.startswith("obstacle_"):
+                                                 source = "obstacle"
+                                             crash_str = f" | Crash: {source}"
+                                     print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}{crash_str}")
                             else:
                                  faces_discovered_list.append(val)
                                  current_faces = val
                                  
-                                 print(f"[INFO] Episode {episode_count} Faces Discovered: {val}")
+                                 crash_str = ""
+                                 if crashes is not None and crashes:
+                                     if crash_source_counts is not None and len(crash_source_counts) == len(crash_source_names):
+                                         idx = np.argmax(crash_source_counts)
+                                         source = crash_source_names[idx]
+                                         if source.startswith("obstacle_"):
+                                             source = "obstacle"
+                                         crash_str = f" | Crash: {source}"
+                                 print(f"[INFO] Episode {episode_count} Faces Discovered: {val}{crash_str}")
 
                     if args_cli.max_episodes is not None and episode_count >= args_cli.max_episodes:
                         print(f"[INFO] strict max_episodes reached: {episode_count}")
@@ -939,6 +995,15 @@ if is_eval:
                 and crash_source_counts_array.shape == (len(faces_array), len(crash_source_names))
             ):
                 source_totals = crash_source_counts_array.sum(axis=0)
+                
+                grouped_totals = {}
+                for source_name, source_count in zip(crash_source_names, source_totals):
+                    if source_name.startswith("obstacle_"):
+                        group_name = "obstacle"
+                    else:
+                        group_name = source_name
+                    grouped_totals[group_name] = grouped_totals.get(group_name, 0) + source_count
+                    
                 summary["crash_sources"] = {
                     source_name: {
                         "count": int(source_count),
@@ -946,14 +1011,35 @@ if is_eval:
                             100.0 * source_count / max(1, source_totals.sum())
                         ),
                     }
-                    for source_name, source_count in zip(crash_source_names, source_totals)
+                    for source_name, source_count in grouped_totals.items()
                 }
                 print("Crash Sources (primary base_link contact):")
-                for source_name, source_count in zip(crash_source_names, source_totals):
+                for source_name, source_count in grouped_totals.items():
                     print(
                         f"  {source_name}: {int(source_count)} "
                         f"({100.0 * source_count / max(1, source_totals.sum()):.2f}% of crashes)"
                     )
+
+            forward_array = np.asarray(forward_crashes_list, dtype=np.int64)
+            reverse_array = np.asarray(reverse_crashes_list, dtype=np.int64)
+            if len(forward_array) > 0 and len(reverse_array) > 0:
+                total_forward = forward_array.sum()
+                total_reverse = reverse_array.sum()
+                total_directional = max(1, total_forward + total_reverse)
+                summary["crash_directions"] = {
+                    "forward": {
+                        "count": int(total_forward),
+                        "percent_of_directional_crashes": float(100.0 * total_forward / total_directional)
+                    },
+                    "reverse": {
+                        "count": int(total_reverse),
+                        "percent_of_directional_crashes": float(100.0 * total_reverse / total_directional)
+                    }
+                }
+                print("\nCrash Directions (intended velocity at time of crash):")
+                print(f"  Forward: {int(total_forward)} ({100.0 * total_forward / total_directional:.2f}%)")
+                print(f"  Reverse: {int(total_reverse)} ({100.0 * total_reverse / total_directional:.2f}%)")
+
         print("="*50 + "\n")
 
         result_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -979,6 +1065,12 @@ if is_eval:
         ):
             raw_results["crash_source_counts"] = crash_source_counts_array
             raw_results["crash_source_names"] = np.asarray(crash_source_names)
+            
+        if forward_crashes_list:
+            raw_results["forward_crashes"] = forward_array
+        if reverse_crashes_list:
+            raw_results["reverse_crashes"] = reverse_array
+            
         np.savez_compressed(raw_path, **raw_results)
 
         print(f"[INFO] Evaluation summary saved to: {summary_path}")

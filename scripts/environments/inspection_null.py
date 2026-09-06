@@ -82,6 +82,17 @@ def main():
                         
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
+                    
+                    if "log" in info and "crashes" in info["log"]:
+                        crashes = info["log"]["crashes"]
+                        if crashes is not None and crashes.numel() > 0 and crashes[0].item() > 0:
+                            if "crash_source_counts" in info["log"]:
+                                counts = info["log"]["crash_source_counts"][0]
+                                source_idx = counts.argmax().item()
+                                source_name = env.unwrapped.crash_source_names[source_idx]
+                                print(f"\n" + "="*40)
+                                print(f"💥 CRASH DETECTED! Source: {source_name} 💥")
+                                print("="*40 + "\n")
 
                     if getattr(run_cfg, "display_cameras", False):
                         try:

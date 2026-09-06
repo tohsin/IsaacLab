@@ -40,9 +40,9 @@ class Curriculum:
         self.num_envs = num_envs 
         self.device = device
 
-        self.success_buffer = deque(maxlen=2000) # Buffer ~20 resets per env
-        self.quality_buffer = deque(maxlen=2000)
-        self.min_episodes_for_update = 1600 # 2560
+        self.success_buffer = deque(maxlen=3000) # Buffer ~20 resets per env
+        self.quality_buffer = deque(maxlen=3000)
+        self.min_episodes_for_update = 2000 # 2560
 
         # Hysteresis Thresholds
         self.success_rate_increase_thresh = success_rate_increase_thresh

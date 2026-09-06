@@ -271,9 +271,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         )
         self.crash_source_names = tuple(
             getattr(self.cfg.sensor_cfg, "base_contact_filter_names", ())
-        ) + ("unattributed",)
+        ) + ("warehouse_wall", "floor_scrape")
         self.current_collision_source_forces = torch.zeros(
-            (self.num_envs, len(self.crash_source_names) - 1),
+            (self.num_envs, len(getattr(self.cfg.sensor_cfg, "base_contact_filter_names", ()))),
             device=self.device,
             dtype=torch.float32,
         )
@@ -282,6 +282,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             device=self.device,
             dtype=torch.long,
         )
+        self.episode_forward_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        self.episode_reverse_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.current_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
         if isinstance(self.cfg.action_space, gym.spaces.Discrete):
@@ -325,9 +327,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._ptz_camera = TiledCamera(self.cfg.sensor_cfg.ptz_camera)
         self.scene.sensors["ptz_camera"] = self._ptz_camera
 
-        if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
-            self._high_res_ptz_camera = TiledCamera(self.cfg.sensor_cfg.high_res_ptz_camera)
-            self.scene.sensors["high_res_ptz_camera"] = self._high_res_ptz_camera
+        if getattr(run_cfg, "add_high_res_inspection_camera", False):
+            if hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
+                self._high_res_ptz_camera = TiledCamera(self.cfg.sensor_cfg.high_res_ptz_camera)
+                self.scene.sensors["high_res_ptz_camera"] = self._high_res_ptz_camera
+            if hasattr(self.cfg.sensor_cfg, "high_res_face_raycaster"):
+                self._high_res_raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.high_res_face_raycaster)
+                self.scene.sensors["high_res_raycaster_camera"] = self._high_res_raycaster_camera
         if hasattr(self.cfg.sensor_cfg, "base_contact_sensor"):
             self._base_contact_sensor = ContactSensor(self.cfg.sensor_cfg.base_contact_sensor)
             self.scene.sensors["base_contact_sensor"] = self._base_contact_sensor
@@ -1134,8 +1140,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         """
         Compute the reward for discovering new faces.
         """
-        face_ids = self._raycaster_camera.data.output.get("face_ids")
-        target_mask = self._get_semantic_mask(self._ptz_camera)
+        raycaster = getattr(self, "_high_res_raycaster_camera", self._raycaster_camera)
+        ptz_camera = getattr(self, "_high_res_ptz_camera", self._ptz_camera)
+
+        face_ids = raycaster.data.output.get("face_ids")
+        target_mask = self._get_semantic_mask(ptz_camera)
         if run_cfg.debug and run_cfg.visualise_face_ids:
             self._show_face_ids_(
                 face_ids=face_ids,
@@ -1163,13 +1172,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if self.cfg.reward_cfg.use_angle_weighted_reward:
             # Get normals: (Num_Envs, H, W, 3)
-            normals = self._raycaster_camera.data.output["normals"]
+            normals = raycaster.data.output["normals"]
             
             # Get ray directions in world frame: (Num_Envs, Num_Rays, 3)
             # We need to reshape to (Num_Envs, H, W, 3) to match normals
             # Note: Checking MultiMeshRayCasterCamera, num_rays = width * height
             H, W = normals.shape[1], normals.shape[2]
-            ray_dirs = self._raycaster_camera._ray_directions_w.view(self.num_envs, H, W, 3)
+            ray_dirs = raycaster._ray_directions_w.view(self.num_envs, H, W, 3)
 
             # View direction is roughly -ray_direction (vector from surface to camera)
             # Dot product: (N . V) = (N . -R) = -(N . R)
@@ -1184,8 +1193,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         optical_flow_excess_means = []
         optical_flow_multiplier_means = []
         
-        if "motion_vectors" in self._ptz_camera.data.output:
-            motion_vecs = self._ptz_camera.data.output["motion_vectors"]
+        if "motion_vectors" in ptz_camera.data.output:
+            motion_vecs = ptz_camera.data.output["motion_vectors"]
             flow_magnitude = torch.norm(motion_vecs.float(), dim=-1)
             
             safe_zone = self.cfg.robot_phys_cfg.flow_safe_zone
@@ -1199,7 +1208,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # Apply Distance Mask to Weights
         if getattr(run_cfg, "use_depth_mask", False):
-            depth = self._raycaster_camera.data.output["distance_to_image_plane"].squeeze(-1)
+            depth = raycaster.data.output["distance_to_image_plane"].squeeze(-1)
             min_dist = getattr(self.cfg.reward_cfg, "min_inspection_distance", 1.5)
             
             # Hard 0.0 or 1.0 mask. If closer than min_dist, weight becomes exactly 0.0
@@ -1223,7 +1232,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             valid_faces = env_faces[valid_mask]
             valid_weights = env_weights[valid_mask]
 
-            if "motion_vectors" in self._ptz_camera.data.output:
+            if "motion_vectors" in ptz_camera.data.output:
                 env_flow = flow_magnitude[env_idx].flatten()
                 env_excess = active_penalty[env_idx].flatten()
                 env_flow_mult = flow_multiplier[env_idx].flatten()
@@ -1391,6 +1400,28 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         f"{tuple(self.current_collision_source_forces.shape)}, got "
                         f"{tuple(filtered_xy_forces.shape)}"
                     )
+                
+                max_attributed_force = filtered_xy_forces.max(dim=1)[0]
+                
+                if getattr(run_cfg, "freeze_on_unattributed", False):
+                    unattributed_mask = (xy_forces > self.cfg.reward_cfg.collision_threshold) & (max_attributed_force <= self.cfg.reward_cfg.collision_threshold)
+                    if unattributed_mask.any():
+                        print("\n" + "="*50)
+                        print("UNATTRIBUTED CRASH DETECTED!")
+                        print("Simulation frozen for inspection. UI is responsive.")
+                        print("Press Ctrl+C in terminal to exit.")
+                        print("="*50 + "\n")
+                        import omni.kit.app
+                        app = omni.kit.app.get_app()
+                        while True:
+                            app.update()
+
+                if getattr(run_cfg, "ignore_unattributed", False):
+                    # Ignore "unattributed" crashes by only triggering on explicit sources
+                    return max_attributed_force > self.cfg.reward_cfg.collision_threshold
+                else:
+                    return xy_forces > self.cfg.reward_cfg.collision_threshold
+                
             return xy_forces > self.cfg.reward_cfg.collision_threshold
         return torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
@@ -1595,12 +1626,41 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             max_source_force, primary_source = source_forces.max(dim=1)
             # If none of the configured counterparts reports force, retain the
             # crash but classify it as unattributed instead of guessing.
-            primary_source = torch.where(
-                max_source_force > 0.0,
-                primary_source,
-                torch.full_like(primary_source, len(self.crash_source_names) - 1),
-            )
+            unattributed_mask = max_source_force == 0.0
+            if unattributed_mask.any():
+                if hasattr(self, '_base_contact_sensor'):
+                    net_forces_w = self._base_contact_sensor.data.net_forces_w[crash_env_ids]
+                    if net_forces_w.dim() == 3:
+                        z_forces = torch.abs(net_forces_w[:, :, 2]).max(dim=1)[0]
+                        xy_forces = torch.norm(net_forces_w[:, :, 0:2], dim=-1).max(dim=1)[0]
+                    else:
+                        z_forces = torch.abs(net_forces_w[:, 2])
+                        xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
+                    
+                    is_floor_scrape = z_forces > xy_forces
+                    
+                    fallback_source = torch.where(
+                        is_floor_scrape,
+                        torch.full_like(primary_source, len(self.crash_source_names) - 1),
+                        torch.full_like(primary_source, len(self.crash_source_names) - 2)
+                    )
+                else:
+                    fallback_source = torch.full_like(primary_source, len(self.crash_source_names) - 1)
+
+                primary_source = torch.where(
+                    unattributed_mask,
+                    fallback_source,
+                    primary_source
+                )
             self.episode_crash_source_counts[crash_env_ids, primary_source] += 1
+            
+            # Record forward/reverse crashes based on intended velocity
+            intended_lin_vel = self.last_action[crash_env_ids, 0]
+            is_forward = intended_lin_vel >= 0
+            is_reverse = intended_lin_vel < 0
+            
+            self.episode_forward_crashes[crash_env_ids] += is_forward.long()
+            self.episode_reverse_crashes[crash_env_ids] += is_reverse.long()
 
         max_steps = self.curriculum.get_current_episode_length()
         time_out = self.episode_length_buf >= max_steps - 1
@@ -1653,6 +1713,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.extras["log"]["collision_contact_steps"] = self.episode_collision_contact_steps[env_ids].clone()
             self.extras["log"]["crashes"] = self.episode_crashes[env_ids].clone()
             self.extras["log"]["crash_source_counts"] = self.episode_crash_source_counts[env_ids].clone()
+            self.extras["log"]["forward_crashes"] = self.episode_forward_crashes[env_ids].clone()
+            self.extras["log"]["reverse_crashes"] = self.episode_reverse_crashes[env_ids].clone()
             total_quality = current_q_values.sum(dim=1)
 
             mean_quality = torch.zeros_like(total_quality)
@@ -1764,6 +1826,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.current_collision_force[env_ids] = 0.0
             self.current_collision_source_forces[env_ids] = 0.0
             self.episode_crash_source_counts[env_ids] = 0
+            self.episode_forward_crashes[env_ids] = 0
+            self.episode_reverse_crashes[env_ids] = 0
             self.current_crashes[env_ids] = False
                 
             # Map Logging and Reset
@@ -2067,15 +2131,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         env_ids = torch.tensor([0], device=self.device)
         
+        raycaster = getattr(self, "_high_res_raycaster_camera", self._raycaster_camera)
+
         for i in range(len(view_positions)):
             pos = view_positions[i].unsqueeze(0) + self.scene.env_origins[0] # Add global offset
             quat = view_quats[i].unsqueeze(0)
             
-            self._raycaster_camera.set_world_poses(pos, quat, env_ids)
-            self._raycaster_camera.update(dt=0.0)
+            raycaster.set_world_poses(pos, quat, env_ids)
+            raycaster.update(dt=0.0)
             
             # Get IDs
-            face_ids = self._raycaster_camera.data.output["face_ids"][0].cpu().numpy().flatten()
+            face_ids = raycaster.data.output["face_ids"][0].cpu().numpy().flatten()
             valid_ids = face_ids[face_ids >= 0]
             unique_faces_seen.update(valid_ids)
             

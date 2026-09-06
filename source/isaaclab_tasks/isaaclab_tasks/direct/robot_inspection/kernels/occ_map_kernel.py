@@ -88,7 +88,10 @@ def update_occupancy_fast(
                 X * map_dims[1] * map_dims[2] +\
                 Y * map_dims[2] +\
                 Z
-            wp.atomic_add(occupancy_map, linear_index, log_odds_free)
+            
+            # Latch: Skip free update if the cell is already considered occupied
+            if occupancy_map[linear_index] <= 0.0:
+                wp.atomic_add(occupancy_map, linear_index, log_odds_free)
 
         # Advance to the next voxel
         if tMaxX < tMaxY:

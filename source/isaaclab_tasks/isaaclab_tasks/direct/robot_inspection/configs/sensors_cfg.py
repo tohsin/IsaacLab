@@ -9,13 +9,15 @@ class SensorsCfg:
     """Configuration for all robot-mounted sensors."""
     base_contact_filter_names = [
         f"inspection_target/{name}" for name in env_parameters.inspection_targets
-    ] + ["warehouse"]
+    ]
     base_contact_filter_paths = [
         target.prim_path for target in env_parameters.inspection_targets.values()
-    ] + [f"{env_parameters.prim_path}/.*"]
+    ]
     if not getattr(cfg_mode, "is_simplified", False):
-        base_contact_filter_names.append("obstacle")
-        base_contact_filter_paths.append("/World/envs/env_.*/obstacle_.*")
+        max_obs = getattr(cfg_mode, "max_obstacles", 18)
+        for i in range(max_obs):
+            base_contact_filter_names.append(f"obstacle_{i}")
+            base_contact_filter_paths.append(f"/World/envs/env_.*/obstacle_{i}")
 
     if cfg_mode == record_Cfg:
         camera_height: int = 512
@@ -122,6 +124,31 @@ class SensorsCfg:
             semantic_filter=[f'class:{name}' for name in env_parameters.semantics_name] if isinstance(env_parameters.semantics_name, list) else f'class:{env_parameters.semantics_name}',
             update_latest_camera_pose=True,
             debug_vis=cfg_mode.debug
+        )
+
+        high_res_face_raycaster: MultiMeshRayCasterCameraCfg = MultiMeshRayCasterCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link",
+            update_period=0.24,
+            data_types=["face_ids", "normals", "distance_to_image_plane"],
+            offset=RayCasterCameraCfg.OffsetCfg(
+                pos=(0.3, 0.0, 0.15),
+                rot=(0.7071068, 0, 0, -0.7071068),
+                convention="ros"
+            ),
+            pattern_cfg=patterns.PinholeCameraPatternCfg(
+                height=getattr(cfg_mode, "high_res_camera_height", 1024),
+                width=getattr(cfg_mode, "high_res_camera_width", 1024),
+                focal_length=RobotPhysicsCfg().default_focal_length,
+                horizontal_aperture=20.955,
+            ),
+            mesh_prim_paths=[
+                MultiMeshRayCasterCameraCfg.RaycastTargetCfg(
+                    target_prim_expr=target.prim_path,
+                    track_mesh_transforms=True
+                ) for target in env_parameters.inspection_targets.values()
+            ],
+            update_mesh_ids=True,
+            debug_vis=False
         )
 
     #Ray-caster for accurately identifying mesh faces.

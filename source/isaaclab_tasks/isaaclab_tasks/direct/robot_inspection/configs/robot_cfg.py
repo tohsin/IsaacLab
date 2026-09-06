@@ -11,8 +11,8 @@ class RobotPhysicsCfg:
     max_angular_velocity: float = 4.0
     max_wheel_velocity: float = 20.0  # Max wheel velocity for the robot
     # PTZ Camera control configurations
-    pan_speed: float = 0.6  # Speed of the pan-tilt unit
-    tilt_speed: float = 0.6  # Speed of the pan-tilt unit
+    pan_speed: float = 0.7  # Speed of the pan-tilt unit
+    tilt_speed: float = 0.7  # Speed of the pan-tilt unit
     default_focal_length: float = 35.0  # Fixed inspection-camera focal length
     # optical flow parameters
     flow_safe_zone: float = 12.5

@@ -27,8 +27,10 @@ class debug_Cfg:
     min_episode_length: int = 500
     logging_interval: int = 1500
     max_episode_length: int = 10_000
-    inspection_dataset = "primitive"
-    inspection_target = "sphere"
+    # inspection_dataset = "primitive"
+    # inspection_target = "sphere"
+    inspection_dataset = "evaluation"
+    inspection_target = "ur10_mount"
     inspection_goal =  0.95
     visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
     display_ray_counts = True
@@ -56,7 +58,7 @@ class train_Cfg_base: # For pretriaing as a base
     debug = False
     egocentric_map = True
     min_episode_length: int = 500
-    max_episode_length: int = 1250
+    max_episode_length: int = 1200
     logging_interval: int = 1000
     inspection_goal =  0.1
     visualisation_mode = None
@@ -86,8 +88,10 @@ class train_Cfg_base: # For pretriaing as a base
 
     use_depth_mask = False
     min_inspection_distance = 0.7
+    
     use_optical_flow_as_quality = True
     fixed_spawns = False
+
     randomize_spawns = True
     use_hardest_curriculum = False
     reset_on_crash = True
@@ -99,19 +103,18 @@ class train_Cfg_base: # For pretriaing as a base
     min_obstacles: int = 3
     max_obstacles: int = 15
     min_spawn_max_y: float = 5.0
-    min_dist_to_objective: float = 2.0
+
 
     use_radius_aware_obstacle_spawning: bool = False
-    # Radius-aware spawn clearances. Required center distance is the sum of
-    # both footprint radii and the applicable free-surface clearance.
-    robot_footprint_radius: float = 0.45
-    fallback_target_footprint_radius: float = 0.8
-    target_obstacle_surface_clearance: float = 0.45
-    obstacle_obstacle_surface_clearance: float = 0.50
-    robot_obstacle_surface_clearance: float = 0.40
+    # robot_footprint_radius: float = 0.35
+    # fallback_target_footprint_radius: float = 0.8
+    # target_obstacle_surface_clearance: float = 1.0
+    # obstacle_obstacle_surface_clearance: float = 0.7
+    # robot_obstacle_surface_clearance: float = 1.0
     # Backward-compatible center-distance fallback for callers that do not
     # provide footprint radii.
     min_dist_between_obstacles: float = 2.2
+    min_dist_to_objective: float = 2.0
 
 class eval_Cfg:
     debug = False
@@ -168,16 +171,26 @@ class eval_Cfg:
     reset_on_crash = True
     enable_voxel_visualization = False
 
-    use_radius_aware_obstacle_spawning: bool = False
-    min_dist_between_obstacles: float = 2.2
-    min_dist_to_objective: float = 2.0
+
+    
+
+    add_high_res_inspection_camera = True
+    high_res_camera_width = 512
+    high_res_camera_height = 512
+    ignore_unattributed = False
+    freeze_on_unattributed = False
 
     is_simplified = False
-    robot_footprint_radius: float = 0.45
+
+    use_radius_aware_obstacle_spawning: bool = False
+    robot_footprint_radius: float = 0.35
     fallback_target_footprint_radius: float = 0.8
-    target_obstacle_surface_clearance: float = 0.45
-    obstacle_obstacle_surface_clearance: float = 0.50
+    target_obstacle_surface_clearance: float = 0.55
+    obstacle_obstacle_surface_clearance: float = 0.15
     robot_obstacle_surface_clearance: float = 0.40
+
+    min_dist_between_obstacles: float = 2.2
+    min_dist_to_objective: float = 2.0
 
 
 
