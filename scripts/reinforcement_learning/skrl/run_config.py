@@ -36,14 +36,29 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
     else:
         raise ValueError("checkpoint_type must be 0 (best) or 1 (latest)")
 
-# Old hardcoded paths
-baseline = 'SEEIR-2026-08-31_20-03-08'
 
+
+
+
+Models = {
+    'Base_model' :{
+        'path': "Alblation_baseline_2026-09-05_18-55-41"
+    },
+    # Here we test the relvance of the attention fusion for reasnoning
+    'MLP_Fusion' : {
+        'path': 'Alblation_MLP_FUSION_2026-09-06_11-02-41',
+        'use_attention_fusion': False
+    },
+    'Attention_Fusion' : {
+        'path': 'YOUR_ATTENTION_MODEL_PATH_HERE', # Update this with your actual attention model run name
+        'use_attention_fusion': True
+    }
+}
 
 path_pretrained = get_checkpoint_path(
-    project_name="SEEIR-Baseline",
-    run_name= baseline,
-    checkpoint_type=1 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
+    project_name="Alblation-Baseline",
+    run_name= Models['MLP_Fusion']['path'],
+    checkpoint_type=0 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
 )
 
 class TrainingConfig_PreTrain:
@@ -54,7 +69,7 @@ class TrainingConfig_PreTrain:
     num_envs = 128
     reset_std = True
     batch_size = 8192 # 8192
-    use_attention_fusion = True
+    use_attention_fusion = False
     use_transformer_encoder = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
@@ -78,21 +93,7 @@ class TrainingConfig_PreTrain:
     }
 
 
-# class TrainingConfig_FineTune(TrainingConfig_PreTrain):
-#     num_envs = 64
-#     batch_size = 8192 # 8192
-#     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
-#     entropy_coef = 3e-5
-#     learning_rate = 1e-5
-#     global_timesteps = 30_000_000
-#     reset_std = False # log(0.2) approx -1.6, giving an std of ~0.2
-    
-#     # Explicitly overriding the scheduler so it evaluates based on the NEW learning rate
-#     scheduler_kwargs = {
-#         "T_max": -1,  
-#         "eta_min": learning_rate * 0.1,  # Decays to 6e-7
-#     }
-    
+
 class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
@@ -104,7 +105,7 @@ class EvaluationConfig:
     num_envs = 1
     use_wandb = False
     reset_std = False
-    use_attention_fusion = True
+    use_attention_fusion = False
     use_transformer_encoder = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4

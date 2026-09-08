@@ -561,6 +561,7 @@ class PPO_RNN(Agent):
         cumulative_policy_loss = 0
         cumulative_entropy_loss = 0
         cumulative_value_loss = 0
+        all_kl_divergences = []
 
         # learning epochs
         for epoch in range(self._learning_epochs):
@@ -616,6 +617,7 @@ class PPO_RNN(Agent):
                         ratio = next_log_prob - sampled_log_prob
                         kl_divergence = ((torch.exp(ratio) - 1) - ratio).mean()
                         kl_divergences.append(kl_divergence)
+                        all_kl_divergences.append(kl_divergence)
 
                     # early stopping with KL divergence
                     if self._kl_threshold and kl_divergence > self._kl_threshold:
@@ -691,6 +693,22 @@ class PPO_RNN(Agent):
             self.track_data(
                 "Loss / Entropy loss", cumulative_entropy_loss / (self._learning_epochs * self._mini_batches)
             )
+
+        # Log the policy drift over the whole PPO update. Reduce the statistics
+        # across workers so rank 0 reports the global rather than local KL.
+        if all_kl_divergences:
+            local_kls = torch.stack(all_kl_divergences)
+            kl_sum = local_kls.sum()
+            kl_count = torch.tensor(local_kls.numel(), dtype=torch.float32, device=self.device)
+            kl_max = local_kls.max()
+
+            if config.torch.is_distributed:
+                torch.distributed.all_reduce(kl_sum, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(kl_count, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(kl_max, op=torch.distributed.ReduceOp.MAX)
+
+            self.track_data("Learning / KL divergence (mean)", (kl_sum / kl_count.clamp_min(1)).item())
+            self.track_data("Learning / KL divergence (max)", kl_max.item())
 
         policy_stddev = self.policy.distribution(role="policy").stddev.detach()
         self.track_data("Policy / Standard deviation", policy_stddev.mean().item())

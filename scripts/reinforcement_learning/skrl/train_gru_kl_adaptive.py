@@ -200,7 +200,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         if self.use_attention_fusion:
             # --- ATTENTION-BASED FUSION ---
             print("[INFO] Using Attention-Based Fusion")
-            self.d_model = 256  # Hidden dimension for tokens
+            self.d_model = 512  # Capacity-matched hidden dimension for modality tokens
             
             # Projectors
             self.camera_proj = nn.Linear(camera_features_size, self.d_model)
@@ -213,6 +213,10 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # Modality embeddings
             # self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model))
             self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model) * 0.02)
+
+            # Learned fusion token. Its attended representation is passed to the
+            # GRU instead of averaging the three modality tokens equally.
+            self.cls_token = nn.Parameter(torch.randn(1, 1, self.d_model) * 0.02)
             
             self.use_transformer_encoder = getattr(CONFIG, "use_transformer_encoder", False)
             
@@ -238,7 +242,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 self.mha = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=4, batch_first=True, dropout=0.0)
                 self.mha_norm = nn.LayerNorm(self.d_model)
             
-            # Output is merged attended tokens via mean pooling
+            # The learned fusion token is the attention block's output.
             self.gru_input_size = self.d_model
         else:
             act_str = getattr(CONFIG, "activation_fn", "elu").lower()
@@ -395,6 +399,11 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
             # Add modality embeddings so it knows which token is which
             tokens = tokens + self.modality_embeddings
+
+            # Prepend one learned query that can combine the modalities
+            # differently for every observation.
+            cls_token = self.cls_token.expand(tokens.shape[0], -1, -1)
+            tokens = torch.cat((cls_token, tokens), dim=1)
             
             if self.use_transformer_encoder:
                 # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
@@ -422,8 +431,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 # Residual connection + LayerNorm
                 attended_tokens = self.mha_norm(tokens + attn_output)
             
-            # Mean pool tokens along sequence dim: [batch_size, d_model]
-            fusion_features = attended_tokens.mean(dim=1)
+            # Read the learned fusion token: [batch_size, d_model]
+            fusion_features = attended_tokens[:, 0]
         else:
             combined_features = torch.cat((camera_features, map_features, encoded_pose), dim=1)
             fusion_features = self.feature_mlp(combined_features)
@@ -587,7 +596,8 @@ log_root_path = os.path.abspath(log_root_path)
 # experiment_name = "SEEIR-Baseline-FT" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 time_stmp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-experiment_name = "Alblation_baseline" + "_"+time_stmp
+# experiment_name = "Alblation_MLP_FUSION" + "_"+time_stmp
+experiment_name = "Alblation_ATTN_FUS" + "_"+time_stmp
 log_dir = os.path.join(log_root_path, experiment_name)
 
 is_main_process = int(os.environ.get("REAL_LOCAL_RANK", 0)) == 0

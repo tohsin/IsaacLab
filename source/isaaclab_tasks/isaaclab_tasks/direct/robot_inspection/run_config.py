@@ -52,7 +52,7 @@ class debug_Cfg:
     max_obstacles: int = 15
     reset_on_crash = True
     collision_consecutive_steps: int = 2
-    is_simplified = True
+    is_simplified = False
 
 class train_Cfg_base: # For pretriaing as a base
     debug = False

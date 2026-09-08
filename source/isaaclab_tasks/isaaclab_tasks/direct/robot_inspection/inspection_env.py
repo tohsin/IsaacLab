@@ -464,6 +464,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.obstacle_footprint_radii = torch.tensor(
             handler.get_horizontal_radii(), device=self.device, dtype=torch.float32
         )
+        self.obstacle_root_heights = torch.tensor(
+            handler.get_root_heights(), device=self.device, dtype=torch.float32
+        )
         
         self.obstacles = []
         for i, obs_cfg in enumerate(obstacle_cfgs):
@@ -2033,6 +2036,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(
                         num_resets, existing_positions
                     )
+                # Procedural shapes are centered on their root. Use the
+                # geometry-specific half-height/radius so their bases touch,
+                # rather than penetrate, the ground plane.
+                obs_pos[:, 2] = self.obstacle_root_heights[i]
                 obstacle_state[:, :3] = obs_pos + self.scene.env_origins[env_ids]
                 obstacle_state[:, 3:7] = obs_quat
                 existing_positions.append(obs_pos)
