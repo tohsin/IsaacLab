@@ -52,8 +52,8 @@ _COMMON_RANDOMIZATION = {
 
 _CUBOID_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
-    "size_min": (1.0, 1.0, 1.3),
-    "size_max": (1.0, 1.0, 1.3),
+    "size_min": (0.8, 0.8, 1.0),
+    "size_max": (1.2, 1.2, 1.5),
 
 
     # A cuboid's appearance changes under yaw, unlike a sphere or an upright
@@ -61,33 +61,46 @@ _CUBOID_RANDOMIZATION = {
     "yaw_range": (-3.141592653589793, 3.141592653589793),
 }
 
-_LOW_CUBOID_RANDOMIZATION = {
+# Upright T-block: requires higher minimum height so the underside faces of
+# the horizontal bar can be inspected without ground occlusion or collision.
+_T_BLOCK_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
-    "size_min": (1.0, 1.0, 0.2),
-    "size_max": (1.0, 1.0, 0.2),
+    "size_min": (0.8, 0.8, 1.5),
+    "size_max": (1.2, 1.2, 1.7),
     "yaw_range": (-3.141592653589793, 3.141592653589793),
 }
 
+
 _HIGH_CUBOID_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
-    "size_min": (1.0, 1.0, 1.2),
-    "size_max": (1.0, 1.0, 1.2),
+    "size_min": (0.8, 1.2, 0.8),
+    "size_max": (1.3, 1.5, 1.3),
     "yaw_range": (-3.141592653589793, 3.141592653589793),
 }
 
 _SPHERE_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
     "radius_min": 0.6,
-    "radius_max": 0.6,
+    "radius_max": 1.0,
 }
 
 _AXIAL_RANDOMIZATION = {
     **_COMMON_RANDOMIZATION,
-    "radius_min": 0.65,
-    "radius_max": 0.65,
+    "radius_min": 1.1, # 
+    "radius_max": 1.1,
     "height_min": 1.3,
-    "height_max": 1.3,
+    "height_max": 2.0, # 2.0
 }
+_AXIAL_RANDOMIZATION_FLAT = {
+    **_COMMON_RANDOMIZATION,
+    # The backend now interprets 'height' as the vertical World Z height for flat objects,
+    # and 'length' as the longitudinal length (X-axis).
+    "height_min": 0.8,
+    "height_max": 1.5,
+    "length_min": 1.0,
+    "length_max": 1.8, # 1.8
+}
+
 
 
 primitive_data_set = {
@@ -103,6 +116,7 @@ primitive_data_set = {
             "domain_randomization": {**_CUBOID_RANDOMIZATION},
         },
     ),
+
     "tessellated_t_block": _target(
         "tessellated_t_block",
         # Exclude bottom stem (2 triangles) and top of the bar (2 triangles)
@@ -114,9 +128,10 @@ primitive_data_set = {
             "subdivisions": 3,
             "bar_height_fraction": 0.3,
             "stem_width_fraction": 0.4,
-            "domain_randomization": {**_CUBOID_RANDOMIZATION},
+            "domain_randomization": {**_T_BLOCK_RANDOMIZATION},
         },
     ),
+
     "tessellated_t_block_flat": _target(
         "tessellated_t_block_flat",
         # Rests flat (excludes 6 bottom triangles) and robot is too short to see the top (excludes 6 top triangles).
@@ -136,6 +151,7 @@ primitive_data_set = {
             },
         },
     ),
+
     # "tessellated_shell": _target(
     #     "tessellated_shell",
     #     # Rests on the outer bottom face (2 base triangles out of 28)
@@ -162,6 +178,7 @@ primitive_data_set = {
             "domain_randomization": {**_HIGH_CUBOID_RANDOMIZATION},
         },
     ),
+
     "sphere": _target(
         "sphere",
         # A sphere has no finite-area bottom cap.
@@ -174,6 +191,7 @@ primitive_data_set = {
             "domain_randomization": {**_SPHERE_RANDOMIZATION},
         },
     ),
+
     "cylinder_upright": _target(
         "cylinder_upright",
         # Curved band only under the no-top/no-bottom assumption.
@@ -190,6 +208,7 @@ primitive_data_set = {
             "domain_randomization": {**_AXIAL_RANDOMIZATION},
         },
     ),
+
     "cylinder_flat": _target(
         "cylinder_flat",
         # Provisional reachable estimate until evaluation calibrates it.
@@ -206,12 +225,13 @@ primitive_data_set = {
             "height_segments": _HEIGHT_SEGMENTS,
             "cap_radial_segments": _CAP_RADIAL_SEGMENTS,
             "domain_randomization": {
-                **_AXIAL_RANDOMIZATION,
+                **_AXIAL_RANDOMIZATION_FLAT,
                 # Rotate only around world Z so the cylinder remains flat.
                 "yaw_range": (-3.141592653589793, 3.141592653589793),
             },
         },
     ),
+
     "cone": _target(
         "cone",
         # Curved side only; the concentric base rests on the floor.
@@ -228,6 +248,7 @@ primitive_data_set = {
             "domain_randomization": {**_AXIAL_RANDOMIZATION},
         },
     ),
+
     "cone_flat": _target(
         "cone_flat",
         # A sideways cone exposes its base and nearly all of its curved side.
@@ -243,7 +264,7 @@ primitive_data_set = {
             "height_segments": _HEIGHT_SEGMENTS,
             "cap_radial_segments": _CAP_RADIAL_SEGMENTS,
             "domain_randomization": {
-                **_AXIAL_RANDOMIZATION,
+                **_AXIAL_RANDOMIZATION_FLAT,
                 # Rotate around world Z while preserving the horizontal axis.
                 "yaw_range": (-3.141592653589793, 3.141592653589793),
             },

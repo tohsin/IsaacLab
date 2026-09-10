@@ -1,54 +1,31 @@
 ==================================================
 EVALUATION RESULTS (512 Episodes)
 ==================================================
-Mean Faces Discovered: 10529.22
-Std Deviation:         2355.95
+Mean Faces Discovered: 10818.32
+Std Deviation:         2141.99
 Min Faces:             0
-Max Faces:             12081
-Mean Coverage:          88.41%
-Std Coverage:           19.78%
+Max Faces:             12302
+Mean Coverage:          90.83%
+Std Coverage:           17.98%
 Per-target results:
-  ur10_mount: 512 episodes | Faces: 10529.22 | Coverage: 88.41%
-Mean Crashes: 0.05
+  ur10_mount: 512 episodes | Faces: 10818.32 | Coverage: 90.83%
+Mean Crashes: 0.10
 Median Crashes: 0.00
-Episodes With Crash: 5.27%
-Total Terminated Due to Crash: 27 / 512
-Mean Faces Discovered (NO CRASHES): 10817.86
+Episodes With Crash: 10.35%
+Total Terminated Due to Crash: 53 / 512
+Mean Faces Discovered (NO CRASHES): 11453.60
 Crash Sources (primary base_link contact):
-  inspection_target/ur10_mount: 4 (14.81% of crashes)
-  obstacle: 22 (81.48% of crashes)
-  warehouse_wall: 1 (3.70% of crashes)
+  inspection_target/ur10_mount: 43 (81.13% of crashes)
+  obstacle: 10 (18.87% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
   floor_scrape: 0 (0.00% of crashes)
 
 Crash Directions (intended velocity at time of crash):
-  Forward: 20 (74.07%)
-  Reverse: 7 (25.93%)
-
-
+  Forward: 44 (83.02%)
+  Reverse: 9 (16.98%)
 ==================================================
-EVALUATION RESULTS (512 Episodes)
-==================================================
-Mean Faces Discovered: 9672.21
-Std Deviation:         4007.80
-Min Faces:             0
-Max Faces:             12026
-Mean Coverage:          81.21%
-Std Coverage:           33.65%
-Per-target results:
-  ur10_mount: 512 episodes | Faces: 9672.21 | Coverage: 81.21%
-Mean Crashes: 0.18
-Median Crashes: 0.00
-Episodes With Crash: 17.97%
-Total Terminated Due to Crash: 92 / 512
-Mean Faces Discovered (NO CRASHES): 11395.61
-Crash Sources (primary base_link contact):
-  inspection_target/ur10_mount: 23 (25.00% of crashes)
-  obstacle: 62 (67.39% of crashes)
-  warehouse_wall: 7 (7.61% of crashes)
-  floor_scrape: 0 (0.00% of crashes)
 
-Crash Directions (intended velocity at time of crash):
-  Forward: 27 (29.35%)
-  Reverse: 65 (70.65%)
-==================================================
+[INFO] Evaluation summary saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-08_07-56-35/checkpoints/eval_results/eval_deterministic_2026-09-08_20-12-03.json
+[INFO] Raw episode results saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-08_07-56-35/checkpoints/eval_results/eval_deterministic_2026-09-08_20-12-03.npz
+(base) tosin@Elizabeth:~$ 
 

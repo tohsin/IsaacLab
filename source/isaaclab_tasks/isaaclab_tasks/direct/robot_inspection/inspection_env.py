@@ -269,9 +269,33 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.current_collision_force = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float32
         )
+        self.current_wheel_collision_contact = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.current_wheel_collision_force = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float32
+        )
+        self.current_tipover = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.current_tipovers = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.current_robot_up_z = torch.ones(
+            self.num_envs, device=self.device, dtype=torch.float32
+        )
+        self.episode_tipover_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.episode_tipovers = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.consecutive_tipover_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
         self.crash_source_names = tuple(
             getattr(self.cfg.sensor_cfg, "base_contact_filter_names", ())
-        ) + ("warehouse_wall", "floor_scrape")
+        ) + ("warehouse_wall", "floor_scrape", "tip_over")
         self.current_collision_source_forces = torch.zeros(
             (self.num_envs, len(getattr(self.cfg.sensor_cfg, "base_contact_filter_names", ()))),
             device=self.device,
@@ -337,6 +361,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if hasattr(self.cfg.sensor_cfg, "base_contact_sensor"):
             self._base_contact_sensor = ContactSensor(self.cfg.sensor_cfg.base_contact_sensor)
             self.scene.sensors["base_contact_sensor"] = self._base_contact_sensor
+        self._wheel_contact_sensors = {}
+        for sensor_name in getattr(self.cfg.sensor_cfg, "wheel_contact_sensor_names", ()):
+            if hasattr(self.cfg.sensor_cfg, sensor_name):
+                wheel_contact_sensor = ContactSensor(getattr(self.cfg.sensor_cfg, sensor_name))
+                self._wheel_contact_sensors[sensor_name] = wheel_contact_sensor
+                self.scene.sensors[sensor_name] = wheel_contact_sensor
 
         # --- RESTORED MANUAL SPAWN LOGIC ---
         stage = get_current_stage()
@@ -1377,18 +1407,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         return reward
     def _compute_collision_contact(self) -> torch.Tensor:
-        """Return the raw chassis-contact signal before temporal debouncing."""
+        """Return raw chassis or filtered wheel contact before debouncing."""
         self.current_collision_force.zero_()
+        self.current_wheel_collision_force.zero_()
+        self.current_wheel_collision_contact.zero_()
         self.current_collision_source_forces.zero_()
+        threshold = self.cfg.reward_cfg.collision_threshold
+        base_collision = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+
         if hasattr(self, '_base_contact_sensor'):
             contact_data = self._base_contact_sensor.data
             net_forces_w = contact_data.net_forces_w
 
-            if net_forces_w.dim()==3:
+            if net_forces_w.dim() == 3:
                 xy_forces = torch.norm(net_forces_w[:, :, 0:2], dim=-1).max(dim=1)[0]
             else:
                 xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
             self.current_collision_force.copy_(xy_forces)
+            base_collision = xy_forces > threshold
 
             force_matrix_w = contact_data.force_matrix_w
             if force_matrix_w is not None and force_matrix_w.numel() > 0:
@@ -1403,30 +1439,63 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         f"{tuple(self.current_collision_source_forces.shape)}, got "
                         f"{tuple(filtered_xy_forces.shape)}"
                     )
-                
-                max_attributed_force = filtered_xy_forces.max(dim=1)[0]
-                
-                if getattr(run_cfg, "freeze_on_unattributed", False):
-                    unattributed_mask = (xy_forces > self.cfg.reward_cfg.collision_threshold) & (max_attributed_force <= self.cfg.reward_cfg.collision_threshold)
-                    if unattributed_mask.any():
-                        print("\n" + "="*50)
-                        print("UNATTRIBUTED CRASH DETECTED!")
-                        print("Simulation frozen for inspection. UI is responsive.")
-                        print("Press Ctrl+C in terminal to exit.")
-                        print("="*50 + "\n")
-                        import omni.kit.app
-                        app = omni.kit.app.get_app()
-                        while True:
-                            app.update()
 
-                if getattr(run_cfg, "ignore_unattributed", False):
-                    # Ignore "unattributed" crashes by only triggering on explicit sources
-                    return max_attributed_force > self.cfg.reward_cfg.collision_threshold
-                else:
-                    return xy_forces > self.cfg.reward_cfg.collision_threshold
-                
-            return xy_forces > self.cfg.reward_cfg.collision_threshold
-        return torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        # Wheel net forces always include normal wheel-ground traction. Only
+        # inspect the filtered target/obstacle matrices, and use the full 3-D
+        # magnitude so a wheel climbing onto an object is still detected.
+        for wheel_contact_sensor in getattr(self, '_wheel_contact_sensors', {}).values():
+            force_matrix_w = wheel_contact_sensor.data.force_matrix_w
+            if force_matrix_w is None or force_matrix_w.numel() == 0:
+                continue
+            filtered_forces = torch.linalg.vector_norm(force_matrix_w, dim=-1).amax(dim=1)
+            if filtered_forces.shape != self.current_collision_source_forces.shape:
+                raise RuntimeError(
+                    "Wheel contact attribution shape mismatch: expected "
+                    f"{tuple(self.current_collision_source_forces.shape)}, got "
+                    f"{tuple(filtered_forces.shape)}"
+                )
+            self.current_collision_source_forces.copy_(
+                torch.maximum(self.current_collision_source_forces, filtered_forces)
+            )
+            wheel_force = filtered_forces.max(dim=1)[0]
+            self.current_wheel_collision_force.copy_(
+                torch.maximum(self.current_wheel_collision_force, wheel_force)
+            )
+
+        self.current_wheel_collision_contact.copy_(
+            self.current_wheel_collision_force > threshold
+        )
+        max_attributed_force = self.current_collision_source_forces.max(dim=1)[0]
+
+        if getattr(run_cfg, "freeze_on_unattributed", False):
+            unattributed_mask = base_collision & (max_attributed_force <= threshold)
+            if unattributed_mask.any():
+                print("\n" + "="*50)
+                print("UNATTRIBUTED CRASH DETECTED!")
+                print("Simulation frozen for inspection. UI is responsive.")
+                print("Press Ctrl+C in terminal to exit.")
+                print("="*50 + "\n")
+                import omni.kit.app
+                app = omni.kit.app.get_app()
+                while True:
+                    app.update()
+
+        if getattr(run_cfg, "ignore_unattributed", False):
+            # This diagnostic mode accepts only explicitly filtered contacts.
+            return max_attributed_force > threshold
+        return base_collision | self.current_wheel_collision_contact
+
+    def _compute_tipover(self) -> torch.Tensor:
+        """Return whether the chassis tilt exceeds the configured safe angle."""
+        root_quat_w = self.robot.data.root_quat_w
+        # For a normalized wxyz quaternion, this is the world-Z component of
+        # the robot's local up axis. It avoids allocating a vector per step.
+        self.current_robot_up_z.copy_(
+            1.0 - 2.0 * (root_quat_w[:, 1].square() + root_quat_w[:, 2].square())
+        )
+        max_tilt_degrees = float(getattr(run_cfg, "tipover_max_tilt_degrees", 45.0))
+        min_up_z = float(np.cos(np.deg2rad(max_tilt_degrees)))
+        return self.current_robot_up_z < min_up_z
 
     def _compute_occupancy_penalty(self) -> torch.Tensor:
         """
@@ -1587,6 +1656,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "occupancy_penalty": occupancy_penalty,
             "collision_contact": self.current_collision_contact.float(),
             "collision_force_xy": self.current_collision_force,
+            "wheel_collision_contact": self.current_wheel_collision_contact.float(),
+            "wheel_collision_force": self.current_wheel_collision_force,
+            "tipover_active": self.current_tipover.float(),
+            "tipover_events": self.current_tipovers.float(),
+            "robot_up_z": self.current_robot_up_z,
             "crashes": self.current_crashes.float(),
             "total_unscaled": total_unscaled,
             
@@ -1621,15 +1695,39 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         )
         # Emit a single event when contact first becomes confirmed. Persistent
         # contact does not create a new crash every subsequent step.
-        self.current_crashes = self.consecutive_collision_steps == required_contact_steps
+        confirmed_collision = self.consecutive_collision_steps == required_contact_steps
+
+        self.current_tipover = self._compute_tipover()
+        self.episode_tipover_steps += self.current_tipover.long()
+        self.consecutive_tipover_steps = torch.where(
+            self.current_tipover,
+            self.consecutive_tipover_steps + 1,
+            torch.zeros_like(self.consecutive_tipover_steps),
+        )
+        required_tipover_steps = max(
+            1, int(getattr(run_cfg, "tipover_consecutive_steps", 2))
+        )
+        self.current_tipovers = self.consecutive_tipover_steps == required_tipover_steps
+        self.episode_tipovers += self.current_tipovers.long()
+
+        self.current_crashes = confirmed_collision | self.current_tipovers
         self.episode_crashes += self.current_crashes.long()
         if self.current_crashes.any():
             crash_env_ids = self.current_crashes.nonzero(as_tuple=True)[0]
             source_forces = self.current_collision_source_forces[crash_env_ids]
             max_source_force, primary_source = source_forces.max(dim=1)
+            # Prefer an attributed contact when collision and tilt are
+            # confirmed together; otherwise record an independent tip-over.
+            tipover_only = self.current_tipovers[crash_env_ids] & ~confirmed_collision[crash_env_ids]
+            tipover_source = self.crash_source_names.index("tip_over")
+            primary_source = torch.where(
+                tipover_only,
+                torch.full_like(primary_source, tipover_source),
+                primary_source,
+            )
             # If none of the configured counterparts reports force, retain the
             # crash but classify it as unattributed instead of guessing.
-            unattributed_mask = max_source_force == 0.0
+            unattributed_mask = (max_source_force == 0.0) & ~tipover_only
             if unattributed_mask.any():
                 if hasattr(self, '_base_contact_sensor'):
                     net_forces_w = self._base_contact_sensor.data.net_forces_w[crash_env_ids]
@@ -1641,14 +1739,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
                     
                     is_floor_scrape = z_forces > xy_forces
-                    
+
+                    wall_source = self.crash_source_names.index("warehouse_wall")
+                    floor_source = self.crash_source_names.index("floor_scrape")
                     fallback_source = torch.where(
                         is_floor_scrape,
-                        torch.full_like(primary_source, len(self.crash_source_names) - 1),
-                        torch.full_like(primary_source, len(self.crash_source_names) - 2)
+                        torch.full_like(primary_source, floor_source),
+                        torch.full_like(primary_source, wall_source),
                     )
                 else:
-                    fallback_source = torch.full_like(primary_source, len(self.crash_source_names) - 1)
+                    fallback_source = torch.full_like(
+                        primary_source, self.crash_source_names.index("floor_scrape")
+                    )
 
                 primary_source = torch.where(
                     unattributed_mask,
@@ -1688,7 +1790,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         if getattr(run_cfg, "debug", False) and self.current_crashes.any():
             for i in self.current_crashes.nonzero(as_tuple=True)[0]:
-                print(f"[DEBUG] CRASH DETECTED in env {i.item()} at step {self.common_step_counter}")
+                if self.current_tipovers[i]:
+                    source = "tip_over"
+                elif self.current_wheel_collision_contact[i]:
+                    source = "wheel_target_or_obstacle"
+                else:
+                    source = "base_link"
+                print(
+                    f"[DEBUG] CRASH DETECTED in env {i.item()} at step "
+                    f"{self.common_step_counter}: source={source}, "
+                    f"base_xy={self.current_collision_force[i].item():.2f} N, "
+                    f"wheel_filtered={self.current_wheel_collision_force[i].item():.2f} N, "
+                    f"up_z={self.current_robot_up_z[i].item():.3f}"
+                )
                 
         return terminated, time_out
     
@@ -1714,6 +1828,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.extras["log"]["faces_discovered"] = num_faces_inspected
             self.extras["log"]["collision_proxy_steps"] = self.episode_collision_proxy_steps[env_ids].clone()
             self.extras["log"]["collision_contact_steps"] = self.episode_collision_contact_steps[env_ids].clone()
+            self.extras["log"]["tipover_steps"] = self.episode_tipover_steps[env_ids].clone()
+            self.extras["log"]["tipovers"] = self.episode_tipovers[env_ids].clone()
             self.extras["log"]["crashes"] = self.episode_crashes[env_ids].clone()
             self.extras["log"]["crash_source_counts"] = self.episode_crash_source_counts[env_ids].clone()
             self.extras["log"]["forward_crashes"] = self.episode_forward_crashes[env_ids].clone()
@@ -1823,10 +1939,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.best_q_per_face[env_ids] = 0.0
             self.episode_collision_proxy_steps[env_ids] = 0
             self.episode_collision_contact_steps[env_ids] = 0
+            self.episode_tipover_steps[env_ids] = 0
+            self.episode_tipovers[env_ids] = 0
             self.episode_crashes[env_ids] = 0
             self.consecutive_collision_steps[env_ids] = 0
+            self.consecutive_tipover_steps[env_ids] = 0
             self.current_collision_contact[env_ids] = False
             self.current_collision_force[env_ids] = 0.0
+            self.current_wheel_collision_contact[env_ids] = False
+            self.current_wheel_collision_force[env_ids] = 0.0
+            self.current_tipover[env_ids] = False
+            self.current_tipovers[env_ids] = False
+            self.current_robot_up_z[env_ids] = 1.0
             self.current_collision_source_forces[env_ids] = 0.0
             self.episode_crash_source_counts[env_ids] = 0
             self.episode_forward_crashes[env_ids] = 0

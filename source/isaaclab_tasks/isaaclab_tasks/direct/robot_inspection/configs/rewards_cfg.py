@@ -16,10 +16,9 @@ class RewardsCfg:
     # additive shaping cost. A confirmed physical collision is handled below
     # with an exclusive terminal reward.
     occupancy_penalty_scale: float = 0.15
-    collision_threshold: float = 10.0
-    terminal_collision_penalty: float = 1.0
+    collision_threshold: float = 1.0
+    terminal_collision_penalty: float = 2.0
 
-    exploration_success_bonus: float = 2.0
 
     # action_penalty_scale: float = 0.01 # original: 1e-5
     # ptz_penalty_scale: float = 0.006 # original: 1e-5

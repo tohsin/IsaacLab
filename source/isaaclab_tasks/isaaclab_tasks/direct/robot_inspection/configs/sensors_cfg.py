@@ -88,6 +88,51 @@ class SensorsCfg:
         debug_vis=cfg_mode.debug
     )
 
+    # A filtered contact sensor may only match one rigid body if its
+    # force_matrix_w values are to remain reliable. Keep one sensor per wheel
+    # and filter out the ground by asking only for target/obstacle contacts.
+    # The warehouse is deliberately not a wheel filter because its root also
+    # contains the floor. Wall and other unattributed chassis impacts remain
+    # covered by the unfiltered base_contact_sensor above.
+    wheel_contact_sensor_names = (
+        "front_left_wheel_contact_sensor",
+        "front_right_wheel_contact_sensor",
+        "rear_left_wheel_contact_sensor",
+        "rear_right_wheel_contact_sensor",
+    )
+    front_left_wheel_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/front_left_wheel_link",
+        update_period=0.0,
+        history_length=3,
+        track_air_time=False,
+        filter_prim_paths_expr=base_contact_filter_paths,
+        debug_vis=cfg_mode.debug,
+    )
+    front_right_wheel_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/front_right_wheel_link",
+        update_period=0.0,
+        history_length=3,
+        track_air_time=False,
+        filter_prim_paths_expr=base_contact_filter_paths,
+        debug_vis=cfg_mode.debug,
+    )
+    rear_left_wheel_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/rear_left_wheel_link",
+        update_period=0.0,
+        history_length=3,
+        track_air_time=False,
+        filter_prim_paths_expr=base_contact_filter_paths,
+        debug_vis=cfg_mode.debug,
+    )
+    rear_right_wheel_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/jackal_basic/rear_right_wheel_link",
+        update_period=0.0,
+        history_length=3,
+        track_air_time=False,
+        filter_prim_paths_expr=base_contact_filter_paths,
+        debug_vis=cfg_mode.debug,
+    )
+
     if getattr(cfg_mode, "add_high_res_inspection_camera", False):
         high_res_ptz_camera: TiledCameraCfg = TiledCameraCfg(
             prim_path="/World/envs/env_.*/Robot/jackal_basic/tilt_link/high_res_ptz_camera",

@@ -159,6 +159,31 @@ def _sample_geometry(
         radius_max = float(randomization_cfg.get("radius_max", base_radius))
         height_min = float(randomization_cfg.get("height_min", base_height))
         height_max = float(randomization_cfg.get("height_max", base_height))
+        
+        # If the object is flat, users intuitively expect 'height' to mean world Z height,
+        # and 'length' to mean the longitudinal length (geometric height).
+        if axis in ("X", "Y"):
+            if "length_min" in randomization_cfg or "length_max" in randomization_cfg:
+                # 'length' overrides the geometric height
+                geom_height_min = float(randomization_cfg.get("length_min", base_height))
+                geom_height_max = float(randomization_cfg.get("length_max", base_height))
+            else:
+                # Fallback to swap: if they provided 'height' but no 'length', 
+                # assume they meant world height. But to preserve backward compatibility if 
+                # they only provided radius, we'll map radius to world width/height.
+                geom_height_min = height_min
+                geom_height_max = height_max
+            
+            if "height_min" in randomization_cfg or "height_max" in randomization_cfg:
+                # If they explicitly specify 'height' for a flat object, treat it as World Z height.
+                # Since world height = 2 * radius, geometric radius = height / 2.
+                radius_min = float(randomization_cfg.get("height_min", base_radius * 2)) / 2.0
+                radius_max = float(randomization_cfg.get("height_max", base_radius * 2)) / 2.0
+            
+            # Assign the resolved geometric height
+            height_min = geom_height_min
+            height_max = geom_height_max
+
         _validate_range(radius_min, radius_max, f"{primitive_type} radius")
         _validate_range(height_min, height_max, f"{primitive_type} height")
 

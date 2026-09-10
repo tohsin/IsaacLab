@@ -529,34 +529,76 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 # warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
-cfg["learning_epochs"] = 4# increased from 2 to extract more signal per batch
+cfg["learning_epochs"] = 3  # Reduced from 4 to limit policy drift per rollout
 cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
 cfg["discount_factor"] = 0.995
 cfg["lambda"] = 0.95 #0.95 0.97
 
 def get_custom_optimizer(params, lr, **kwargs):
     policy_params = []
+    attention_params = []
     std_params = []
+
+    # Keep the rapidly-changing fusion representation on a lower learning
+    # rate while leaving the encoders, GRU, and policy/value heads unchanged.
+    attention_parameter_roots = {
+        "camera_proj",
+        "map_proj",
+        "pose_proj",
+        "token_norm",
+        "modality_embeddings",
+        "cls_token",
+        "sensor_attention",
+        "mha",
+        "mha_norm",
+    }
     for name, p in models["policy"].named_parameters():
         if "log_std_parameter" in name:
             std_params.append(p)
+        elif name.split(".", 1)[0] in attention_parameter_roots:
+            attention_params.append(p)
         else:
             policy_params.append(p)
+
+    if getattr(CONFIG, "use_attention_fusion", False) and not attention_params:
+        raise RuntimeError(
+            "Attention fusion is enabled, but no attention parameters were assigned "
+            "to the reduced-learning-rate optimizer group"
+        )
     
     opt_class = Muon if getattr(CONFIG, "optimizer_class", "adam").lower() == "muon" else torch.optim.Adam
-    
+
+    parameter_groups = [
+        {"params": policy_params, "lr": lr, "name": "policy"},
+    ]
+    if attention_params:
+        parameter_groups.append(
+            {
+                "params": attention_params,
+                "lr": getattr(CONFIG, "attention_learning_rate", 1.5e-5),
+                "name": "attention_fusion",
+            }
+        )
+
     if getattr(CONFIG, "manual_std_decay", False):
         print("[INFO] manual_std_decay is True. Removing log_std_parameter from optimizer.")
-        return opt_class([
-            {"params": policy_params, "lr": lr}
-        ], **kwargs)
     else:
-        return opt_class([
-            {"params": policy_params, "lr": lr},
-            {"params": std_params, "lr": getattr(CONFIG, "std_learning_rate", 3e-4)}
-        ], **kwargs)
+        parameter_groups.append(
+            {
+                "params": std_params,
+                "lr": getattr(CONFIG, "std_learning_rate", 3e-4),
+                "name": "action_std",
+            }
+        )
 
-print("[INFO] Using custom optimizer builder to decouple log_std learning rate")
+    group_summary = ", ".join(
+        f"{group['name']}: lr={group['lr']:.2e}, params={sum(p.numel() for p in group['params']):,}"
+        for group in parameter_groups
+    )
+    print(f"[INFO] Optimizer parameter groups: {group_summary}")
+    return opt_class(parameter_groups, **kwargs)
+
+print("[INFO] Using custom optimizer builder for policy, attention-fusion, and action-std learning rates")
 cfg["optimizer_class"] = get_custom_optimizer
 
 scheduler_max_steps = (total_timesteps // rollout_length) * cfg["learning_epochs"]

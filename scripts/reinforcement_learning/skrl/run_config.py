@@ -42,7 +42,7 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
 
 Models = {
     'Base_model' :{
-        'path': "Alblation_baseline_2026-09-05_18-55-41"
+        'path': "Alblation_ATTN_FUS_2026-09-08_07-56-35"
     },
     # Here we test the relvance of the attention fusion for reasnoning
     'MLP_Fusion' : {
@@ -57,7 +57,7 @@ Models = {
 
 path_pretrained = get_checkpoint_path(
     project_name="Alblation-Baseline",
-    run_name= Models['MLP_Fusion']['path'],
+    run_name= Models['Base_model']['path'],
     checkpoint_type=0 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
 )
 
@@ -69,15 +69,16 @@ class TrainingConfig_PreTrain:
     num_envs = 128
     reset_std = True
     batch_size = 8192 # 8192
-    use_attention_fusion = False
+    use_attention_fusion = True
     use_transformer_encoder = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef =  0.00005
+    entropy_coef =  0.00004
     value_loss_scale = 1.0 #1.0 
-    learning_rate = 0.00003
-    std_learning_rate = 3e-5
+    learning_rate = 0.00004
+    attention_learning_rate = 2e-5
+    std_learning_rate = 4e-5
     grad_clip_norm = 0.8
     init_log_std =  0.0 # 0.0 
     manual_std_decay = False
@@ -105,7 +106,7 @@ class EvaluationConfig:
     num_envs = 1
     use_wandb = False
     reset_std = False
-    use_attention_fusion = False
+    use_attention_fusion = True
     use_transformer_encoder = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4

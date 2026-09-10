@@ -726,4 +726,8 @@ class PPO_RNN(Agent):
                 self.track_data(f"Policy / Standard deviation ({action_name})", stddev.item())
 
         if self._learning_rate_scheduler:
-            self.track_data("Learning / Learning rate", self.scheduler.get_last_lr()[0])
+            group_lrs = self.scheduler.get_last_lr()
+            self.track_data("Learning / Learning rate", group_lrs[0])
+            for index, (parameter_group, group_lr) in enumerate(zip(self.optimizer.param_groups, group_lrs)):
+                group_name = parameter_group.get("name", f"group_{index}")
+                self.track_data(f"Learning / Learning rate ({group_name})", group_lr)

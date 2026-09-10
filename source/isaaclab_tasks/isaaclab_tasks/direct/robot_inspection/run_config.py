@@ -27,10 +27,10 @@ class debug_Cfg:
     min_episode_length: int = 500
     logging_interval: int = 1500
     max_episode_length: int = 10_000
-    # inspection_dataset = "primitive"
-    # inspection_target = "sphere"
-    inspection_dataset = "evaluation"
-    inspection_target = "ur10_mount"
+    inspection_dataset = "primitive"
+    inspection_target = "cone"
+    # inspection_dataset = "evaluation"
+    # inspection_target = "ur10_mount"
     inspection_goal =  0.95
     visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
     display_ray_counts = True
@@ -52,7 +52,15 @@ class debug_Cfg:
     max_obstacles: int = 15
     reset_on_crash = True
     collision_consecutive_steps: int = 2
+    tipover_max_tilt_degrees: float = 45.0
+    tipover_consecutive_steps: int = 2
     is_simplified = False
+    use_radius_aware_obstacle_spawning: bool = False
+    robot_footprint_radius: float = 0.35
+    fallback_target_footprint_radius: float = 0.8
+    target_obstacle_surface_clearance: float = 2.3
+    obstacle_obstacle_surface_clearance: float = 1.5
+    robot_obstacle_surface_clearance: float = 1.0
 
 class train_Cfg_base: # For pretriaing as a base
     debug = False
@@ -100,6 +108,10 @@ class train_Cfg_base: # For pretriaing as a base
     # Debounce contact noise. This is not a collision budget: a confirmed
     # collision terminates immediately after this many consecutive detections.
     collision_consecutive_steps: int = 2
+    # Treat sustained excessive chassis tilt as the same terminal safety event
+    # as a confirmed contact crash.
+    tipover_max_tilt_degrees: float = 45.0
+    tipover_consecutive_steps: int = 2
     min_obstacles: int = 3
     max_obstacles: int = 15
     min_spawn_max_y: float = 5.0
@@ -144,8 +156,8 @@ class eval_Cfg:
     semantic_mask_false_negative_prob = 0.01
     semantic_mask_false_positive_prob = 0.001
 
-    max_episode_length: int = 1250
-    min_episode_length: int = 1250
+    max_episode_length: int = 1200
+    min_episode_length: int = 1200
     logging_interval: int = 1500
     inspection_goal =  0.95
     visualisation_mode = None
@@ -167,6 +179,8 @@ class eval_Cfg:
     start_crashes: int = 1
     end_crashes: int = 1
     collision_consecutive_steps: int = 2
+    tipover_max_tilt_degrees: float = 45.0
+    tipover_consecutive_steps: int = 2
     max_obstacles: int = 15
     reset_on_crash = True
     enable_voxel_visualization = False
@@ -294,3 +308,5 @@ class record_Cfg:
     randomize_spawns = True
     use_hardest_curriculum = True
     reset_on_crash = False
+    tipover_max_tilt_degrees: float = 45.0
+    tipover_consecutive_steps: int = 2
