@@ -619,9 +619,20 @@ class PPO_RNN(Agent):
                         kl_divergences.append(kl_divergence)
                         all_kl_divergences.append(kl_divergence)
 
-                    # early stopping with KL divergence
-                    if self._kl_threshold and kl_divergence > self._kl_threshold:
-                        break
+                    # Early stopping must be a collective decision in distributed
+                    # training. If only one rank breaks here, the other rank enters
+                    # the parameter-gradient all-reduce below while the stopped rank
+                    # moves on to a scalar KL all-reduce, desynchronizing NCCL.
+                    if self._kl_threshold:
+                        stop_for_kl = (kl_divergence > self._kl_threshold).to(
+                            dtype=torch.int32
+                        )
+                        if config.torch.is_distributed:
+                            torch.distributed.all_reduce(
+                                stop_for_kl, op=torch.distributed.ReduceOp.MAX
+                            )
+                        if stop_for_kl.item():
+                            break
 
                     # compute entropy loss
                     if self._entropy_loss_scale:

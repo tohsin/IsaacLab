@@ -33,7 +33,9 @@ class SensorsCfg:
     # Front-facing camera for navigation.
     navigation_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Robot/jackal_basic/base_link/nav_camera",
-        update_period=0.24,
+        # update_period=0.24,
+        update_period=0.093,
+
         height=camera_height,
         width=camera_width,
         data_types=nav_data_types,

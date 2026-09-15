@@ -6,10 +6,22 @@ from dataclasses import dataclass
 import os
 
 import numpy as np
-from pxr import Gf, UsdGeom
+from pxr import Gf, UsdGeom, Vt
 
 import isaaclab.sim as sim_utils
 from isaaclab.sim.utils import bind_visual_material
+
+from .tessellated_primitives import create_tessellated_composite_mesh
+
+
+_COMPOSITE_PRIMITIVE_TYPES = {
+    "tessellated_c_housing",
+    "tessellated_u_housing",
+    "tessellated_low_arm",
+    "tessellated_stepped_block",
+    "tessellated_thin_legged_body",
+    "tessellated_overhang",
+}
 
 
 @dataclass(frozen=True)
@@ -28,6 +40,9 @@ class PrimitiveRandomizationResult:
     size_variant_indices: np.ndarray
     """Index into the bounded bank of unique Warp-mesh size variants."""
 
+    footprint_radii: np.ndarray
+    """Maximum horizontal distance from the root to any mesh point."""
+
 
 def apply_primitive_domain_randomization(
     *,
@@ -41,20 +56,46 @@ def apply_primitive_domain_randomization(
     """Apply fixed size and color randomization before Warp meshes are cached.
 
     Each environment receives one variant for its entire lifetime. A bounded
-    size bank allows environments with identical geometry to share a Warp
-    mesh. Scaling changes vertices but not topology or face IDs.
+    geometry bank allows environments with identical geometry to share a Warp
+    mesh. Composite point arrays change shape but retain fixed topology and
+    face counts.
     """
     randomization_cfg = primitive_cfg.get("domain_randomization", {})
     worker_rank = int(os.environ.get("REAL_LOCAL_RANK", os.environ.get("LOCAL_RANK", "0")))
     target_seed = int(seed or 42) + sum(target_name.encode("utf-8")) + 1009 * worker_rank
     rng = np.random.default_rng(target_seed)
 
-    scales, sizes, root_heights, size_variant_indices = _sample_geometry(
-        primitive_cfg=primitive_cfg,
-        randomization_cfg=randomization_cfg,
-        num_envs=num_envs,
-        rng=rng,
-    )
+    primitive_type = str(primitive_cfg["type"])
+    geometry_variants = None
+    geometry_meshes = None
+    if primitive_type in _COMPOSITE_PRIMITIVE_TYPES:
+        (
+            scales,
+            sizes,
+            root_heights,
+            size_variant_indices,
+            footprint_radii,
+            geometry_variants,
+        ) = _sample_composite_geometry(
+            primitive_cfg=primitive_cfg,
+            randomization_cfg=randomization_cfg,
+            num_envs=num_envs,
+            rng=rng,
+        )
+        # Build each member of the bounded bank once. Authoring the same point
+        # array into several cloned environments is much cheaper than running
+        # subdivision again for every environment.
+        geometry_meshes = [
+            create_tessellated_composite_mesh(variant) for variant in geometry_variants
+        ]
+    else:
+        scales, sizes, root_heights, size_variant_indices = _sample_geometry(
+            primitive_cfg=primitive_cfg,
+            randomization_cfg=randomization_cfg,
+            num_envs=num_envs,
+            rng=rng,
+        )
+        footprint_radii = 0.5 * np.linalg.norm(sizes[:, :2], axis=1)
     material_paths, color_indices, colors = _create_color_materials(
         stage=stage,
         target_name=target_name,
@@ -78,6 +119,13 @@ def apply_primitive_domain_randomization(
             scale_op = xformable.AddScaleOp()
         scale_op.Set(Gf.Vec3d(*scales[env_id].tolist()))
 
+        if geometry_meshes is not None:
+            _set_composite_mesh_geometry(
+                stage=stage,
+                obj_prim_path=obj_prim_path,
+                mesh=geometry_meshes[int(size_variant_indices[env_id])],
+            )
+
         _set_translation_z(xformable, float(root_heights[env_id]))
         bind_visual_material(
             f"{obj_prim_path}/geometry/mesh",
@@ -89,6 +137,7 @@ def apply_primitive_domain_randomization(
         root_heights=root_heights,
         colors=colors,
         size_variant_indices=size_variant_indices,
+        footprint_radii=footprint_radii,
     )
 
 
@@ -220,6 +269,264 @@ def _sample_geometry(
         return scales, sizes, root_heights, variant_indices
 
     raise ValueError(f"Unsupported primitive domain-randomization type: {primitive_type!r}")
+
+
+def _sample_composite_geometry(
+    *,
+    primitive_cfg: dict,
+    randomization_cfg: dict,
+    num_envs: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[dict]]:
+    """Sample a bounded bank of genuine composite-geometry variants."""
+    requested_variants = int(randomization_cfg.get("num_size_variants", 1))
+    num_variants = max(1, min(requested_variants, num_envs))
+    variant_indices = np.arange(num_envs) % num_variants
+    rng.shuffle(variant_indices)
+    primitive_type = str(primitive_cfg["type"])
+    base_cfg = {key: value for key, value in primitive_cfg.items() if key != "domain_randomization"}
+    variants: list[dict] = []
+
+    if primitive_type == "tessellated_c_housing":
+        size_min, size_max = _vector_range(randomization_cfg, "size", base_cfg["size"])
+        opening_min, opening_max = _scalar_range(
+            randomization_cfg,
+            "opening_width_fraction",
+            float(base_cfg.get("opening_width_fraction", 0.55)),
+        )
+        pocket_min, pocket_max = _scalar_range(
+            randomization_cfg,
+            "pocket_depth_fraction",
+            float(base_cfg.get("pocket_depth_fraction", 0.7)),
+        )
+        if not 0.0 < opening_min <= opening_max < 1.0:
+            raise ValueError("C-housing opening fractions must lie inside (0, 1)")
+        if not 0.0 < pocket_min <= pocket_max < 1.0:
+            raise ValueError("C-housing pocket-depth fractions must lie inside (0, 1)")
+        sampled_sizes = rng.uniform(size_min, size_max, size=(num_variants, 3))
+        openings = rng.uniform(opening_min, opening_max, size=num_variants)
+        pockets = rng.uniform(pocket_min, pocket_max, size=num_variants)
+        for index in range(num_variants):
+            variants.append(
+                {
+                    **base_cfg,
+                    "size": tuple(sampled_sizes[index]),
+                    "opening_width_fraction": float(openings[index]),
+                    "pocket_depth_fraction": float(pockets[index]),
+                }
+            )
+
+    elif primitive_type == "tessellated_u_housing":
+        size_min, size_max = _vector_range(randomization_cfg, "size", base_cfg["size"])
+        opening_min, opening_max = _scalar_range(
+            randomization_cfg,
+            "opening_width_fraction",
+            float(base_cfg.get("opening_width_fraction", 0.55)),
+        )
+        floor_min, floor_max = _scalar_range(
+            randomization_cfg,
+            "pocket_floor_height",
+            float(base_cfg.get("pocket_floor_height", 0.25)),
+        )
+        if not 0.0 < opening_min <= opening_max < 1.0:
+            raise ValueError("U-housing opening fractions must lie inside (0, 1)")
+        if not 0.0 < floor_min <= floor_max:
+            raise ValueError("U-housing pocket_floor_height must be positive")
+        sampled_sizes = rng.uniform(size_min, size_max, size=(num_variants, 3))
+        openings = rng.uniform(opening_min, opening_max, size=num_variants)
+        floors = rng.uniform(floor_min, floor_max, size=num_variants)
+        for index in range(num_variants):
+            actual_floor = min(float(floors[index]), float(sampled_sizes[index][2]) - 0.01)
+            variants.append(
+                {
+                    **base_cfg,
+                    "size": tuple(sampled_sizes[index]),
+                    "opening_width_fraction": float(openings[index]),
+                    "pocket_floor_height": actual_floor,
+                }
+            )
+
+    elif primitive_type == "tessellated_low_arm":
+        sampled = {
+            name: rng.uniform(*_scalar_range(randomization_cfg, name, float(base_cfg[name])), num_variants)
+            for name in (
+                "body_radius",
+                "body_height",
+                "arm_length",
+                "arm_width",
+                "arm_thickness",
+                "arm_clearance",
+            )
+        }
+        for index in range(num_variants):
+            body_radius = float(sampled["body_radius"][index])
+            arm_width = min(float(sampled["arm_width"][index]), 1.9 * body_radius)
+            body_height = float(sampled["body_height"][index])
+            arm_clearance = float(sampled["arm_clearance"][index])
+            arm_thickness = min(
+                float(sampled["arm_thickness"][index]),
+                body_height - arm_clearance - 0.05,
+            )
+            variants.append(
+                {
+                    **base_cfg,
+                    "body_radius": body_radius,
+                    "body_height": body_height,
+                    "arm_length": float(sampled["arm_length"][index]),
+                    "arm_width": arm_width,
+                    "arm_thickness": arm_thickness,
+                    "arm_clearance": arm_clearance,
+                }
+            )
+
+    elif primitive_type == "tessellated_stepped_block":
+        size_min, size_max = _vector_range(randomization_cfg, "size", base_cfg["size"])
+        sampled_sizes = rng.uniform(size_min, size_max, size=(num_variants, 3))
+        first_x = rng.uniform(*_scalar_range(randomization_cfg, "first_step_x_fraction", 0.34), num_variants)
+        second_x = rng.uniform(*_scalar_range(randomization_cfg, "second_step_x_fraction", 0.68), num_variants)
+        # The legacy configuration keys retain "height" in their names, but
+        # after the axis flip these fractions shape the horizontal depth axis.
+        first_depth = rng.uniform(
+            *_scalar_range(randomization_cfg, "low_step_height_fraction", 0.4), num_variants
+        )
+        second_depth = rng.uniform(
+            *_scalar_range(randomization_cfg, "middle_step_height_fraction", 0.7), num_variants
+        )
+        if np.any(first_x >= second_x) or np.any(first_depth >= second_depth):
+            raise ValueError("Stepped-block fraction ranges overlap or are reversed")
+        for index in range(num_variants):
+            variants.append(
+                {
+                    **base_cfg,
+                    "size": tuple(sampled_sizes[index]),
+                    "step_x_fractions": (float(first_x[index]), float(second_x[index])),
+                    "step_height_fractions": (
+                        float(first_depth[index]),
+                        float(second_depth[index]),
+                    ),
+                }
+            )
+
+    elif primitive_type == "tessellated_thin_legged_body":
+        parameter_names = (
+            "depth",
+            "gap_width",
+            "left_leg_width",
+            "right_leg_width",
+            "underside_height",
+            "body_thickness",
+        )
+        sampled = {
+            name: rng.uniform(*_scalar_range(randomization_cfg, name, float(base_cfg[name])), num_variants)
+            for name in parameter_names
+        }
+        for index in range(num_variants):
+            variants.append(
+                {**base_cfg, **{name: float(sampled[name][index]) for name in parameter_names}}
+            )
+
+    elif primitive_type == "tessellated_overhang":
+        support_min, support_max = _vector_range(
+            randomization_cfg, "support_size", base_cfg["support_size"]
+        )
+        plate_min, plate_max = _vector_range(
+            randomization_cfg, "plate_size", base_cfg["plate_size"]
+        )
+        offset_min, offset_max = _scalar_range(
+            randomization_cfg, "offset_fraction", 0.0, positive=False
+        )
+        if offset_min < -0.95 or offset_max > 0.95:
+            raise ValueError("Overhang offset fractions must stay within [-0.95, 0.95]")
+        supports = rng.uniform(support_min, support_max, size=(num_variants, 3))
+        plates = rng.uniform(plate_min, plate_max, size=(num_variants, 3))
+        if np.any(supports[:, :2] >= plates[:, :2]):
+            raise ValueError("Every sampled overhang plate must exceed its support in X and Y")
+        offset_fractions = rng.uniform(offset_min, offset_max, size=(num_variants, 2))
+        offset_fractions[0] = 0.0
+        maximum_offset = float(randomization_cfg.get("plate_offset_max", np.inf))
+        if maximum_offset <= 0.0:
+            raise ValueError(f"plate_offset_max must be positive, got {maximum_offset}")
+        for index in range(num_variants):
+            clearance = 0.5 * (plates[index, :2] - supports[index, :2])
+            plate_offset = np.clip(
+                offset_fractions[index] * clearance,
+                -maximum_offset,
+                maximum_offset,
+            )
+            variants.append(
+                {
+                    **base_cfg,
+                    "support_size": tuple(supports[index]),
+                    "plate_size": tuple(plates[index]),
+                    "plate_offset": tuple(plate_offset),
+                }
+            )
+    else:
+        raise ValueError(f"Unsupported composite primitive type: {primitive_type!r}")
+
+    # Most banks keep one easy authored reference member. Targets can disable
+    # this when every generated mesh must strictly obey the configured bounds.
+    if bool(randomization_cfg.get("include_authored_variant", True)):
+        variants[0] = base_cfg
+
+    variant_sizes = np.empty((num_variants, 3), dtype=np.float64)
+    variant_root_heights = np.empty(num_variants, dtype=np.float64)
+    variant_footprint_radii = np.empty(num_variants, dtype=np.float64)
+    expected_faces = None
+    for index, variant in enumerate(variants):
+        mesh = create_tessellated_composite_mesh(variant)
+        if expected_faces is None:
+            expected_faces = mesh.faces
+        elif mesh.faces.shape != expected_faces.shape:
+            raise ValueError(
+                f"{primitive_type} variants changed topology: "
+                f"{mesh.faces.shape} != {expected_faces.shape}"
+            )
+        bounds = np.asarray(mesh.bounds, dtype=np.float64)
+        variant_sizes[index] = bounds[1] - bounds[0]
+        variant_root_heights[index] = -bounds[0, 2]
+        variant_footprint_radii[index] = np.linalg.norm(mesh.vertices[:, :2], axis=1).max()
+
+    sizes = variant_sizes[variant_indices]
+    root_heights = variant_root_heights[variant_indices]
+    footprint_radii = variant_footprint_radii[variant_indices]
+    scales = np.ones((num_envs, 3), dtype=np.float64)
+    return scales, sizes, root_heights, variant_indices, footprint_radii, variants
+
+
+def _set_composite_mesh_geometry(*, stage, obj_prim_path: str, mesh) -> None:
+    """Author one sampled point/topology array onto an already-cloned USD mesh."""
+    mesh_prim_path = f"{obj_prim_path}/geometry/mesh"
+    mesh_prim = stage.GetPrimAtPath(mesh_prim_path)
+    if not mesh_prim.IsValid():
+        raise RuntimeError(f"Cannot randomize missing composite mesh: {mesh_prim_path}")
+    usd_mesh = UsdGeom.Mesh(mesh_prim)
+    points = np.ascontiguousarray(mesh.vertices, dtype=np.float32)
+    face_indices = np.ascontiguousarray(mesh.faces.reshape(-1), dtype=np.int32)
+    face_counts = np.full(len(mesh.faces), 3, dtype=np.int32)
+    usd_mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(points))
+    usd_mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray.FromNumpy(face_indices))
+    usd_mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(face_counts))
+
+
+def _scalar_range(
+    randomization_cfg: dict, name: str, default: float, *, positive: bool = True
+) -> tuple[float, float]:
+    minimum = float(randomization_cfg.get(f"{name}_min", default))
+    maximum = float(randomization_cfg.get(f"{name}_max", default))
+    if maximum < minimum or (positive and minimum <= 0.0):
+        raise ValueError(f"Invalid {name} range: min={minimum}, max={maximum}")
+    return minimum, maximum
+
+
+def _vector_range(
+    randomization_cfg: dict, name: str, default
+) -> tuple[np.ndarray, np.ndarray]:
+    default_vector = _vector3(default, name)
+    minimum = _vector3(randomization_cfg.get(f"{name}_min", default_vector), f"{name}_min")
+    maximum = _vector3(randomization_cfg.get(f"{name}_max", default_vector), f"{name}_max")
+    _validate_range(minimum, maximum, name)
+    return minimum, maximum
 
 
 def _create_color_materials(

@@ -48,6 +48,21 @@ parser.add_argument("--num_envs", type=int, default=CONFIG.num_envs, help="Numbe
 parser.add_argument("--checkpoint", type=str, default=CONFIG.checkpoint_path, help="Path to checkpoint to resume training from.")
 parser.add_argument("--reset_std", action="store_true", default=CONFIG.reset_std, help="Reset the standard deviation to initial value (promotes exploration).")
 parser.add_argument("--max_episodes", type=int, default=getattr(CONFIG, "max_episodes", 20), help="Maximum number of episodes to run in evaluation mode.")
+parser.add_argument(
+    "--seed",
+    type=int,
+    default=None,
+    help="Override the configured training/evaluation seed.",
+)
+parser.add_argument(
+    "--eval_max_episode_steps",
+    "--eval-max-episode-steps",
+    "--max_episode_steps",
+    dest="eval_max_episode_steps",
+    type=int,
+    default=None,
+    help="Override the evaluation episode horizon without modifying run_config.py.",
+)
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
 # append AppLauncher cli args
 
@@ -105,7 +120,9 @@ from muon import Muon
 
 # sys.argv.append("--headless")
 sys.argv.append("--enable_cameras")
-BASE_SEED = int(getattr(CONFIG, "seed", 42))
+BASE_SEED = int(
+    args_cli.seed if args_cli.seed is not None else getattr(CONFIG, "seed", 42)
+)
 WORKER_SEED = BASE_SEED + PROCESS_RANK
 set_seed(WORKER_SEED, deterministic=True)
 print(f"[INFO] Distributed rank {PROCESS_RANK} using seed {WORKER_SEED}")
@@ -200,7 +217,15 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         if self.use_attention_fusion:
             # --- ATTENTION-BASED FUSION ---
             print("[INFO] Using Attention-Based Fusion")
-            self.d_model = 512  # Capacity-matched hidden dimension for modality tokens
+            self.d_model = int(getattr(CONFIG, "attention_d_model", 512))
+            self.attention_pooling = str(
+                getattr(CONFIG, "attention_pooling", "cls")
+            ).lower()
+            if self.attention_pooling not in {"cls", "mean"}:
+                raise ValueError(
+                    "attention_pooling must be either 'cls' or 'mean', got "
+                    f"{self.attention_pooling!r}"
+                )
             
             # Projectors
             self.camera_proj = nn.Linear(camera_features_size, self.d_model)
@@ -214,9 +239,10 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model))
             self.modality_embeddings = nn.Parameter(torch.randn(1, 3, self.d_model) * 0.02)
 
-            # Learned fusion token. Its attended representation is passed to the
-            # GRU instead of averaging the three modality tokens equally.
-            self.cls_token = nn.Parameter(torch.randn(1, 1, self.d_model) * 0.02)
+            if self.attention_pooling == "cls":
+                # Learned fusion token. Its attended representation is passed
+                # to the GRU instead of averaging modalities equally.
+                self.cls_token = nn.Parameter(torch.randn(1, 1, self.d_model) * 0.02)
             
             self.use_transformer_encoder = getattr(CONFIG, "use_transformer_encoder", False)
             
@@ -242,7 +268,10 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 self.mha = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=4, batch_first=True, dropout=0.0)
                 self.mha_norm = nn.LayerNorm(self.d_model)
             
-            # The learned fusion token is the attention block's output.
+            print(
+                f"[INFO] Attention configuration: d_model={self.d_model}, "
+                f"pooling={self.attention_pooling}"
+            )
             self.gru_input_size = self.d_model
         else:
             act_str = getattr(CONFIG, "activation_fn", "elu").lower()
@@ -400,10 +429,11 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             # Add modality embeddings so it knows which token is which
             tokens = tokens + self.modality_embeddings
 
-            # Prepend one learned query that can combine the modalities
-            # differently for every observation.
-            cls_token = self.cls_token.expand(tokens.shape[0], -1, -1)
-            tokens = torch.cat((cls_token, tokens), dim=1)
+            if self.attention_pooling == "cls":
+                # Prepend one learned query that can combine the modalities
+                # differently for every observation.
+                cls_token = self.cls_token.expand(tokens.shape[0], -1, -1)
+                tokens = torch.cat((cls_token, tokens), dim=1)
             
             if self.use_transformer_encoder:
                 # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
@@ -431,8 +461,12 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 # Residual connection + LayerNorm
                 attended_tokens = self.mha_norm(tokens + attn_output)
             
-            # Read the learned fusion token: [batch_size, d_model]
-            fusion_features = attended_tokens[:, 0]
+            if self.attention_pooling == "cls":
+                fusion_features = attended_tokens[:, 0]
+            else:
+                # Legacy August 31 checkpoint behavior: average the attended
+                # camera, occupancy-map, and pose tokens.
+                fusion_features = attended_tokens.mean(dim=1)
         else:
             combined_features = torch.cat((camera_features, map_features, encoded_pose), dim=1)
             fusion_features = self.feature_mlp(combined_features)
@@ -492,6 +526,18 @@ env_cfg = parse_env_cfg(
 
 env_cfg.seed = WORKER_SEED
 env = gym.make(args_cli.task, cfg=env_cfg)
+if args_cli.eval_max_episode_steps is not None:
+    if not is_eval:
+        raise ValueError("--eval-max-episode-steps is only valid in evaluation mode")
+    if args_cli.eval_max_episode_steps <= 0:
+        raise ValueError("--eval-max-episode-steps must be greater than zero")
+    horizon_env = env.unwrapped if hasattr(env, "unwrapped") else env
+    horizon_env.curriculum.min_episode_length_limit = args_cli.eval_max_episode_steps
+    horizon_env.curriculum.max_episode_length_limit = args_cli.eval_max_episode_steps
+    print(
+        "[INFO] Evaluation episode horizon overridden to "
+        f"{args_cli.eval_max_episode_steps} steps"
+    )
 env = wrap_env(env)
 
 device = env.device
@@ -513,6 +559,9 @@ model_config = {
         "encoder_conv_mlp_layers": [256],
         "encoder_conv_map_occupancy_architecture": "resnet",
         "encoder_conv_map_occupancy_mlp_layers": [128, 128],
+        "encoder_res_blocks_per_stage": int(
+            getattr(CONFIG, "encoder_res_blocks_per_stage", 1)
+        ),
     }
 models = {}
 models['policy'] = Shared(env.observation_space,
@@ -538,6 +587,9 @@ def get_custom_optimizer(params, lr, **kwargs):
     policy_params = []
     attention_params = []
     std_params = []
+    use_separate_attention_lr = bool(
+        getattr(CONFIG, "use_separate_attention_lr", True)
+    )
 
     # Keep the rapidly-changing fusion representation on a lower learning
     # rate while leaving the encoders, GRU, and policy/value heads unchanged.
@@ -555,12 +607,19 @@ def get_custom_optimizer(params, lr, **kwargs):
     for name, p in models["policy"].named_parameters():
         if "log_std_parameter" in name:
             std_params.append(p)
-        elif name.split(".", 1)[0] in attention_parameter_roots:
+        elif (
+            use_separate_attention_lr
+            and name.split(".", 1)[0] in attention_parameter_roots
+        ):
             attention_params.append(p)
         else:
             policy_params.append(p)
 
-    if getattr(CONFIG, "use_attention_fusion", False) and not attention_params:
+    if (
+        use_separate_attention_lr
+        and getattr(CONFIG, "use_attention_fusion", False)
+        and not attention_params
+    ):
         raise RuntimeError(
             "Attention fusion is enabled, but no attention parameters were assigned "
             "to the reduced-learning-rate optimizer group"
@@ -616,6 +675,7 @@ cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = getattr(CONFIG, "grad_clip_norm", 0.7)
 cfg["ratio_clip"] = 0.2
+cfg["kl_threshold"] = getattr(CONFIG, "kl_threshold", 0.0)
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef
 cfg["value_loss_scale"] = getattr(CONFIG, "value_loss_scale", 1.0)
@@ -796,19 +856,82 @@ if is_eval:
     coverage_percent_list = []
     target_index_list = []
     crashes_list = []
+    episode_steps_list = []
+    episode_success_list = []
+    episode_timed_out_list = []
+    inspection_quality_list = []
+    completed_env_id_list = []
+    coverage_at_step_1000_list = []
+    faces_at_step_1000_list = []
     crash_source_counts_list = []
     forward_crashes_list = []
     reverse_crashes_list = []
+    safety_shield_interventions_list = []
+    safety_shield_intervention_rate_list = []
+    safety_shield_forward_interventions_list = []
+    safety_shield_reverse_interventions_list = []
     base_env = env.unwrapped if hasattr(env, "unwrapped") else env
+    evaluation_num_envs = int(env.num_envs)
     target_index_to_name = tuple(getattr(base_env, "target_index_to_name", ()))
     crash_source_names = tuple(getattr(base_env, "crash_source_names", ()))
+    evaluation_episode_horizon = int(
+        base_env.curriculum.get_current_episode_length()
+    )
+    coverage_at_step_1000 = torch.full(
+        (evaluation_num_envs,), float("nan"), device=env.device
+    )
+    faces_at_step_1000 = torch.full(
+        (evaluation_num_envs,), -1, dtype=torch.long, device=env.device
+    )
     eval_dir = os.path.join(os.path.dirname(path), "eval_results")
     os.makedirs(eval_dir, exist_ok=True)
     print(f"[INFO] Evaluation results will be saved to: {eval_dir}")
 
+    def _flat_values(value):
+        if value is None:
+            return []
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().reshape(-1).tolist()
+        if isinstance(value, np.ndarray):
+            return value.reshape(-1).tolist()
+        if isinstance(value, (list, tuple)):
+            return np.asarray(value).reshape(-1).tolist()
+        return [value]
+
+    def _row_values(value, row_width):
+        if value is None:
+            return []
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().reshape(-1, row_width).tolist()
+        return np.asarray(value).reshape(-1, row_width).tolist()
+
     with torch.no_grad():
         try:
             while simulation_app.is_running():
+                # Capture coverage when an episode first crosses step 1000. This
+                # lets a 1200-step evaluation quantify how much was gained in
+                # the final 200 steps without altering the frozen policy.
+                if (
+                    hasattr(base_env, "episode_length_buf")
+                    and hasattr(base_env, "best_q_per_face")
+                    and hasattr(base_env, "coverage_num_faces")
+                ):
+                    snapshot_mask = (
+                        (base_env.episode_length_buf >= 1000)
+                        & torch.isnan(coverage_at_step_1000)
+                    )
+                    snapshot_env_ids = snapshot_mask.nonzero(as_tuple=False).squeeze(-1)
+                    if snapshot_env_ids.numel() > 0:
+                        snapshot_q = base_env.best_q_per_face[snapshot_env_ids]
+                        snapshot_faces = (snapshot_q > 0.0).sum(dim=1)
+                        snapshot_denominator = base_env.coverage_num_faces[
+                            snapshot_env_ids
+                        ].float().clamp_min(1.0)
+                        faces_at_step_1000[snapshot_env_ids] = snapshot_faces
+                        coverage_at_step_1000[snapshot_env_ids] = (
+                            snapshot_faces.float() / snapshot_denominator * 100.0
+                        )
+
                 # Get actions using the agent (handles RNN state internally via _rnn_initial_states)
                 # The agent.act() method uses _rnn_initial_states, computes output, and populates _rnn_final_states
                 actions, _, outputs = agent.act(states, timestep=0, timesteps=0)
@@ -818,102 +941,138 @@ if is_eval:
                 # Step environment
                 next_states, rewards, terminated, truncated, infos = env.step(actions)
 
-                if torch.any(terminated | truncated):
-                    episode_count += torch.sum(terminated | truncated).item()
-                    
+                finished_mask = terminated | truncated
+                if torch.any(finished_mask):
+                    finished_env_ids = finished_mask.nonzero(as_tuple=False)[:, 0]
+                    completed_this_step = int(finished_env_ids.numel())
+                    remaining = completed_this_step
+                    if args_cli.max_episodes is not None:
+                        remaining = min(
+                            remaining,
+                            max(0, args_cli.max_episodes - len(faces_discovered_list)),
+                        )
+
                     # Collect stats
-                    if "log" in infos:
+                    if remaining > 0 and "log" in infos:
                         if "faces_discovered" in infos["log"]:
-                            # Assuming infos["log"]["faces_discovered"] is a tensor matching num_envs or similar
-                            # We need to extract the value for the terminated env(s)
-                            # For single env eval, it's straightforward.
-                            val = infos["log"]["faces_discovered"]
-                            coverage_percent = infos["log"].get("coverage_percent", None)
-                            target_indices = infos["log"].get("target_index", None)
-                            crashes = infos["log"].get("crashes", None)
-                            crash_source_counts = infos["log"].get("crash_source_counts", None)
-                            forward_crashes = infos["log"].get("forward_crashes", None)
-                            reverse_crashes = infos["log"].get("reverse_crashes", None)
+                            log_values = infos["log"]
+                            val = log_values["faces_discovered"]
+                            coverage_percent = log_values.get("coverage_percent", None)
+                            target_indices = log_values.get("target_index", None)
+                            crashes = log_values.get("crashes", None)
+                            episode_steps = log_values.get("episode_steps", None)
+                            episode_success = log_values.get("episode_success", None)
+                            episode_timed_out = log_values.get("episode_timed_out", None)
+                            inspection_quality = log_values.get(
+                                "mean_inspection_quality", None
+                            )
+                            crash_source_counts = log_values.get("crash_source_counts", None)
+                            forward_crashes = log_values.get("forward_crashes", None)
+                            reverse_crashes = log_values.get("reverse_crashes", None)
+                            shield_interventions = infos["log"].get(
+                                "safety_shield_interventions", None
+                            )
+                            shield_intervention_rate = infos["log"].get(
+                                "safety_shield_intervention_rate", None
+                            )
+                            shield_forward_interventions = infos["log"].get(
+                                "safety_shield_forward_interventions", None
+                            )
+                            shield_reverse_interventions = infos["log"].get(
+                                "safety_shield_reverse_interventions", None
+                            )
 
-                            if coverage_percent is not None:
-                                if isinstance(coverage_percent, torch.Tensor):
-                                    coverage_percent_list.extend(
-                                        coverage_percent.detach().cpu().reshape(-1).tolist()
-                                    )
-                                else:
-                                    coverage_percent_list.append(coverage_percent)
+                            faces_values = _flat_values(val)[:remaining]
+                            coverage_values = _flat_values(coverage_percent)[:remaining]
+                            crash_values = _flat_values(crashes)[:remaining]
+                            step_values = _flat_values(episode_steps)[:remaining]
+                            source_rows = _row_values(
+                                crash_source_counts, len(crash_source_names)
+                            )[:remaining] if crash_source_names else []
 
-                            if target_indices is not None:
-                                if isinstance(target_indices, torch.Tensor):
-                                    target_index_list.extend(
-                                        target_indices.detach().cpu().reshape(-1).tolist()
-                                    )
-                                else:
-                                    target_index_list.append(target_indices)
+                            faces_discovered_list.extend(faces_values)
+                            coverage_percent_list.extend(coverage_values)
+                            target_index_list.extend(
+                                _flat_values(target_indices)[:remaining]
+                            )
+                            crashes_list.extend(crash_values)
+                            episode_steps_list.extend(step_values)
+                            episode_success_list.extend(
+                                _flat_values(episode_success)[:remaining]
+                            )
+                            episode_timed_out_list.extend(
+                                _flat_values(episode_timed_out)[:remaining]
+                            )
+                            inspection_quality_list.extend(
+                                _flat_values(inspection_quality)[:remaining]
+                            )
+                            crash_source_counts_list.extend(source_rows)
+                            forward_crashes_list.extend(
+                                _flat_values(forward_crashes)[:remaining]
+                            )
+                            reverse_crashes_list.extend(
+                                _flat_values(reverse_crashes)[:remaining]
+                            )
 
-                            if crashes is not None:
-                                if isinstance(crashes, torch.Tensor):
-                                    crashes_list.extend(
-                                        crashes.detach().cpu().reshape(-1).tolist()
-                                    )
-                                else:
-                                    crashes_list.append(crashes)
+                            kept_env_ids = finished_env_ids[:remaining]
+                            completed_env_id_list.extend(
+                                kept_env_ids.detach().cpu().tolist()
+                            )
+                            snapshot_coverages = coverage_at_step_1000[
+                                kept_env_ids
+                            ].detach().cpu().tolist()
+                            snapshot_faces = faces_at_step_1000[
+                                kept_env_ids
+                            ].detach().cpu().tolist()
+                            for index in range(remaining):
+                                # A 1000-step evaluation currently truncates at
+                                # recorded step 999. Treat that final value as
+                                # the step-1000 boundary for horizon reporting.
+                                if (
+                                    np.isnan(snapshot_coverages[index])
+                                    and index < len(step_values)
+                                    and step_values[index] >= 999
+                                    and index < len(coverage_values)
+                                ):
+                                    snapshot_coverages[index] = coverage_values[index]
+                                    snapshot_faces[index] = faces_values[index]
+                            coverage_at_step_1000_list.extend(snapshot_coverages)
+                            faces_at_step_1000_list.extend(snapshot_faces)
 
-                            if crash_source_counts is not None:
-                                if isinstance(crash_source_counts, torch.Tensor):
-                                    crash_source_counts_list.extend(
-                                        crash_source_counts.detach().cpu().reshape(
-                                            -1, crash_source_counts.shape[-1]
-                                        ).tolist()
-                                    )
-                                else:
-                                    crash_source_counts_list.extend(crash_source_counts)
+                            for value, destination in (
+                                (shield_interventions, safety_shield_interventions_list),
+                                (shield_intervention_rate, safety_shield_intervention_rate_list),
+                                (shield_forward_interventions, safety_shield_forward_interventions_list),
+                                (shield_reverse_interventions, safety_shield_reverse_interventions_list),
+                            ):
+                                if value is None:
+                                    continue
+                                destination.extend(_flat_values(value)[:remaining])
 
-                            if forward_crashes is not None:
-                                if isinstance(forward_crashes, torch.Tensor):
-                                    forward_crashes_list.extend(forward_crashes.detach().cpu().reshape(-1).tolist())
-                                else:
-                                    forward_crashes_list.append(forward_crashes)
-                            
-                            if reverse_crashes is not None:
-                                if isinstance(reverse_crashes, torch.Tensor):
-                                    reverse_crashes_list.extend(reverse_crashes.detach().cpu().reshape(-1).tolist())
-                                else:
-                                    reverse_crashes_list.append(reverse_crashes)
+                            first_episode_number = len(faces_discovered_list) - remaining + 1
+                            for index, face_count in enumerate(faces_values):
+                                crash_str = ""
+                                if index < len(crash_values) and crash_values[index]:
+                                    if index < len(source_rows):
+                                        source_index = int(np.argmax(source_rows[index]))
+                                        source = crash_source_names[source_index]
+                                        if source.startswith("obstacle_"):
+                                            source = "obstacle"
+                                        crash_str = f" | Crash: {source}"
+                                step_str = (
+                                    f" | Steps: {int(step_values[index])}"
+                                    if index < len(step_values)
+                                    else ""
+                                )
+                                print(
+                                    f"[INFO] Completion {first_episode_number + index} "
+                                    f"(env {int(kept_env_ids[index])}) "
+                                    f"Faces Discovered: {face_count}{step_str}{crash_str}"
+                                )
 
-                            if isinstance(val, torch.Tensor):
-                                 if val.numel() > 1:
-                                     faces_discovered_list.extend(val.tolist())
-                                     current_faces = val.max().item() # Approximate best in batch
-                                     # Print summary for batch if desired, or skip to avoid spam
-                                     print(f"[INFO] Batch of {val.numel()} episodes finished. Faces: {val.tolist()}")
-                                 else:
-                                     faces_discovered_list.append(val.item())
-                                     current_faces = val.item()
-                                     
-                                     crash_str = ""
-                                     if crashes is not None and crashes.numel() == 1 and crashes.item():
-                                         if crash_source_counts is not None and crash_source_counts.numel() == len(crash_source_names):
-                                             idx = crash_source_counts.argmax().item()
-                                             source = crash_source_names[idx]
-                                             if source.startswith("obstacle_"):
-                                                 source = "obstacle"
-                                             crash_str = f" | Crash: {source}"
-                                     print(f"[INFO] Episode {episode_count} Faces Discovered: {val.item()}{crash_str}")
-                            else:
-                                 faces_discovered_list.append(val)
-                                 current_faces = val
-                                 
-                                 crash_str = ""
-                                 if crashes is not None and crashes:
-                                     if crash_source_counts is not None and len(crash_source_counts) == len(crash_source_names):
-                                         idx = np.argmax(crash_source_counts)
-                                         source = crash_source_names[idx]
-                                         if source.startswith("obstacle_"):
-                                             source = "obstacle"
-                                         crash_str = f" | Crash: {source}"
-                                 print(f"[INFO] Episode {episode_count} Faces Discovered: {val}{crash_str}")
-
+                    coverage_at_step_1000[finished_env_ids] = float("nan")
+                    faces_at_step_1000[finished_env_ids] = -1
+                    episode_count = len(faces_discovered_list)
                     if args_cli.max_episodes is not None and episode_count >= args_cli.max_episodes:
                         print(f"[INFO] strict max_episodes reached: {episode_count}")
                         break
@@ -949,6 +1108,9 @@ if is_eval:
         summary = {
             "checkpoint": path,
             "evaluation_mode": "deterministic" if deterministic_eval else "stochastic",
+            "seed": WORKER_SEED,
+            "num_envs": evaluation_num_envs,
+            "configured_episode_horizon": evaluation_episode_horizon,
             "episodes": int(len(faces_array)),
             "faces": {
                 "mean": float(np.mean(faces_array)),
@@ -963,6 +1125,31 @@ if is_eval:
         }
         coverage_array = np.asarray(coverage_percent_list, dtype=np.float64)
         target_index_array = np.asarray(target_index_list, dtype=np.int64)
+        episode_steps_array = np.asarray(episode_steps_list, dtype=np.int64)
+        episode_success_array = np.asarray(episode_success_list, dtype=np.bool_)
+        episode_timed_out_array = np.asarray(episode_timed_out_list, dtype=np.bool_)
+        inspection_quality_array = np.asarray(
+            inspection_quality_list, dtype=np.float64
+        )
+        completed_env_id_array = np.asarray(completed_env_id_list, dtype=np.int64)
+        coverage_at_step_1000_array = np.asarray(
+            coverage_at_step_1000_list, dtype=np.float64
+        )
+        faces_at_step_1000_array = np.asarray(
+            faces_at_step_1000_list, dtype=np.int64
+        )
+        shield_interventions_array = np.asarray(
+            safety_shield_interventions_list, dtype=np.int64
+        )
+        shield_intervention_rate_array = np.asarray(
+            safety_shield_intervention_rate_list, dtype=np.float64
+        )
+        shield_forward_array = np.asarray(
+            safety_shield_forward_interventions_list, dtype=np.int64
+        )
+        shield_reverse_array = np.asarray(
+            safety_shield_reverse_interventions_list, dtype=np.int64
+        )
         if len(coverage_array) == len(faces_array):
             summary["coverage_percent"] = {
                 "mean": float(np.mean(coverage_array)),
@@ -971,6 +1158,103 @@ if is_eval:
                 "min": float(np.min(coverage_array)),
                 "max": float(np.max(coverage_array)),
             }
+
+        if len(inspection_quality_array) == len(faces_array):
+            summary["inspection_quality"] = {
+                "mean": float(np.mean(inspection_quality_array)),
+                "std": float(np.std(inspection_quality_array)),
+                "median": float(np.median(inspection_quality_array)),
+                "p90": float(np.percentile(inspection_quality_array, 90)),
+                "p95": float(np.percentile(inspection_quality_array, 95)),
+            }
+
+        if len(episode_steps_array) == len(faces_array):
+            summary["episode_length_steps"] = {
+                "mean": float(np.mean(episode_steps_array)),
+                "median": float(np.median(episode_steps_array)),
+                "p90": float(np.percentile(episode_steps_array, 90)),
+                "p95": float(np.percentile(episode_steps_array, 95)),
+                "min": int(np.min(episode_steps_array)),
+                "max": int(np.max(episode_steps_array)),
+            }
+            summary["episode_horizon_milestones"] = {}
+            for milestone in (1000, 1200):
+                # _get_dones currently truncates at max_steps - 1, so a
+                # configured 1000-step horizon is recorded as step 999.
+                reached_mask = episode_steps_array >= milestone - 1
+                milestone_summary = {
+                    "recorded_step_cutoff": milestone - 1,
+                    "episodes_reaching": int(np.sum(reached_mask)),
+                    "episodes_reaching_percent": float(
+                        np.mean(reached_mask) * 100.0
+                    ),
+                }
+                if np.any(reached_mask) and len(coverage_array) == len(faces_array):
+                    milestone_summary["mean_final_coverage_percent"] = float(
+                        np.mean(coverage_array[reached_mask])
+                    )
+                if np.any(reached_mask) and len(crashes_list) == len(faces_array):
+                    reached_crashes = np.asarray(crashes_list)[reached_mask] > 0
+                    milestone_summary["crashes"] = int(np.sum(reached_crashes))
+                    milestone_summary["crash_rate_percent"] = float(
+                        np.mean(reached_crashes) * 100.0
+                    )
+                summary["episode_horizon_milestones"][str(milestone)] = (
+                    milestone_summary
+                )
+
+        if len(episode_success_array) == len(faces_array):
+            summary["success"] = {
+                "episodes": int(np.sum(episode_success_array)),
+                "rate_percent": float(np.mean(episode_success_array) * 100.0),
+            }
+        if len(episode_timed_out_array) == len(faces_array):
+            summary["timeouts"] = {
+                "episodes": int(np.sum(episode_timed_out_array)),
+                "rate_percent": float(np.mean(episode_timed_out_array) * 100.0),
+            }
+
+        if (
+            len(coverage_at_step_1000_array) == len(faces_array)
+            and len(coverage_array) == len(faces_array)
+        ):
+            reached_1000_mask = ~np.isnan(coverage_at_step_1000_array)
+            after_1000_summary = {
+                "episodes_reaching_step_1000": int(np.sum(reached_1000_mask)),
+                "episodes_reaching_step_1000_percent": float(
+                    np.mean(reached_1000_mask) * 100.0
+                ),
+            }
+            if np.any(reached_1000_mask):
+                coverage_gain = (
+                    coverage_array[reached_1000_mask]
+                    - coverage_at_step_1000_array[reached_1000_mask]
+                )
+                after_1000_summary.update(
+                    {
+                        "mean_coverage_at_step_1000_percent": float(
+                            np.mean(coverage_at_step_1000_array[reached_1000_mask])
+                        ),
+                        "mean_final_coverage_percent": float(
+                            np.mean(coverage_array[reached_1000_mask])
+                        ),
+                        "mean_coverage_gained_after_step_1000_percent": float(
+                            np.mean(coverage_gain)
+                        ),
+                    }
+                )
+            if (
+                len(episode_steps_array) == len(faces_array)
+                and len(crashes_list) == len(faces_array)
+            ):
+                crash_after_1000_mask = (
+                    (episode_steps_array > 1000)
+                    & (np.asarray(crashes_list) > 0)
+                )
+                after_1000_summary["crashes_after_step_1000"] = int(
+                    np.sum(crash_after_1000_mask)
+                )
+            summary["after_step_1000"] = after_1000_summary
 
         if len(target_index_array) == len(faces_array) and target_index_to_name:
             per_target = {}
@@ -987,6 +1271,10 @@ if is_eval:
                     target_summary["mean_coverage_percent"] = float(
                         np.mean(coverage_array[target_mask])
                     )
+                if len(inspection_quality_array) == len(faces_array):
+                    target_summary["mean_inspection_quality"] = float(
+                        np.mean(inspection_quality_array[target_mask])
+                    )
                 per_target[target_name] = target_summary
             summary["per_target"] = per_target
         print("\n" + "="*50)
@@ -999,6 +1287,52 @@ if is_eval:
         if len(coverage_array) == len(faces_array):
             print(f"Mean Coverage:          {np.mean(coverage_array):.2f}%")
             print(f"Std Coverage:           {np.std(coverage_array):.2f}%")
+        if len(inspection_quality_array) == len(faces_array):
+            print(f"Mean Inspection Quality: {np.mean(inspection_quality_array):.4f}")
+        if len(episode_steps_array) == len(faces_array):
+            print("Episode Lengths:")
+            print(f"  Median: {np.median(episode_steps_array):.1f} steps")
+            print(f"  P90:    {np.percentile(episode_steps_array, 90):.1f} steps")
+            print(f"  P95:    {np.percentile(episode_steps_array, 95):.1f} steps")
+            for milestone in (1000, 1200):
+                milestone_result = summary["episode_horizon_milestones"][str(milestone)]
+                print(
+                    f"  Reached {milestone}-step horizon: "
+                    f"{milestone_result['episodes_reaching']} "
+                    f"({milestone_result['episodes_reaching_percent']:.2f}%)"
+                )
+        if "success" in summary:
+            print(
+                f"Success Rate:            {summary['success']['rate_percent']:.2f}% "
+                f"({summary['success']['episodes']} episodes)"
+            )
+        if "timeouts" in summary:
+            print(
+                f"Timeout Rate:            {summary['timeouts']['rate_percent']:.2f}% "
+                f"({summary['timeouts']['episodes']} episodes)"
+            )
+        if "after_step_1000" in summary:
+            late_summary = summary["after_step_1000"]
+            print("After Step 1000:")
+            print(
+                "  Episodes reaching boundary: "
+                f"{late_summary['episodes_reaching_step_1000']} "
+                f"({late_summary['episodes_reaching_step_1000_percent']:.2f}%)"
+            )
+            if "mean_coverage_at_step_1000_percent" in late_summary:
+                print(
+                    "  Mean coverage at step 1000: "
+                    f"{late_summary['mean_coverage_at_step_1000_percent']:.2f}%"
+                )
+                print(
+                    "  Mean additional coverage:  "
+                    f"{late_summary['mean_coverage_gained_after_step_1000_percent']:.2f}%"
+                )
+            if "crashes_after_step_1000" in late_summary:
+                print(
+                    "  Crashes after step 1000:    "
+                    f"{late_summary['crashes_after_step_1000']}"
+                )
         if "per_target" in summary:
             print("Per-target results:")
             for target_name, target_summary in summary["per_target"].items():
@@ -1092,6 +1426,39 @@ if is_eval:
                 print(f"  Forward: {int(total_forward)} ({100.0 * total_forward / total_directional:.2f}%)")
                 print(f"  Reverse: {int(total_reverse)} ({100.0 * total_reverse / total_directional:.2f}%)")
 
+        if len(shield_interventions_array) == len(faces_array):
+            total_shield_interventions = int(shield_interventions_array.sum())
+            shield_summary = {
+                "mean_interventions_per_episode": float(np.mean(shield_interventions_array)),
+                "episodes_with_intervention_percent": float(
+                    np.mean(shield_interventions_array > 0) * 100.0
+                ),
+                "total_interventions": total_shield_interventions,
+            }
+            if len(shield_intervention_rate_array) == len(faces_array):
+                shield_summary["mean_intervened_steps_percent"] = float(
+                    np.mean(shield_intervention_rate_array) * 100.0
+                )
+            if (
+                len(shield_forward_array) == len(faces_array)
+                and len(shield_reverse_array) == len(faces_array)
+            ):
+                shield_summary["forward_interventions"] = int(shield_forward_array.sum())
+                shield_summary["reverse_interventions"] = int(shield_reverse_array.sum())
+            summary["safety_shield"] = shield_summary
+
+            print("\nSafety Shield:")
+            print(f"  Total interventions: {total_shield_interventions}")
+            print(
+                "  Episodes with intervention: "
+                f"{np.mean(shield_interventions_array > 0) * 100.0:.2f}%"
+            )
+            if len(shield_intervention_rate_array) == len(faces_array):
+                print(
+                    "  Mean intervened steps: "
+                    f"{np.mean(shield_intervention_rate_array) * 100.0:.2f}%"
+                )
+
         print("="*50 + "\n")
 
         result_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1106,6 +1473,22 @@ if is_eval:
         raw_results = {"faces_discovered": faces_array}
         if len(coverage_array) == len(faces_array):
             raw_results["coverage_percent"] = coverage_array
+        if len(inspection_quality_array) == len(faces_array):
+            raw_results["mean_inspection_quality"] = inspection_quality_array
+        if len(episode_steps_array) == len(faces_array):
+            raw_results["episode_steps"] = episode_steps_array
+        if len(episode_success_array) == len(faces_array):
+            raw_results["episode_success"] = episode_success_array
+        if len(episode_timed_out_array) == len(faces_array):
+            raw_results["episode_timed_out"] = episode_timed_out_array
+        if len(completed_env_id_array) == len(faces_array):
+            raw_results["completed_env_id"] = completed_env_id_array
+        if len(coverage_at_step_1000_array) == len(faces_array):
+            raw_results["coverage_at_step_1000_percent"] = (
+                coverage_at_step_1000_array
+            )
+        if len(faces_at_step_1000_array) == len(faces_array):
+            raw_results["faces_at_step_1000"] = faces_at_step_1000_array
         if len(target_index_array) == len(faces_array):
             raw_results["target_index"] = target_index_array
             raw_results["target_names"] = np.asarray(target_index_to_name)
@@ -1122,6 +1505,14 @@ if is_eval:
             raw_results["forward_crashes"] = forward_array
         if reverse_crashes_list:
             raw_results["reverse_crashes"] = reverse_array
+        if len(shield_interventions_array) == len(faces_array):
+            raw_results["safety_shield_interventions"] = shield_interventions_array
+        if len(shield_intervention_rate_array) == len(faces_array):
+            raw_results["safety_shield_intervention_rate"] = shield_intervention_rate_array
+        if len(shield_forward_array) == len(faces_array):
+            raw_results["safety_shield_forward_interventions"] = shield_forward_array
+        if len(shield_reverse_array) == len(faces_array):
+            raw_results["safety_shield_reverse_interventions"] = shield_reverse_array
             
         np.savez_compressed(raw_path, **raw_results)
 

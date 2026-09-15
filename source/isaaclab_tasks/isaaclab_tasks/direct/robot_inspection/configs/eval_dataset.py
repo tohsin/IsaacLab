@@ -8,16 +8,11 @@ evaluation_data_set = {
         "prim_path": "/World/envs/env_.*/forklift",
         "scale": 0.6,
     },
-    "rubiks_cube": {
-        "num_faces": 3800,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
-        "prim_path": "/World/envs/env_.*/rubiks_cube",
-    },
-     "red_bowl": {
-        "num_faces": 5831,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/024_bowl.usd", 
-        "prim_path": "/World/envs/env_.*/red_bowl",
-        "scale": 10.0,
+    "small_corner_bracket_physics": {
+        "num_faces": 2442,
+        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/small_corner_bracket_physics.usd",
+        "prim_path": "/World/envs/env_.*/small_corner_bracket_physics",
+        "scale": 50.0,
         "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
     },
     "sortbot_housing": {
@@ -26,6 +21,43 @@ evaluation_data_set = {
         "prim_path": "/World/envs/env_.*/sortbot_housing",
         "scale": 1.0,
     },
+    "rubiks_cube": {
+        "num_faces": 3800,
+        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Rubiks_Cube/rubiks_cube.usd",
+        "prim_path": "/World/envs/env_.*/rubiks_cube",
+    },
+    "ur10_mount": {
+            "num_faces": 12000, #12494
+            "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ur10_mount.usd",
+            "prim_path": "/World/envs/env_.*/ur10_mount",
+            "scale": (3.0, 3.0, 2.2),
+            "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
+            # The transformed mesh extends 0.405 m below its root. Spawn at this
+            # height so a kinematic mount rests on, rather than intersects, z=0.
+            "root_height": 0.405,
+        },
+    "pallet": {
+        "num_faces": 10054,
+        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Pallet/o3dyn_pallet.usd",
+        "prim_path": "/World/envs/env_.*/pallet",
+        "scale": 1.0,
+    },
+    "caster": {
+            "num_faces": 11397,
+            "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/caster.usd",
+            "prim_path": "/World/envs/env_.*/caster",
+            "scale": 15.0,
+            "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
+        },
+    
+    "red_bowl": {
+        "num_faces": 5831,
+        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/024_bowl.usd", 
+        "prim_path": "/World/envs/env_.*/red_bowl",
+        "scale": 10.0,
+        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
+    },
+   
     "tuna_fish_can": {
         "num_faces": 15000, #15000
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/007_tuna_fish_can.usd",
@@ -38,22 +70,8 @@ evaluation_data_set = {
         "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
     },
 
-    "ur10_mount": {
-        "num_faces": 11910, #12494
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ur10_mount.usd",
-        "prim_path": "/World/envs/env_.*/ur10_mount",
-        "scale": (3.0, 3.0, 2.2),
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-        # The transformed mesh extends 0.405 m below its root. Spawn at this
-        # height so a kinematic mount rests on, rather than intersects, z=0.
-        "root_height": 0.405,
-    },
-   "pallet": {
-        "num_faces": 10054,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Pallet/o3dyn_pallet.usd",
-        "prim_path": "/World/envs/env_.*/pallet",
-        "scale": 1.0,
-    },
+    
+  
    
     "potted_meat_can": {
         "num_faces": 10763,
@@ -69,20 +87,7 @@ evaluation_data_set = {
         "scale": 6.0,
     }, 
 
-    "caster": {
-        "num_faces": 11397,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/caster.usd",
-        "prim_path": "/World/envs/env_.*/caster",
-        "scale": 15.0,
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
-    "small_corner_bracket_physics": {
-        "num_faces": 2442,
-        "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/small_corner_bracket_physics.usd",
-        "prim_path": "/World/envs/env_.*/small_corner_bracket_physics",
-        "scale": 50.0,
-        "orientation": (0.7071068, 0.7071068, 0.0, 0.0),
-    },
+   
     "blue_cup": {
         "num_faces": 10803,
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned/019_pitcher_base.usd",

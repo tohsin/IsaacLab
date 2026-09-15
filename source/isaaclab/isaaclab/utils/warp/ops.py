@@ -193,6 +193,7 @@ def raycast_dynamic_meshes(
     return_normal: bool = False,
     return_face_id: bool = False,
     return_mesh_id: bool = False,
+    mesh_env_ids: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     """Performs ray-casting against multiple, dynamic meshes.
 
@@ -214,6 +215,8 @@ def raycast_dynamic_meshes(
         return_face_id: Whether to return the face id of the mesh face the ray hits. Defaults to False.
         return_mesh_id: Whether to return the mesh id of the mesh face the ray hits. Defaults to False.
                         NOTE: the type of the returned tensor is torch.int16, so you can't have more than 32767 meshes.
+        mesh_env_ids: Optional mapping from each ray batch row to the corresponding row in ``mesh_ids_wp``.
+            This is required when ray-casting a subset of environments from a larger per-environment mesh table.
 
     Returns:
         The ray hit position. Shape (B, N, 3).
@@ -241,6 +244,21 @@ def raycast_dynamic_meshes(
 
     n_envs = ray_starts.shape[0]
     n_rays_per_env = ray_starts.shape[1]
+
+    if mesh_env_ids is None:
+        if mesh_ids_wp.shape[0] != n_envs:
+            raise ValueError(
+                "mesh_env_ids is required when the mesh table and ray batch have different row counts: "
+                f"{mesh_ids_wp.shape[0]} != {n_envs}"
+            )
+        mesh_env_ids = torch.arange(n_envs, dtype=torch.long, device=torch_device)
+    else:
+        mesh_env_ids = torch.as_tensor(mesh_env_ids, dtype=torch.long, device=torch_device).reshape(-1)
+        if mesh_env_ids.numel() != n_envs:
+            raise ValueError(
+                f"mesh_env_ids must contain one index per ray batch row, got {mesh_env_ids.numel()} for {n_envs}"
+            )
+    mesh_env_ids_wp = wp.from_torch(mesh_env_ids.contiguous(), dtype=wp.int64)
 
     # reshape the tensors
     ray_starts = ray_starts.to(torch_device).view(n_envs, n_rays_per_env, 3).contiguous()
@@ -303,6 +321,7 @@ def raycast_dynamic_meshes(
             dim=[n_meshes, n_envs, n_rays_per_env],
             inputs=[
                 mesh_ids_wp,
+                mesh_env_ids_wp,
                 ray_starts_wp,
                 ray_directions_wp,
                 ray_hits_wp,
@@ -345,6 +364,7 @@ def raycast_dynamic_meshes(
             dim=[n_meshes, n_envs, n_rays_per_env],
             inputs=[
                 mesh_ids_wp,
+                mesh_env_ids_wp,
                 ray_starts_wp,
                 ray_directions_wp,
                 ray_hits_wp,

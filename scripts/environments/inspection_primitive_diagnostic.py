@@ -10,6 +10,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Validate primitive face IDs and semantic masking.")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--num_steps", type=int, default=24)
+parser.add_argument("--target_name", type=str, default=None)
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0")
 parser.add_argument("--disable_fabric", action="store_true", default=False)
 AppLauncher.add_app_launcher_args(parser)
@@ -45,6 +46,20 @@ def main():
     )
     env_cfg.seed = 42
     env_cfg.max_obstacles = 0
+    if args_cli.target_name is not None:
+        targets = env_cfg.inspection_goal_cfg.inspection_targets
+        if args_cli.target_name not in targets:
+            raise ValueError(
+                f"Unknown target {args_cli.target_name!r}; choose from {tuple(targets)}"
+            )
+        # Target assignment begins with the first dictionary entry. Keep all
+        # other entries because the already-built sensor config references
+        # every target path, but put the requested diagnostic target first.
+        requested_target = targets[args_cli.target_name]
+        env_cfg.inspection_goal_cfg.inspection_targets = {
+            args_cli.target_name: requested_target,
+            **{name: target for name, target in targets.items() if name != args_cli.target_name},
+        }
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     try:

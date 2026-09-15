@@ -78,6 +78,7 @@ def raycast_mesh_kernel(
 @wp.kernel(enable_backward=False)
 def raycast_static_meshes_kernel(
     mesh: wp.array2d(dtype=wp.uint64),
+    mesh_env_ids: wp.array(dtype=wp.int64),
     ray_starts: wp.array2d(dtype=wp.vec3),
     ray_directions: wp.array2d(dtype=wp.vec3),
     ray_hits: wp.array2d(dtype=wp.vec3),
@@ -109,6 +110,7 @@ def raycast_static_meshes_kernel(
     Args:
         mesh: The input mesh. The ray-casting is performed against this mesh on the device specified by the
             `mesh`'s `device` attribute.
+        mesh_env_ids: Maps each ray batch row to its row in ``mesh``. Shape is (B,).
         ray_starts: The input ray start positions. Shape is (B, N, 3).
         ray_directions: The input ray directions. Shape is (B, N, 3).
         ray_hits: The output ray hit positions. Shape is (B, N, 3).
@@ -132,7 +134,7 @@ def raycast_static_meshes_kernel(
     start_pos = ray_starts[tid_env, tid_ray]
 
     # ray cast against the mesh and store the hit position
-    mesh_query_ray_t = wp.mesh_query_ray(mesh[tid_env, tid_mesh_id], start_pos, direction, max_dist)
+    mesh_query_ray_t = wp.mesh_query_ray(mesh[mesh_env_ids[tid_env], tid_mesh_id], start_pos, direction, max_dist)
 
     # if the ray hit, store the hit data
     if mesh_query_ray_t.result:
@@ -158,6 +160,7 @@ def raycast_static_meshes_kernel(
 @wp.kernel
 def raycast_dynamic_meshes_kernel(
     mesh: wp.array2d(dtype=wp.uint64),
+    mesh_env_ids: wp.array(dtype=wp.int64),
     ray_starts: wp.array2d(dtype=wp.vec3),
     ray_directions: wp.array2d(dtype=wp.vec3),
     ray_hits: wp.array2d(dtype=wp.vec3),
@@ -191,6 +194,7 @@ def raycast_dynamic_meshes_kernel(
     Args:
         mesh: The input mesh. The ray-casting is performed against this mesh on the device specified by the
             `mesh`'s `device` attribute.
+        mesh_env_ids: Maps each ray batch row to its row in ``mesh``. Shape is (B,).
         ray_starts: The input ray start positions. Shape is (B, N, 3).
         ray_directions: The input ray directions. Shape is (B, N, 3).
         ray_hits: The output ray hit positions. Shape is (B, N, 3).
@@ -212,13 +216,14 @@ def raycast_dynamic_meshes_kernel(
     # get the thread id
     tid_mesh_id, tid_env, tid_ray = wp.tid()
 
+    mesh_env_id = mesh_env_ids[tid_env]
     mesh_pose = wp.transform(mesh_positions[tid_env, tid_mesh_id], mesh_rotations[tid_env, tid_mesh_id])
     mesh_pose_inv = wp.transform_inverse(mesh_pose)
     direction = wp.transform_vector(mesh_pose_inv, ray_directions[tid_env, tid_ray])
     start_pos = wp.transform_point(mesh_pose_inv, ray_starts[tid_env, tid_ray])
 
     # ray cast against the mesh and store the hit position
-    mesh_query_ray_t = wp.mesh_query_ray(mesh[tid_env, tid_mesh_id], start_pos, direction, max_dist)
+    mesh_query_ray_t = wp.mesh_query_ray(mesh[mesh_env_id, tid_mesh_id], start_pos, direction, max_dist)
     # if the ray hit, store the hit data
     if mesh_query_ray_t.result:
 

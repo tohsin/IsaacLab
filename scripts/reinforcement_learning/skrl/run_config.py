@@ -42,7 +42,11 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
 
 Models = {
     'Base_model' :{
-        'path': "Alblation_ATTN_FUS_2026-09-08_07-56-35"
+        'path': "Alblation_ATTN_FUS_2026-09-10_16-06-28"
+    },
+    'Diverse_dataset':
+    {
+        'path': "Alblation_ATTN_FUS_2026-09-13_06-56-09"
     },
     # Here we test the relvance of the attention fusion for reasnoning
     'MLP_Fusion' : {
@@ -57,8 +61,14 @@ Models = {
 
 path_pretrained = get_checkpoint_path(
     project_name="Alblation-Baseline",
-    run_name= Models['Base_model']['path'],
-    checkpoint_type=0 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
+    run_name= Models['Diverse_dataset']['path'],
+    checkpoint_type=1 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
+)
+
+legacy_aug31_checkpoint = os.path.join(
+    ISAACLAB_ROOT,
+    "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline",
+    "SEEIR-2026-08-31_20-03-08/checkpoints/agent_135000.pt",
 )
 
 class TrainingConfig_PreTrain:
@@ -71,22 +81,32 @@ class TrainingConfig_PreTrain:
     batch_size = 8192 # 8192
     use_attention_fusion = True
     use_transformer_encoder = True
+    attention_d_model = 512
+    # Capacity-matched attention ablation: retain d_model=512 and change only
+    # the readout from a learned CLS token to mean pooling over modality tokens.
+    attention_pooling = "mean"
+    encoder_res_blocks_per_stage = 1
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
     entropy_coef =  0.00004
     value_loss_scale = 1.0 #1.0 
-    learning_rate = 0.00004
+    learning_rate = 4e-5
     attention_learning_rate = 2e-5
+    use_separate_attention_lr = True
     std_learning_rate = 4e-5
     grad_clip_norm = 0.8
-    init_log_std =  0.0 # 0.0 
+    # Stop the remaining minibatches in an epoch when the approximate policy
+    # KL exceeds this guardrail. This complements the smooth cosine LR decay
+    # by catching localized KL spikes that are hidden by the mean KL.
+    kl_threshold = 0.08
+    init_log_std =     -0.10536
     manual_std_decay = False
     final_log_std = -1.2  # Decays std to ~0.3
     std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 40_000_000
+    global_timesteps = 45_000_000
     scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
@@ -108,12 +128,17 @@ class EvaluationConfig:
     reset_std = False
     use_attention_fusion = True
     use_transformer_encoder = True
+    attention_d_model = 512
+    attention_pooling = "mean"
+    encoder_res_blocks_per_stage = 1
+    use_separate_attention_lr = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"
     batch_size =  8192
     entropy_coef = 3e-7
     learning_rate = 3e-5
+    kl_threshold = 0.0
     init_log_std = 0.0
     max_log_std = 2.0
     global_timesteps = 30_000_000
@@ -126,8 +151,24 @@ class EvaluationConfig:
     data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval")
     save_depth = False
 
+
+class LegacyAugust31EvaluationConfig(EvaluationConfig):
+    """Architecture-compatible evaluation for SEEIR-2026-08-31_20-03-08."""
+
+    checkpoint_path = legacy_aug31_checkpoint
+    attention_d_model = 256
+    attention_pooling = "mean"
+    encoder_res_blocks_per_stage = 2
+    # The saved Adam state has the historical policy/std two-group layout.
+    use_separate_attention_lr = False
+
 # Select the configuration to use
 configs_ = [TrainingConfig_PreTrain(), 
             # TrainingConfig_FineTune(),
-              EvaluationConfig()]   
-CONFIG = configs_[0] # <-- Changed to 1 so EvaluationConfig is active
+              EvaluationConfig(),
+              LegacyAugust31EvaluationConfig()]
+CONFIG = configs_[0]  # Train the d_model=512 mean-pooling attention policy
+#~/evaluate_agent.sh --seed 42 --max_episodes 128 --eval-max-episode-steps 1200
+# ~/evaluate_agent.sh --seed 43 --max_episodes 128 --eval-max-episode-steps 1200
+# ~/evaluate_agent.sh --seed 44 --max_episodes 128 --eval-max-episode-steps 1200
+# ~/evaluate_agent.sh --seed 45 --max_episodes 128 --eval-max-episode-steps 1200

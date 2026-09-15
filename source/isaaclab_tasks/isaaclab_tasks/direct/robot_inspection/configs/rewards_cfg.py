@@ -15,7 +15,7 @@ class RewardsCfg:
     # The occupancy map is an early-warning proxy, so keep it as a modest
     # additive shaping cost. A confirmed physical collision is handled below
     # with an exclusive terminal reward.
-    occupancy_penalty_scale: float = 0.15
+    occupancy_penalty_scale: float = 0.2
     collision_threshold: float = 1.0
     terminal_collision_penalty: float = 2.0
 

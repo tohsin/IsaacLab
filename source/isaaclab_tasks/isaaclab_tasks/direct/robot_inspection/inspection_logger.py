@@ -28,6 +28,7 @@ class InspectionLogger:
             "curriculum/active_obstacles": deque(maxlen=window_size),
             "episode_summary/final_map_entropy_percent": deque(maxlen=window_size),
             "episode_summary/crash_rate": deque(maxlen=window_size),
+            "episode_summary/safety_shield_intervention_rate": deque(maxlen=window_size),
             "curriculum/task_area": deque(maxlen=window_size),
             "curriculum/max_crashes": deque(maxlen=window_size),
             "optical_flow_per_step": deque(maxlen=window_size),
@@ -65,6 +66,9 @@ class InspectionLogger:
             
             mean_final_map_entropy_percent = np.mean(self.episode_log_buffer["episode_summary/final_map_entropy_percent"]) if self.episode_log_buffer["episode_summary/final_map_entropy_percent"] else 0.0
             mean_crash_rate = np.mean(self.episode_log_buffer["episode_summary/crash_rate"]) if self.episode_log_buffer["episode_summary/crash_rate"] else 0.0
+            mean_safety_shield_intervention_rate = np.mean(
+                self.episode_log_buffer["episode_summary/safety_shield_intervention_rate"]
+            ) if self.episode_log_buffer["episode_summary/safety_shield_intervention_rate"] else 0.0
             mean_task_area = np.mean(self.episode_log_buffer["curriculum/task_area"]) if self.episode_log_buffer["curriculum/task_area"] else 0.0
             mean_max_crashes = np.mean(self.episode_log_buffer["curriculum/max_crashes"]) if self.episode_log_buffer["curriculum/max_crashes"] else 0.0
             mean_optical_flow = np.mean(self.episode_log_buffer["optical_flow_per_step"]) if self.episode_log_buffer["optical_flow_per_step"] else 0.0
@@ -91,6 +95,7 @@ class InspectionLogger:
                 "episode_summary/max_faces_discovered_so_far": self.global_max_faces_discovered,
                 "episode_summary/avg_faces_visible_per_step": mean_visible_faces,
                 "episode_summary/crash_rate": mean_crash_rate,
+                "episode_summary/safety_shield_intervention_rate": mean_safety_shield_intervention_rate,
                 "curriculum/active_obstacles": np.mean(self.episode_log_buffer["curriculum/active_obstacles"]) if self.episode_log_buffer.get("curriculum/active_obstacles") else 0.0,
                 "curriculum/task_area": mean_task_area,
                 "curriculum/max_crashes": mean_max_crashes,

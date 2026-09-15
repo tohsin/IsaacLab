@@ -28,9 +28,9 @@ class debug_Cfg:
     logging_interval: int = 1500
     max_episode_length: int = 10_000
     inspection_dataset = "primitive"
-    inspection_target = "cone"
+    inspection_target = "tessellated_thin_legged_body"
     # inspection_dataset = "evaluation"
-    # inspection_target = "ur10_mount"
+    # inspection_target = "caster"
     inspection_goal =  0.95
     visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
     display_ray_counts = True
@@ -55,12 +55,25 @@ class debug_Cfg:
     tipover_max_tilt_degrees: float = 45.0
     tipover_consecutive_steps: int = 2
     is_simplified = False
-    use_radius_aware_obstacle_spawning: bool = False
+    use_radius_aware_obstacle_spawning: bool = True
     robot_footprint_radius: float = 0.35
     fallback_target_footprint_radius: float = 0.8
-    target_obstacle_surface_clearance: float = 2.3
+    target_obstacle_surface_clearance: float = 2.0
     obstacle_obstacle_surface_clearance: float = 1.5
-    robot_obstacle_surface_clearance: float = 1.0
+    robot_obstacle_surface_clearance: float = 0.8
+
+    # Directional safety shield. The local occupancy map is already expressed
+    # in the robot frame, so this does not change the policy observation or the
+    # checkpoint architecture.
+    use_directional_safety_shield: bool = False
+    safety_shield_occupancy_threshold: float = 1.1
+    safety_shield_robot_radius: float = 0.35
+    safety_shield_margin: float = 0.10
+    safety_shield_horizon_s: float = 0.50
+    safety_shield_prediction_steps: int = 6
+    safety_shield_z_min: float = 0.10
+    safety_shield_z_max: float = 0.80
+    safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
 
 class train_Cfg_base: # For pretriaing as a base
     debug = False
@@ -76,7 +89,7 @@ class train_Cfg_base: # For pretriaing as a base
     display_cameras = False
     use_wandb =  True #not debug
     headless = True
-    nav_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
+    nav_camera_modality = "depth" # "rgb", "depth", or "rgbd"
     ptz_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
 
     enable_depth_sensor_noise = True
@@ -117,25 +130,42 @@ class train_Cfg_base: # For pretriaing as a base
     min_spawn_max_y: float = 5.0
 
 
-    use_radius_aware_obstacle_spawning: bool = False
-    # robot_footprint_radius: float = 0.35
-    # fallback_target_footprint_radius: float = 0.8
-    # target_obstacle_surface_clearance: float = 1.0
-    # obstacle_obstacle_surface_clearance: float = 0.7
-    # robot_obstacle_surface_clearance: float = 1.0
+    use_radius_aware_obstacle_spawning: bool = True
+    robot_footprint_radius: float = 0.35
+    fallback_target_footprint_radius: float = 0.8
+    target_obstacle_surface_clearance: float = 1.4
+    obstacle_obstacle_surface_clearance: float = 0.9
+    robot_obstacle_surface_clearance: float = 1.2
     # Backward-compatible center-distance fallback for callers that do not
     # provide footprint radii.
     min_dist_between_obstacles: float = 2.2
     min_dist_to_objective: float = 2.0
 
+    # Keep the pooling comparison policy-only; the shield would change the
+    # transition distribution and confound the CLS-versus-mean ablation.
+    use_directional_safety_shield: bool = False
+    safety_shield_occupancy_threshold: float = 1.1
+    safety_shield_robot_radius: float = 0.35
+    safety_shield_margin: float = 0.10
+    safety_shield_horizon_s: float = 0.50
+    safety_shield_prediction_steps: int = 6
+    safety_shield_z_min: float = 0.10
+    safety_shield_z_max: float = 0.80
+    safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
+eval_dataset = {'ur10' :'ur10_mount', 
+                'caster':'caster',
+                'rubiks':'rubiks_cube',
+                'pallet':'pallet',
+                'bracket':'small_corner_bracket_physics',
+                'sortbot_housing':'sortbot_housing'}
 class eval_Cfg:
     debug = False
-    # Evaluate the UR10 mount under the same target physics, sensor noise,
-    # spawning, obstacle, and collision settings used by the primitive test.
-    # inspection_dataset = "primitive"
-    # inspection_target = "tessellated_t_block"
+    # Evaluate the August 31 policy on an out-of-distribution target using the
+    # current physics, spawning, sensor noise, and collision detector.
     inspection_dataset = "evaluation"
-    inspection_target = "ur10_mount"
+    inspection_target = eval_dataset['bracket']
+    # inspection_dataset = "primitive"
+    # inspection_target = 'tessellated_thin_legged_body'
     kinematic_inspection_target = True
     inspection_target_mass = 1000.0
 
@@ -196,15 +226,27 @@ class eval_Cfg:
 
     is_simplified = False
 
-    use_radius_aware_obstacle_spawning: bool = False
+    use_radius_aware_obstacle_spawning: bool = True
     robot_footprint_radius: float = 0.35
     fallback_target_footprint_radius: float = 0.8
-    target_obstacle_surface_clearance: float = 0.55
-    obstacle_obstacle_surface_clearance: float = 0.15
-    robot_obstacle_surface_clearance: float = 0.40
+    target_obstacle_surface_clearance: float = 1.0
+    obstacle_obstacle_surface_clearance: float = 0.7
+    robot_obstacle_surface_clearance: float = 1.0
 
     min_dist_between_obstacles: float = 2.2
     min_dist_to_objective: float = 2.0
+
+    # Keep this comparison policy-only. Otherwise the new shield would alter
+    # the trajectory and confound the checkpoint comparison.
+    use_directional_safety_shield: bool = False
+    safety_shield_occupancy_threshold: float = 1.1
+    safety_shield_robot_radius: float = 0.35
+    safety_shield_margin: float = 0.10
+    safety_shield_horizon_s: float = 0.50
+    safety_shield_prediction_steps: int = 6
+    safety_shield_z_min: float = 0.10
+    safety_shield_z_max: float = 0.80
+    safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
 
 
 

@@ -10,11 +10,12 @@ of the cuboid unchanged.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import MISSING
 
 import numpy as np
 import trimesh
 import isaacsim.core.utils.prims as prim_utils
-from pxr import Usd
+from pxr import Usd, UsdPhysics
 
 import isaaclab.sim as sim_utils
 from isaaclab.sim.spawners.meshes.meshes import _spawn_mesh_geom_from_mesh
@@ -225,6 +226,39 @@ class TessellatedTBlockCfg(sim_utils.MeshCuboidCfg):
 
 
 @clone
+def spawn_tessellated_composite(
+    prim_path: str,
+    cfg: "TessellatedCompositeCfg",
+    translation: tuple[float, float, float] | None = None,
+    orientation: tuple[float, float, float, float] | None = None,
+    **kwargs,
+) -> Usd.Prim:
+    """Spawn one of the fixed-topology composite inspection targets."""
+    mesh = create_tessellated_composite_mesh(cfg.primitive_cfg)
+    _spawn_mesh_geom_from_mesh(prim_path, cfg, mesh, translation, orientation)
+
+    # These meshes are deliberately concave.  A convex hull would close the
+    # U-housing pocket, leg gap, and overhang clearance that they are intended
+    # to teach.  Convex decomposition also remains valid if a run makes the
+    # target dynamic instead of using the normal kinematic configuration.
+    mesh_prim = prim_utils.get_prim_at_path(f"{prim_path}/geometry/mesh")
+    collision_api = UsdPhysics.MeshCollisionAPI.Apply(mesh_prim)
+    collision_api.GetApproximationAttr().Set(cfg.collision_approximation)
+    return prim_utils.get_prim_at_path(prim_path)
+
+
+@configclass
+class TessellatedCompositeCfg(sim_utils.MeshCfg):
+    """Configuration for a randomized, concave composite target."""
+
+    func: Callable = spawn_tessellated_composite
+    primitive_cfg: dict = MISSING
+    """Shape parameters passed to :func:`create_tessellated_composite_mesh`."""
+    collision_approximation: str = "convexDecomposition"
+    """PhysX approximation that preserves the important concavities."""
+
+
+@clone
 def spawn_tessellated_sphere(
     prim_path: str,
     cfg: "TessellatedSphereCfg",
@@ -353,6 +387,23 @@ def build_tessellated_primitive_cfg(primitive_cfg: dict, **spawn_kwargs):
             axis=str(axis).upper(),
             **spawn_kwargs,
         )
+    if primitive_type in (
+        "tessellated_c_housing",
+        "tessellated_u_housing",
+        "tessellated_low_arm",
+        "tessellated_stepped_block",
+        "tessellated_thin_legged_body",
+        "tessellated_overhang",
+    ):
+        return TessellatedCompositeCfg(
+            primitive_cfg={
+                key: value for key, value in primitive_cfg.items() if key != "domain_randomization"
+            },
+            collision_approximation=str(
+                primitive_cfg.get("collision_approximation", "convexDecomposition")
+            ),
+            **spawn_kwargs,
+        )
     if primitive_type == "tessellated_sphere":
         return TessellatedSphereCfg(
             radius=float(primitive_cfg.get("radius", 0.5)),
@@ -383,6 +434,508 @@ def build_tessellated_primitive_cfg(primitive_cfg: dict, **spawn_kwargs):
             **spawn_kwargs,
         )
     raise ValueError(f"Unsupported inspection primitive configuration: {primitive_cfg}")
+
+
+def create_tessellated_composite_mesh(primitive_cfg: dict) -> trimesh.Trimesh:
+    """Create a composite mesh from absolute, per-variant dimensions.
+
+    Every family keeps a fixed topology while its dimensions change.  This is
+    important because face IDs and the coverage denominator are fixed per
+    target, while a bounded bank of point arrays can still represent genuinely
+    different pockets, gaps, offsets, and appendages.
+    """
+    primitive_type = str(primitive_cfg["type"])
+    subdivisions = int(primitive_cfg.get("subdivisions", 3))
+    if subdivisions < 0:
+        raise ValueError(f"subdivisions must be non-negative, got {subdivisions}")
+
+    if primitive_type == "tessellated_c_housing":
+        mesh = _create_c_housing_mesh(
+            size=tuple(primitive_cfg["size"]),
+            opening_width_fraction=float(primitive_cfg.get("opening_width_fraction", 0.55)),
+            pocket_depth_fraction=float(primitive_cfg.get("pocket_depth_fraction", 0.7)),
+        )
+    elif primitive_type == "tessellated_u_housing":
+        mesh = _create_u_housing_mesh(
+            size=tuple(primitive_cfg["size"]),
+            opening_width_fraction=float(primitive_cfg.get("opening_width_fraction", 0.55)),
+            pocket_floor_height=float(primitive_cfg.get("pocket_floor_height", 0.25)),
+        )
+    elif primitive_type == "tessellated_low_arm":
+        mesh = _create_low_arm_mesh(
+            body_radius=float(primitive_cfg.get("body_radius", 0.4)),
+            body_height=float(primitive_cfg.get("body_height", 1.0)),
+            arm_length=float(primitive_cfg.get("arm_length", 0.65)),
+            arm_width=float(primitive_cfg.get("arm_width", 0.2)),
+            arm_thickness=float(primitive_cfg.get("arm_thickness", 0.16)),
+            arm_clearance=float(primitive_cfg.get("arm_clearance", 0.08)),
+            angular_segments=int(primitive_cfg.get("angular_segments", 32)),
+        )
+    elif primitive_type == "tessellated_stepped_block":
+        mesh = _create_stepped_block_mesh(
+            size=tuple(primitive_cfg["size"]),
+            step_x_fractions=tuple(primitive_cfg.get("step_x_fractions", (0.34, 0.68))),
+            step_height_fractions=tuple(
+                primitive_cfg.get("step_height_fractions", (0.4, 0.7))
+            ),
+        )
+    elif primitive_type == "tessellated_thin_legged_body":
+        mesh = _create_thin_legged_body_mesh(
+            depth=float(primitive_cfg.get("depth", 0.8)),
+            gap_width=float(primitive_cfg.get("gap_width", 0.55)),
+            left_leg_width=float(primitive_cfg.get("left_leg_width", 0.18)),
+            right_leg_width=float(primitive_cfg.get("right_leg_width", 0.18)),
+            underside_height=float(primitive_cfg.get("underside_height", 1.05)),
+            body_thickness=float(primitive_cfg.get("body_thickness", 0.3)),
+        )
+    elif primitive_type == "tessellated_overhang":
+        mesh = _create_overhang_mesh(
+            support_size=tuple(primitive_cfg.get("support_size", (0.5, 0.5, 1.1))),
+            plate_size=tuple(primitive_cfg.get("plate_size", (1.2, 1.2, 0.22))),
+            plate_offset=tuple(primitive_cfg.get("plate_offset", (0.0, 0.0))),
+        )
+    else:
+        raise ValueError(f"Unsupported composite primitive type: {primitive_type!r}")
+
+    for _ in range(subdivisions):
+        vertices, faces = trimesh.remesh.subdivide(mesh.vertices, mesh.faces)
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    return mesh
+
+
+def _triangulate_simple_polygon(points: list[tuple[float, float]]) -> list[tuple[int, int, int]]:
+    """Triangulate a counter-clockwise simple polygon with deterministic ear clipping."""
+    coordinates = np.asarray(points, dtype=np.float64)
+    if coordinates.ndim != 2 or coordinates.shape[0] < 3 or coordinates.shape[1] != 2:
+        raise ValueError("A polygon needs at least three 2-D points")
+    signed_area = 0.5 * np.sum(
+        coordinates[:, 0] * np.roll(coordinates[:, 1], -1)
+        - np.roll(coordinates[:, 0], -1) * coordinates[:, 1]
+    )
+    if signed_area <= 0.0:
+        raise ValueError("Composite profiles must be counter-clockwise")
+
+    def cross(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+        return float(np.cross(b - a, c - a))
+
+    def inside_triangle(point: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> bool:
+        epsilon = 1.0e-10
+        return (
+            cross(a, b, point) >= -epsilon
+            and cross(b, c, point) >= -epsilon
+            and cross(c, a, point) >= -epsilon
+        )
+
+    remaining = list(range(len(points)))
+    triangles: list[tuple[int, int, int]] = []
+    while len(remaining) > 3:
+        for position, current in enumerate(remaining):
+            previous = remaining[position - 1]
+            following = remaining[(position + 1) % len(remaining)]
+            if cross(coordinates[previous], coordinates[current], coordinates[following]) <= 1.0e-10:
+                continue
+            if any(
+                inside_triangle(
+                    coordinates[candidate],
+                    coordinates[previous],
+                    coordinates[current],
+                    coordinates[following],
+                )
+                for candidate in remaining
+                if candidate not in (previous, current, following)
+            ):
+                continue
+            triangles.append((previous, current, following))
+            del remaining[position]
+            break
+        else:
+            raise ValueError(f"Could not triangulate composite profile: {points!r}")
+    triangles.append(tuple(remaining))
+    return triangles
+
+
+def _create_xy_extrusion_mesh(
+    profile: list[tuple[float, float]], height: float
+) -> trimesh.Trimesh:
+    """Extrude an XY profile symmetrically along Z."""
+    if height <= 0.0:
+        raise ValueError(f"Extrusion height must be positive, got {height}")
+    cap_faces = _triangulate_simple_polygon(profile)
+    count = len(profile)
+    vertices = [(x, y, -height / 2.0) for x, y in profile]
+    vertices.extend((x, y, height / 2.0) for x, y in profile)
+    faces = [tuple(reversed(face)) for face in cap_faces]
+    faces.extend(tuple(index + count for index in face) for face in cap_faces)
+    for index in range(count):
+        following = (index + 1) % count
+        faces.extend(
+            ((index, following, following + count), (index, following + count, index + count))
+        )
+    return trimesh.Trimesh(vertices=np.asarray(vertices), faces=np.asarray(faces), process=False)
+
+
+def _create_xz_extrusion_mesh(
+    profile: list[tuple[float, float]], depth: float
+) -> trimesh.Trimesh:
+    """Extrude an XZ profile symmetrically along Y."""
+    if depth <= 0.0:
+        raise ValueError(f"Extrusion depth must be positive, got {depth}")
+    cap_faces = _triangulate_simple_polygon(profile)
+    count = len(profile)
+    vertices = [(x, -depth / 2.0, z) for x, z in profile]
+    vertices.extend((x, depth / 2.0, z) for x, z in profile)
+    # A CCW XZ cap points toward -Y on the front and must be reversed on the back.
+    faces = list(cap_faces)
+    faces.extend(tuple(reversed(tuple(index + count for index in face))) for face in cap_faces)
+    for index in range(count):
+        following = (index + 1) % count
+        faces.extend(
+            ((index, index + count, following + count), (index, following + count, following))
+        )
+    return trimesh.Trimesh(vertices=np.asarray(vertices), faces=np.asarray(faces), process=False)
+
+
+def _create_c_housing_mesh(
+    size: tuple[float, float, float],
+    opening_width_fraction: float,
+    pocket_depth_fraction: float,
+) -> trimesh.Trimesh:
+    width, depth, height = map(float, size)
+    if min(width, depth, height) <= 0.0:
+        raise ValueError(f"C-housing size must be positive, got {size}")
+    if not 0.0 < opening_width_fraction < 1.0:
+        raise ValueError("opening_width_fraction must lie in (0, 1)")
+    if not 0.0 < pocket_depth_fraction < 1.0:
+        raise ValueError("pocket_depth_fraction must lie in (0, 1)")
+    opening_half_width = 0.5 * width * opening_width_fraction
+    front = -0.5 * depth
+    back = 0.5 * depth
+    pocket_back = front + depth * pocket_depth_fraction
+    profile = [
+        (-0.5 * width, front),
+        (-opening_half_width, front),
+        (-opening_half_width, pocket_back),
+        (opening_half_width, pocket_back),
+        (opening_half_width, front),
+        (0.5 * width, front),
+        (0.5 * width, back),
+        (-0.5 * width, back),
+    ]
+    return _create_xy_extrusion_mesh(profile, height)
+
+
+def _create_u_housing_mesh(
+    size: tuple[float, float, float],
+    opening_width_fraction: float,
+    pocket_floor_height: float,
+) -> trimesh.Trimesh:
+    width, depth, height = map(float, size)
+    if min(width, depth, height) <= 0.0:
+        raise ValueError(f"U-housing size must be positive, got {size}")
+    if not 0.0 < opening_width_fraction < 1.0:
+        raise ValueError("opening_width_fraction must lie in (0, 1)")
+    if not 0.0 < pocket_floor_height < height:
+        raise ValueError(f"pocket_floor_height ({pocket_floor_height}) must be strictly between 0 and height ({height})")
+    opening_half_width = 0.5 * width * opening_width_fraction
+    bottom = -0.5 * height
+    top = 0.5 * height
+    pocket_bottom = bottom + pocket_floor_height
+    profile = [
+        (0.5 * width, bottom),
+        (0.5 * width, top),
+        (opening_half_width, top),
+        (opening_half_width, pocket_bottom),
+        (-opening_half_width, pocket_bottom),
+        (-opening_half_width, top),
+        (-0.5 * width, top),
+        (-0.5 * width, bottom),
+    ]
+    return _create_xz_extrusion_mesh(profile, depth)
+
+
+def _create_stepped_block_mesh(
+    size: tuple[float, float, float],
+    step_x_fractions: tuple[float, float],
+    step_height_fractions: tuple[float, float],
+) -> trimesh.Trimesh:
+    """Create a vertically extruded prism with a stepped XY footprint.
+
+    ``size`` always means world-space ``(width, depth, height)``. The
+    ``step_height_fractions`` name is retained for configuration compatibility,
+    but those fractions now locate turns along the horizontal depth axis.
+    """
+    width, depth, height = map(float, size)
+    first_x, second_x = map(float, step_x_fractions)
+    first_depth, second_depth = map(float, step_height_fractions)
+    if min(width, depth, height) <= 0.0:
+        raise ValueError(f"Stepped-block size must be positive, got {size}")
+    if not 0.0 < first_x < second_x < 1.0:
+        raise ValueError("step_x_fractions must be strictly increasing inside (0, 1)")
+    if not 0.0 < first_depth < second_depth < 1.0:
+        raise ValueError("step_height_fractions must be strictly increasing inside (0, 1)")
+    x0 = -0.5 * width
+    x1 = x0 + width * first_x
+    x2 = x0 + width * second_x
+    x3 = 0.5 * width
+    y0 = -0.5 * depth
+    y1 = y0 + depth * first_depth
+    y2 = y0 + depth * second_depth
+    y3 = 0.5 * depth
+    profile = [
+        (x0, y0),
+        (x3, y0),
+        (x3, y3),
+        (x2, y3),
+        (x2, y2),
+        (x1, y2),
+        (x1, y1),
+        (x0, y1),
+    ]
+    return _create_xy_extrusion_mesh(profile, height)
+
+
+def _create_thin_legged_body_mesh(
+    depth: float,
+    gap_width: float,
+    left_leg_width: float,
+    right_leg_width: float,
+    underside_height: float,
+    body_thickness: float,
+) -> trimesh.Trimesh:
+    dimensions = (
+        depth,
+        gap_width,
+        left_leg_width,
+        right_leg_width,
+        underside_height,
+        body_thickness,
+    )
+    if min(dimensions) <= 0.0:
+        raise ValueError(f"Thin-legged-body dimensions must be positive, got {dimensions}")
+    width = left_leg_width + gap_width + right_leg_width
+    height = underside_height + body_thickness
+    x0 = -0.5 * width
+    x1 = x0 + left_leg_width
+    x2 = x1 + gap_width
+    x3 = 0.5 * width
+    z0 = -0.5 * height
+    z1 = z0 + underside_height
+    z2 = 0.5 * height
+    profile = [
+        (x0, z0),
+        (x1, z0),
+        (x1, z1),
+        (x2, z1),
+        (x2, z0),
+        (x3, z0),
+        (x3, z2),
+        (x0, z2),
+    ]
+    return _create_xz_extrusion_mesh(profile, depth)
+
+
+def _create_low_arm_mesh(
+    body_radius: float,
+    body_height: float,
+    arm_length: float,
+    arm_width: float,
+    arm_thickness: float,
+    arm_clearance: float,
+    angular_segments: int = 32,
+) -> trimesh.Trimesh:
+    """Create a structured cylindrical pedestal union with one thin, elevated arm."""
+    if min(body_radius, body_height, arm_length, arm_width, arm_thickness) <= 0.0:
+        raise ValueError("Low-arm dimensions must be positive")
+    if arm_clearance < 0.0 or arm_clearance + arm_thickness >= body_height:
+        raise ValueError("The low arm must fit strictly below the pedestal top")
+
+    # Determine how many sectors the arm covers
+    ratio = (arm_width / 2.0) / body_radius
+    if ratio >= 1.0:
+        raise ValueError("The arm is too wide for the cylinder body")
+    theta = float(np.arcsin(ratio))
+    sector_angle = 2.0 * np.pi / angular_segments
+    half_hidden = max(1, int(round(theta / sector_angle)))
+    if half_hidden * 2 >= angular_segments:
+        raise ValueError("The arm is too wide, it hides the entire cylinder")
+
+    # Snap the arm width and position to the sector boundaries
+    actual_theta = half_hidden * sector_angle
+    actual_arm_width = 2.0 * body_radius * float(np.sin(actual_theta))
+    arm_attach_x = body_radius * float(np.cos(actual_theta))
+    arm_outer_x = arm_attach_x + arm_length
+
+    z_bottom = -0.5 * body_height
+    z_arm_bottom = z_bottom + arm_clearance
+    z_arm_top = z_arm_bottom + arm_thickness
+    z_top = 0.5 * body_height
+
+    vertices: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, int, int]] = []
+
+    # 4 cylinder rings
+    rings = []
+    for z in (z_bottom, z_arm_bottom, z_arm_top, z_top):
+        ring = []
+        for i in range(angular_segments):
+            angle = i * sector_angle
+            ring.append(len(vertices))
+            vertices.append((body_radius * float(np.cos(angle)), body_radius * float(np.sin(angle)), z))
+        rings.append(ring)
+    R0, R1, R2, R3 = rings
+
+    # Arm outer corners at bottom and top
+    A0_bot = len(vertices)
+    vertices.append((arm_outer_x, -actual_arm_width / 2.0, z_arm_bottom))
+    A1_bot = len(vertices)
+    vertices.append((arm_outer_x, actual_arm_width / 2.0, z_arm_bottom))
+
+    A0_top = len(vertices)
+    vertices.append((arm_outer_x, -actual_arm_width / 2.0, z_arm_top))
+    A1_top = len(vertices)
+    vertices.append((arm_outer_x, actual_arm_width / 2.0, z_arm_top))
+
+    # Top and bottom caps (radial segments = 1 for base mesh)
+    _append_cap(vertices, faces, R0, body_radius, z_bottom, 1, top=False)
+    _append_cap(vertices, faces, R3, body_radius, z_top, 1, top=True)
+
+    # Lower and upper cylinder walls
+    _append_quad_band(faces, R0, R1, 0)
+    _append_quad_band(faces, R2, R3, 2)
+
+    # Middle cylinder wall (only the exposed part)
+    for i in range(half_hidden, angular_segments - half_hidden):
+        lower = R1[i]
+        lower_next = R1[(i + 1) % angular_segments]
+        upper = R2[i]
+        upper_next = R2[(i + 1) % angular_segments]
+        if (1 + i) % 2 == 0:
+            faces.extend(((lower, lower_next, upper_next), (lower, upper_next, upper)))
+        else:
+            faces.extend(((lower, lower_next, upper), (lower_next, upper_next, upper)))
+
+    # Middle arm vertical walls
+    idx_start = (angular_segments - half_hidden) % angular_segments
+    idx_end = half_hidden % angular_segments
+    faces.extend((
+        (R1[idx_start], A0_bot, A0_top),
+        (R1[idx_start], A0_top, R2[idx_start])
+    ))
+    faces.extend((
+        (A0_bot, A1_bot, A1_top),
+        (A0_bot, A1_top, A0_top)
+    ))
+    faces.extend((
+        (A1_bot, R1[idx_end], R2[idx_end]),
+        (A1_bot, R2[idx_end], A1_top)
+    ))
+
+    # Arm bottom and top shelves
+    arm_poly_bot = [A0_bot, A1_bot]
+    arm_poly_top = [A0_top, A1_top]
+    
+    for i in range(half_hidden, -half_hidden - 1, -1):
+        idx = (i + angular_segments) % angular_segments
+        arm_poly_bot.append(R1[idx])
+        arm_poly_top.append(R2[idx])
+
+    points2d = [(vertices[idx][0], vertices[idx][1]) for idx in arm_poly_bot]
+    triangles = _triangulate_simple_polygon(points2d)
+
+    for tri in triangles:
+        faces.append(tuple(reversed(tuple(arm_poly_bot[i] for i in tri))))
+
+    for tri in triangles:
+        faces.append(tuple(arm_poly_top[i] for i in tri))
+
+    return trimesh.Trimesh(vertices=np.asarray(vertices), faces=np.asarray(faces), process=False)
+
+
+def _create_overhang_mesh(
+    support_size: tuple[float, float, float],
+    plate_size: tuple[float, float, float],
+    plate_offset: tuple[float, float],
+) -> trimesh.Trimesh:
+    support_width, support_depth, support_height = map(float, support_size)
+    plate_width, plate_depth, plate_thickness = map(float, plate_size)
+    offset_x, offset_y = map(float, plate_offset)
+    if min((*support_size, *plate_size)) <= 0.0:
+        raise ValueError("Overhang dimensions must be positive")
+    if support_width >= plate_width or support_depth >= plate_depth:
+        raise ValueError("The overhang plate must be wider and deeper than its support")
+    if abs(offset_x) + 0.5 * support_width >= 0.5 * plate_width:
+        raise ValueError("The support must remain strictly inside the plate in X")
+    if abs(offset_y) + 0.5 * support_depth >= 0.5 * plate_depth:
+        raise ValueError("The support must remain strictly inside the plate in Y")
+
+    total_height = support_height + plate_thickness
+    bottom = -0.5 * total_height
+    interface = bottom + support_height
+    top = 0.5 * total_height
+    support = (
+        (-0.5 * support_width, -0.5 * support_depth, bottom),
+        (0.5 * support_width, 0.5 * support_depth, interface),
+    )
+    plate = (
+        (offset_x - 0.5 * plate_width, offset_y - 0.5 * plate_depth, interface),
+        (offset_x + 0.5 * plate_width, offset_y + 0.5 * plate_depth, top),
+    )
+    return _create_box_union_mesh((support, plate))
+
+
+def _create_box_union_mesh(
+    boxes: tuple[
+        tuple[tuple[float, float, float], tuple[float, float, float]], ...
+    ]
+) -> trimesh.Trimesh:
+    """Mesh the exterior of an axis-aligned box union without internal faces."""
+    x_values = sorted({coordinate for box in boxes for coordinate in (box[0][0], box[1][0])})
+    y_values = sorted({coordinate for box in boxes for coordinate in (box[0][1], box[1][1])})
+    z_values = sorted({coordinate for box in boxes for coordinate in (box[0][2], box[1][2])})
+    occupied = np.zeros((len(x_values) - 1, len(y_values) - 1, len(z_values) - 1), dtype=bool)
+    for i in range(len(x_values) - 1):
+        for j in range(len(y_values) - 1):
+            for k in range(len(z_values) - 1):
+                midpoint = (
+                    0.5 * (x_values[i] + x_values[i + 1]),
+                    0.5 * (y_values[j] + y_values[j + 1]),
+                    0.5 * (z_values[k] + z_values[k + 1]),
+                )
+                occupied[i, j, k] = any(
+                    all(lower[axis] < midpoint[axis] < upper[axis] for axis in range(3))
+                    for lower, upper in boxes
+                )
+
+    vertices: list[tuple[float, float, float]] = []
+    vertex_lookup: dict[tuple[float, float, float], int] = {}
+    faces: list[tuple[int, int, int]] = []
+
+    def add_quad(points: tuple[tuple[float, float, float], ...]) -> None:
+        indices = []
+        for point in points:
+            if point not in vertex_lookup:
+                vertex_lookup[point] = len(vertices)
+                vertices.append(point)
+            indices.append(vertex_lookup[point])
+        faces.extend(((indices[0], indices[1], indices[2]), (indices[0], indices[2], indices[3])))
+
+    for i, j, k in np.argwhere(occupied):
+        x0, x1 = x_values[i], x_values[i + 1]
+        y0, y1 = y_values[j], y_values[j + 1]
+        z0, z1 = z_values[k], z_values[k + 1]
+        if i == 0 or not occupied[i - 1, j, k]:
+            add_quad(((x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0)))
+        if i == occupied.shape[0] - 1 or not occupied[i + 1, j, k]:
+            add_quad(((x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)))
+        if j == 0 or not occupied[i, j - 1, k]:
+            add_quad(((x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)))
+        if j == occupied.shape[1] - 1 or not occupied[i, j + 1, k]:
+            add_quad(((x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0)))
+        if k == 0 or not occupied[i, j, k - 1]:
+            add_quad(((x0, y0, z0), (x0, y1, z0), (x1, y1, z0), (x1, y0, z0)))
+        if k == occupied.shape[2] - 1 or not occupied[i, j, k + 1]:
+            add_quad(((x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)))
+    return trimesh.Trimesh(vertices=np.asarray(vertices), faces=np.asarray(faces), process=False)
 
 
 def _orient_axial_mesh(mesh: trimesh.Trimesh, axis: str) -> None:

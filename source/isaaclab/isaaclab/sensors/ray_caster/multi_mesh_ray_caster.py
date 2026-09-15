@@ -440,6 +440,7 @@ class MultiMeshRayCaster(RayCaster):
             self._ray_starts_w[env_ids],
             self._ray_directions_w[env_ids],
             mesh_ids_wp=self._mesh_ids_wp,  # list with shape num_envs x num_meshes_per_env
+            mesh_env_ids=env_ids,
             max_dist=self.cfg.max_distance,
             mesh_positions_w=self._mesh_positions_w[env_ids],
             mesh_orientations_w=self._mesh_orientations_w[env_ids],

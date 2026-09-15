@@ -1,0 +1,192 @@
+42
+==================================================
+EVALUATION RESULTS (128 Episodes)
+==================================================
+Mean Faces Discovered: 10355.59
+Std Deviation:         1622.21
+Min Faces:             663
+Max Faces:             11282
+Mean Coverage:          90.86%
+Std Coverage:           14.23%
+Mean Inspection Quality: 0.2585
+Episode Lengths:
+  Median: 745.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 21 (16.41%)
+  Reached 1200-step horizon: 17 (13.28%)
+Success Rate:            79.69% (102 episodes)
+Timeout Rate:            13.28% (17 episodes)
+After Step 1000:
+  Episodes reaching boundary: 21 (16.41%)
+  Mean coverage at step 1000: 73.27%
+  Mean additional coverage:  5.95%
+  Crashes after step 1000:    1
+Per-target results:
+  caster: 128 episodes | Faces: 10355.59 | Coverage: 90.86%
+Mean Crashes: 0.07
+Median Crashes: 0.00
+Episodes With Crash: 7.03%
+Total Terminated Due to Crash: 9 / 128
+Mean Faces Discovered (NO CRASHES): 10582.93
+Crash Sources (primary base_link contact):
+  inspection_target/caster: 5 (55.56% of crashes)
+  obstacle: 4 (44.44% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 5 (55.56%)
+  Reverse: 4 (44.44%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+43
+=================================================
+EVALUATION RESULTS (128 Episodes)
+==================================================
+Mean Faces Discovered: 10316.38
+Std Deviation:         2042.12
+Min Faces:             396
+Max Faces:             11161
+Mean Coverage:          90.52%
+Std Coverage:           17.92%
+Mean Inspection Quality: 0.2519
+Episode Lengths:
+  Median: 644.5 steps
+  P90:    1187.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 24 (18.75%)
+  Reached 1200-step horizon: 12 (9.38%)
+Success Rate:            83.59% (107 episodes)
+Timeout Rate:            9.38% (12 episodes)
+After Step 1000:
+  Episodes reaching boundary: 24 (18.75%)
+  Mean coverage at step 1000: 78.26%
+  Mean additional coverage:  6.73%
+  Crashes after step 1000:    1
+Per-target results:
+  caster: 128 episodes | Faces: 10316.38 | Coverage: 90.52%
+Mean Crashes: 0.07
+Median Crashes: 0.00
+Episodes With Crash: 7.03%
+Total Terminated Due to Crash: 9 / 128
+Mean Faces Discovered (NO CRASHES): 10665.39
+Crash Sources (primary base_link contact):
+  inspection_target/caster: 4 (44.44% of crashes)
+  obstacle: 5 (55.56% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 7 (77.78%)
+  Reverse: 2 (22.22%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+==================================================
+44
+==================================================
+EVALUATION RESULTS (128 Episodes)
+==================================================
+Mean Faces Discovered: 10303.96
+Std Deviation:         2176.52
+Min Faces:             0
+Max Faces:             11225
+Mean Coverage:          90.41%
+Std Coverage:           19.10%
+Mean Inspection Quality: 0.2485
+Episode Lengths:
+  Median: 636.0 steps
+  P90:    997.0 steps
+  P95:    1198.0 steps
+  Reached 1000-step horizon: 12 (9.38%)
+  Reached 1200-step horizon: 7 (5.47%)
+Success Rate:            88.28% (113 episodes)
+Timeout Rate:            5.47% (7 episodes)
+After Step 1000:
+  Episodes reaching boundary: 12 (9.38%)
+  Mean coverage at step 1000: 73.67%
+  Mean additional coverage:  5.29%
+  Crashes after step 1000:    0
+Per-target results:
+  caster: 128 episodes | Faces: 10303.96 | Coverage: 90.41%
+Mean Crashes: 0.06
+Median Crashes: 0.00
+Episodes With Crash: 6.25%
+Total Terminated Due to Crash: 8 / 128
+Mean Faces Discovered (NO CRASHES): 10724.16
+Crash Sources (primary base_link contact):
+  inspection_target/caster: 3 (37.50% of crashes)
+  obstacle: 5 (62.50% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 4 (50.00%)
+  Reverse: 4 (50.00%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+==================================================
+45
+==================================================
+EVALUATION RESULTS (128 Episodes)
+==================================================
+Mean Faces Discovered: 10501.95
+Std Deviation:         1682.67
+Min Faces:             0
+Max Faces:             11293
+Mean Coverage:          92.15%
+Std Coverage:           14.76%
+Mean Inspection Quality: 0.2524
+Episode Lengths:
+  Median: 569.5 steps
+  P90:    1024.2 steps
+  P95:    1178.6 steps
+  Reached 1000-step horizon: 14 (10.94%)
+  Reached 1200-step horizon: 6 (4.69%)
+Success Rate:            90.62% (116 episodes)
+Timeout Rate:            4.69% (6 episodes)
+After Step 1000:
+  Episodes reaching boundary: 14 (10.94%)
+  Mean coverage at step 1000: 79.33%
+  Mean additional coverage:  10.05%
+  Crashes after step 1000:    0
+Per-target results:
+  caster: 128 episodes | Faces: 10501.95 | Coverage: 92.15%
+Mean Crashes: 0.05
+Median Crashes: 0.00
+Episodes With Crash: 4.69%
+Total Terminated Due to Crash: 6 / 128
+Mean Faces Discovered (NO CRASHES): 10819.75
+Crash Sources (primary base_link contact):
+  inspection_target/caster: 5 (83.33% of crashes)
+  obstacle: 1 (16.67% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 5 (83.33%)
+  Reverse: 1 (16.67%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+==================================================
+
+
+
+

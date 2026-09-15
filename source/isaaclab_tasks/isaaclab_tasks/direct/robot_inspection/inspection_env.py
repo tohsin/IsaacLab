@@ -317,6 +317,58 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.last_action = torch.zeros(action_shape, device=self.device)
         self.previous_action_for_rewards = torch.zeros(action_shape, device=self.device)
+        self.policy_actions = torch.zeros(action_shape, device=self.device)
+
+        # Safety-shield bookkeeping. A circular swept footprint is checked
+        # against occupied local-map voxels at several points along the
+        # commanded unicycle arc. These tensors are shared by all environments
+        # and avoid rebuilding the local coordinate grid every control step.
+        self.current_safety_shield_intervention = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.current_safety_shield_scale = torch.ones(
+            self.num_envs, device=self.device, dtype=torch.float32
+        )
+        self.episode_safety_shield_interventions = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.episode_safety_shield_forward_interventions = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.episode_safety_shield_reverse_interventions = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+
+        local_dims = self.cfg.mapping_cfg.local_map_dims
+        map_resolution = float(self.cfg.mapping_cfg.resolution)
+        local_x = (
+            torch.arange(local_dims[0], device=self.device, dtype=torch.float32)
+            - local_dims[0] // 2
+        ) * map_resolution
+        local_y = (
+            torch.arange(local_dims[1], device=self.device, dtype=torch.float32)
+            - local_dims[1] // 2
+        ) * map_resolution
+        local_grid_x, local_grid_y = torch.meshgrid(local_x, local_y, indexing="ij")
+        self.safety_shield_local_x = local_grid_x.flatten().view(1, 1, 1, -1)
+        self.safety_shield_local_y = local_grid_y.flatten().view(1, 1, 1, -1)
+        self.safety_shield_current_dist_sq = (
+            self.safety_shield_local_x.square() + self.safety_shield_local_y.square()
+        )
+        self.safety_shield_linear_scales = torch.tensor(
+            getattr(run_cfg, "safety_shield_linear_scales", (1.0, 0.75, 0.50, 0.25, 0.0)),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        prediction_steps = max(1, int(getattr(run_cfg, "safety_shield_prediction_steps", 6)))
+        shield_horizon = max(0.0, float(getattr(run_cfg, "safety_shield_horizon_s", 0.50)))
+        self.safety_shield_prediction_times = torch.linspace(
+            shield_horizon / prediction_steps,
+            shield_horizon,
+            prediction_steps,
+            device=self.device,
+            dtype=torch.float32,
+        )
         
         # Buffers are managed by the logger
         self.logger = InspectionLogger(self.cfg, use_wandb=run_cfg.use_wandb, debug=run_cfg.debug, window_size=self.curriculum.success_buffer.maxlen)
@@ -377,6 +429,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.inspection_goals = {}
         self.goal_prims_dict = {}
         self.primitive_sizes = {}
+        self.primitive_footprint_radii = {}
         self.primitive_colors = {}
         self.primitive_root_heights = {}
 
@@ -437,6 +490,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 )
                 self.primitive_root_heights[target_name] = torch.tensor(
                     randomization.root_heights, device=self.device, dtype=torch.float32
+                )
+                self.primitive_footprint_radii[target_name] = torch.tensor(
+                    randomization.footprint_radii, device=self.device, dtype=torch.float32
                 )
                 self.primitive_colors[target_name] = randomization.colors
 
@@ -525,8 +581,143 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print(f"[ENV WARNING] NaN/Inf detected in actions! Policy weights have likely collapsed. Zeroing actions to prevent PhysX crash.")
             actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
         actions = torch.clamp(actions, -1.0, 1.0)
+        self.policy_actions.copy_(actions)
+        actions = self._apply_directional_safety_shield(actions)
         self.last_action.copy_(actions)
         self.actions = actions.clone()
+
+    def _apply_directional_safety_shield(self, actions: torch.Tensor) -> torch.Tensor:
+        """Reduce only the linear component of a locally unsafe command.
+
+        Each candidate follows the commanded unicycle arc for a short horizon.
+        The largest collision-free linear scale is selected, while angular and
+        PTZ commands are left untouched. A voxel already inside the footprint
+        blocks only motion that moves closer to it, which preserves the safe
+        escape direction instead of trapping the robot near an object.
+        """
+        self.current_safety_shield_intervention.zero_()
+        self.current_safety_shield_scale.fill_(1.0)
+
+        if (
+            not bool(getattr(run_cfg, "use_directional_safety_shield", False))
+            or not isinstance(self.single_action_space, gym.spaces.Box)
+            or getattr(self, "current_local_occ_map", None) is None
+        ):
+            return actions
+
+        map_resolution = float(self.cfg.mapping_cfg.resolution)
+        map_height = self.current_local_occ_map.shape[3]
+        z_min = float(getattr(run_cfg, "safety_shield_z_min", 0.10))
+        z_max = float(getattr(run_cfg, "safety_shield_z_max", 0.80))
+        min_z_index = max(1, int(np.floor(z_min / map_resolution)))
+        max_z_index = min(map_height, int(np.ceil(z_max / map_resolution)) + 1)
+        if min_z_index >= max_z_index:
+            return actions
+
+        occupancy_threshold = float(
+            getattr(run_cfg, "safety_shield_occupancy_threshold", 1.1)
+        )
+        occupied_xy = (
+            self.current_local_occ_map[..., min_z_index:max_z_index]
+            > occupancy_threshold
+        ).any(dim=3).flatten(start_dim=1)
+
+        candidate_scales = self.safety_shield_linear_scales
+        candidate_linear_action = actions[:, 0, None] * candidate_scales[None, :]
+        candidate_nominal_linear_velocity = (
+            candidate_linear_action * self.cfg.robot_phys_cfg.max_linear_velocity
+        )
+        candidate_nominal_angular_velocity = (
+            actions[:, 1, None] * self.cfg.robot_phys_cfg.max_angular_velocity
+        )
+
+        # Mirror _apply_action's per-wheel saturation before reconstructing the
+        # actual commanded chassis twist. With simultaneous fast translation
+        # and turning, clipping only one wheel can substantially change the arc.
+        half_track = self.cfg.robot_phys_cfg.wheel_separation / 2.0
+        wheel_radius = self.cfg.robot_phys_cfg.wheel_radius
+        left_wheel_velocity = (
+            candidate_nominal_linear_velocity
+            - candidate_nominal_angular_velocity * half_track
+        ) / wheel_radius
+        right_wheel_velocity = (
+            candidate_nominal_linear_velocity
+            + candidate_nominal_angular_velocity * half_track
+        ) / wheel_radius
+        max_wheel_velocity = self.cfg.robot_phys_cfg.max_wheel_velocity
+        actuation_scale = float(self.cfg.action_scale)
+        left_wheel_velocity = torch.clamp(
+            left_wheel_velocity, -max_wheel_velocity, max_wheel_velocity
+        ) * actuation_scale
+        right_wheel_velocity = torch.clamp(
+            right_wheel_velocity, -max_wheel_velocity, max_wheel_velocity
+        ) * actuation_scale
+        candidate_linear_velocity = (
+            (left_wheel_velocity + right_wheel_velocity) * wheel_radius / 2.0
+        )
+        angular_velocity = (
+            (right_wheel_velocity - left_wheel_velocity)
+            * wheel_radius
+            / self.cfg.robot_phys_cfg.wheel_separation
+        )
+        times = self.safety_shield_prediction_times
+
+        angular_displacement = angular_velocity[..., None] * times[None, None, :]
+        straight_motion = angular_velocity.abs() < 1.0e-4
+        safe_angular_velocity = torch.where(
+            straight_motion, torch.ones_like(angular_velocity), angular_velocity
+        )
+        turning_radius = candidate_linear_velocity / safe_angular_velocity
+
+        path_x = torch.where(
+            straight_motion[..., None],
+            candidate_linear_velocity[..., None] * times[None, None, :],
+            turning_radius[..., None] * torch.sin(angular_displacement),
+        )
+        path_y = torch.where(
+            straight_motion[..., None],
+            torch.zeros_like(angular_displacement),
+            turning_radius[..., None] * (1.0 - torch.cos(angular_displacement)),
+        )
+
+        dx = self.safety_shield_local_x - path_x[..., None]
+        dy = self.safety_shield_local_y - path_y[..., None]
+        future_dist_sq = dx.square() + dy.square()
+        shield_radius = float(getattr(run_cfg, "safety_shield_robot_radius", 0.35)) + float(
+            getattr(run_cfg, "safety_shield_margin", 0.10)
+        )
+        inside_future_footprint = future_dist_sq <= shield_radius * shield_radius
+
+        # Comparing against each voxel's current distance makes the shield
+        # directional: an obstacle behind does not suppress forward escape, and
+        # vice versa. The zero-linear-speed candidate is consequently always
+        # safe even when the current footprint overlaps an occupied voxel.
+        moving_closer = future_dist_sq < (self.safety_shield_current_dist_sq - 1.0e-5)
+        collision_risk = (
+            inside_future_footprint
+            & moving_closer
+            & occupied_xy[:, None, None, :]
+        )
+        safe_candidates = ~collision_risk.any(dim=(2, 3))
+        first_safe_candidate = safe_candidates.to(torch.int64).argmax(dim=1)
+        selected_scale = candidate_scales[first_safe_candidate]
+
+        moving = actions[:, 0].abs() > 1.0e-4
+        intervened = moving & (selected_scale < 1.0 - 1.0e-6)
+        selected_scale = torch.where(moving, selected_scale, torch.ones_like(selected_scale))
+
+        shielded_actions = actions.clone()
+        shielded_actions[:, 0] *= selected_scale
+        self.current_safety_shield_intervention.copy_(intervened)
+        self.current_safety_shield_scale.copy_(selected_scale)
+        self.episode_safety_shield_interventions += intervened.long()
+        self.episode_safety_shield_forward_interventions += (
+            intervened & (actions[:, 0] > 0.0)
+        ).long()
+        self.episode_safety_shield_reverse_interventions += (
+            intervened & (actions[:, 0] < 0.0)
+        ).long()
+        return shielded_actions
     
     def _apply_action(self) -> None:
         try:
@@ -1662,6 +1853,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "tipover_events": self.current_tipovers.float(),
             "robot_up_z": self.current_robot_up_z,
             "crashes": self.current_crashes.float(),
+            "safety_shield_intervention": self.current_safety_shield_intervention.float(),
+            "safety_shield_linear_scale": self.current_safety_shield_scale,
+            "safety_shield_linear_delta": torch.abs(
+                self.policy_actions[:, 0] - self.actions[:, 0]
+            ),
             "total_unscaled": total_unscaled,
             
             # Scaled
@@ -1818,6 +2014,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if len(env_ids)> 0:
             self.last_action[env_ids] = 0.0
             self.previous_action_for_rewards[env_ids] = 0.0
+            self.policy_actions[env_ids] = 0.0
 
 
             current_q_values = self.best_q_per_face[env_ids]
@@ -1831,9 +2028,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.extras["log"]["tipover_steps"] = self.episode_tipover_steps[env_ids].clone()
             self.extras["log"]["tipovers"] = self.episode_tipovers[env_ids].clone()
             self.extras["log"]["crashes"] = self.episode_crashes[env_ids].clone()
+            self.extras["log"]["episode_steps"] = self.episode_length_buf[env_ids].clone()
             self.extras["log"]["crash_source_counts"] = self.episode_crash_source_counts[env_ids].clone()
             self.extras["log"]["forward_crashes"] = self.episode_forward_crashes[env_ids].clone()
             self.extras["log"]["reverse_crashes"] = self.episode_reverse_crashes[env_ids].clone()
+            shield_interventions = self.episode_safety_shield_interventions[env_ids].clone()
+            episode_steps = self.episode_length_buf[env_ids].float().clamp_min(1.0)
+            shield_intervention_rate = shield_interventions.float() / episode_steps
+            self.extras["log"]["safety_shield_interventions"] = shield_interventions
+            self.extras["log"]["safety_shield_intervention_rate"] = shield_intervention_rate
+            self.extras["log"]["safety_shield_forward_interventions"] = (
+                self.episode_safety_shield_forward_interventions[env_ids].clone()
+            )
+            self.extras["log"]["safety_shield_reverse_interventions"] = (
+                self.episode_safety_shield_reverse_interventions[env_ids].clone()
+            )
             total_quality = current_q_values.sum(dim=1)
 
             mean_quality = torch.zeros_like(total_quality)
@@ -1851,6 +2060,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             episode_successes = (
                 achieved_coverage_ratios >= current_cov_goal
             ) & ~collision_failures
+            max_episode_steps = int(self.curriculum.get_current_episode_length())
+            episode_timed_out = (
+                self.episode_length_buf[env_ids] >= max_episode_steps - 1
+            ) & ~episode_successes & ~collision_failures
+            self.extras["log"]["mean_inspection_quality"] = mean_quality.clone()
+            self.extras["log"]["episode_success"] = episode_successes.clone()
+            self.extras["log"]["episode_timed_out"] = episode_timed_out.clone()
             self.curriculum.update_curriculum(episode_successes, mean_quality)
 
             # Check if curriculum updated
@@ -1867,6 +2083,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             num_faces_inspected_cpu = num_faces_inspected.cpu().tolist()
             mean_quality_cpu = mean_quality.cpu().tolist()
             episode_crashes_cpu = self.episode_crashes[env_ids].cpu().tolist()
+            shield_intervention_rates_cpu = shield_intervention_rate.cpu().tolist()
             
             # Logging
             for i, env_id in enumerate(env_ids_cpu):
@@ -1930,6 +2147,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 self.episode_log_buffer["curriculum/task_area"].append(self.curriculum.get_total_task_area())
                 self.episode_log_buffer["curriculum/max_crashes"].append(current_max_crashes)
                 self.episode_log_buffer["episode_summary/crash_rate"].append(1.0 if episode_crashes_cpu[i] > 0 else 0.0)
+                self.episode_log_buffer["episode_summary/safety_shield_intervention_rate"].append(
+                    shield_intervention_rates_cpu[i]
+                )
                 
             # Log and Reset Reward Sums
             self.logger.log_and_reset_episode_rewards(env_ids)
@@ -1956,6 +2176,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.episode_forward_crashes[env_ids] = 0
             self.episode_reverse_crashes[env_ids] = 0
             self.current_crashes[env_ids] = False
+            self.episode_safety_shield_interventions[env_ids] = 0
+            self.episode_safety_shield_forward_interventions[env_ids] = 0
+            self.episode_safety_shield_reverse_interventions[env_ids] = 0
+            self.current_safety_shield_intervention[env_ids] = False
+            self.current_safety_shield_scale[env_ids] = 1.0
                 
             # Map Logging and Reset
             if self.cfg.mapping_cfg.use_occupancy_map:
@@ -1998,6 +2223,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0
+                if getattr(self, "current_local_occ_map", None) is not None:
+                    self.current_local_occ_map[env_ids] = 0.0
 
 
         super()._reset_idx(env_ids)
@@ -2131,11 +2358,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         for target_name in self.cfg.inspection_goal_cfg.inspection_targets:
             assigned_mask_np = self.env_target_names[env_ids_local] == target_name
             assigned_mask = torch.from_numpy(assigned_mask_np).to(device=self.device, dtype=torch.bool)
-            if assigned_mask.any() and target_name in self.primitive_sizes:
-                # Circumscribed XY circles remain valid for every primitive
-                # shape and for the fixed target orientations used at reset.
-                sizes = self.primitive_sizes[target_name][env_ids]
-                radii = 0.5 * torch.linalg.vector_norm(sizes[:, :2], dim=-1)
+            if assigned_mask.any() and target_name in self.primitive_footprint_radii:
+                # Composite roots need not lie at the footprint center (the
+                # low arm and offset overhang are intentionally asymmetric).
+                radii = self.primitive_footprint_radii[target_name][env_ids]
                 target_radii[assigned_mask] = radii[assigned_mask]
 
         existing_radii: list[torch.Tensor | float] = [robot_radius, target_radii]

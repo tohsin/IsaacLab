@@ -74,7 +74,8 @@ class ResnetEncoder(Encoder):
         # configuration from the IMPALA paper
         # resnet_conf = [[16, 2], [32, 2], [32, 2]] # Original (15 layers, Wide)
         # resnet_conf = [[2, 2], [4, 2], [4, 2]]      # Narrow (Semantic RL Inspection)
-        resnet_conf = [[16, 1], [32, 1], [32, 1]]   # Optimal for RL Performance (9 layers, Wide)
+        blocks_per_stage = int(cfg.get("encoder_res_blocks_per_stage", 1))
+        resnet_conf = [[16, blocks_per_stage], [32, blocks_per_stage], [32, blocks_per_stage]]
 
         curr_input_channels = input_ch
         layers = []
@@ -125,7 +126,8 @@ class Resnet3DEncoder(Encoder):
         # resnet_conf = [[8, 2], [16, 2], [16, 2]]
         # resnet_conf = [[16, 2], [32, 2], [32, 2]] # Original (15 layers, Wide)
         # resnet_conf = [[8, 2], [16, 2], [16, 2]]    # Narrow (Semantic RL Inspection)
-        resnet_conf = [[16, 1], [32, 1], [32, 1]]   # Optimal for RL Performance (9 layers, Wide)
+        blocks_per_stage = int(cfg.get("encoder_res_blocks_per_stage", 1))
+        resnet_conf = [[16, blocks_per_stage], [32, blocks_per_stage], [32, blocks_per_stage]]
        
         curr_input_channels = input_ch
         layers = []
