@@ -1763,6 +1763,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
         info_reward_scale = self.cfg.reward_cfg.information_gain_reward_scale
+        visibility_reward_scale = self.cfg.reward_cfg.visibility_increase_reward_scale
         visit_reward_scale = self.cfg.reward_cfg.visitation_reward_scale
         action_penalty_scale = self.cfg.reward_cfg.action_penalty_scale
         ptz_penalty_scale = self.cfg.reward_cfg.ptz_penalty_scale
@@ -1773,6 +1774,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         positive_rewards = (face_reward_scale * face_discovery_raw
                         + info_reward_scale * information_gain_reward
+                        + visibility_reward_scale * visibility_increase_reward
                         + visit_reward_scale * visitation_reward # Added visitation reward
                         + success_bonus
                         )

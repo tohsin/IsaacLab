@@ -19,7 +19,7 @@ evaluation_data_set = {
         "num_faces": 1779,
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Sortbot_Housing/sortbot_housing.usd",
         "prim_path": "/World/envs/env_.*/sortbot_housing",
-        "scale": 1.0,
+        "scale": [1.0, 1.0, 0.7],
     },
     "rubiks_cube": {
         "num_faces": 3800,

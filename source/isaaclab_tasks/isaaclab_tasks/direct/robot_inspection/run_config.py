@@ -20,17 +20,22 @@ class visualisation_mode:
                 map_mode=map_view_mode.LOCAL):
         self.channel = channel
         self.map_mode = map_mode
-
+eval_dataset = {'ur10' :'ur10_mount', 
+                'caster':'caster',
+                'rubiks':'rubiks_cube',
+                'pallet':'pallet',
+                'bracket':'small_corner_bracket_physics',
+                'sortbot_housing':'sortbot_housing'}
 class debug_Cfg:
     debug = True
     egocentric_map = True
     min_episode_length: int = 500
     logging_interval: int = 1500
     max_episode_length: int = 10_000
-    inspection_dataset = "primitive"
-    inspection_target = "tessellated_thin_legged_body"
-    # inspection_dataset = "evaluation"
-    # inspection_target = "caster"
+    # inspection_dataset = "primitive"
+    # inspection_target = "tessellated_thin_legged_body"
+    inspection_dataset = "evaluation"
+    inspection_target = eval_dataset['sortbot_housing']
     inspection_goal =  0.95
     visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
     display_ray_counts = True
@@ -163,7 +168,7 @@ class eval_Cfg:
     # Evaluate the August 31 policy on an out-of-distribution target using the
     # current physics, spawning, sensor noise, and collision detector.
     inspection_dataset = "evaluation"
-    inspection_target = eval_dataset['bracket']
+    inspection_target = eval_dataset['caster']
     # inspection_dataset = "primitive"
     # inspection_target = 'tessellated_thin_legged_body'
     kinematic_inspection_target = True
@@ -189,7 +194,7 @@ class eval_Cfg:
     max_episode_length: int = 1200
     min_episode_length: int = 1200
     logging_interval: int = 1500
-    inspection_goal =  0.95
+    inspection_goal =  1.0
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -198,7 +203,7 @@ class eval_Cfg:
     use_wandb =  False #not debug
     headless = True
     num_envs = 1 # Single environment for easier debugging
-    nav_camera_modality = "rgbd"
+    nav_camera_modality = "depth"
     ptz_camera_modality = "rgbd"
     use_depth_mask = False
     use_optical_flow_penalty = False
@@ -229,10 +234,11 @@ class eval_Cfg:
     use_radius_aware_obstacle_spawning: bool = True
     robot_footprint_radius: float = 0.35
     fallback_target_footprint_radius: float = 0.8
-    target_obstacle_surface_clearance: float = 1.0
-    obstacle_obstacle_surface_clearance: float = 0.7
-    robot_obstacle_surface_clearance: float = 1.0
-
+    target_obstacle_surface_clearance: float = 1.4
+    obstacle_obstacle_surface_clearance: float = 0.9
+    robot_obstacle_surface_clearance: float = 1.2
+    # Backward-compatible center-distance fallback for callers that do not
+    # provide footprint radii.
     min_dist_between_obstacles: float = 2.2
     min_dist_to_objective: float = 2.0
 
@@ -314,7 +320,7 @@ modes = [debug_Cfg, #0
     train_Cfg_base, #1
     eval_Cfg, #2
     record_depth_Cfg] #3
-cfg_mode = modes[1]
+cfg_mode = modes[2]
 
     # record_Cfg, #3
 

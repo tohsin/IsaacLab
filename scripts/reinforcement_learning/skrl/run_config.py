@@ -46,7 +46,7 @@ Models = {
     },
     'Diverse_dataset':
     {
-        'path': "Alblation_ATTN_FUS_2026-09-13_06-56-09"
+        'path': "Alblation_ATTN_FUS_2026-09-16_14-38-37"
     },
     # Here we test the relvance of the attention fusion for reasnoning
     'MLP_Fusion' : {
@@ -62,7 +62,7 @@ Models = {
 path_pretrained = get_checkpoint_path(
     project_name="Alblation-Baseline",
     run_name= Models['Diverse_dataset']['path'],
-    checkpoint_type=1 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
+    checkpoint_type=0 # 0 for best_agent.pt, 1 for the latest agent_*.pt step
 )
 
 legacy_aug31_checkpoint = os.path.join(
@@ -167,7 +167,7 @@ configs_ = [TrainingConfig_PreTrain(),
             # TrainingConfig_FineTune(),
               EvaluationConfig(),
               LegacyAugust31EvaluationConfig()]
-CONFIG = configs_[0]  # Train the d_model=512 mean-pooling attention policy
+CONFIG = configs_[1]  # Train the d_model=512 mean-pooling attention policy
 #~/evaluate_agent.sh --seed 42 --max_episodes 128 --eval-max-episode-steps 1200
 # ~/evaluate_agent.sh --seed 43 --max_episodes 128 --eval-max-episode-steps 1200
 # ~/evaluate_agent.sh --seed 44 --max_episodes 128 --eval-max-episode-steps 1200
