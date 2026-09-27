@@ -28,6 +28,8 @@ from  .configs.robot_cfg import RobotPhysicsCfg
 from .configs.config_ import ROBOT_CONFIGS, env_parameters
 from .run_config import cfg_mode
 
+CAMERA_ZOOM_ENABLED = bool(getattr(cfg_mode, "enable_camera_zoom", False))
+
 @configclass
 class WarehouseSceneCfg(InteractiveSceneCfg):
     # scene
@@ -35,7 +37,11 @@ class WarehouseSceneCfg(InteractiveSceneCfg):
         prim_path = env_parameters.prim_path,
         spawn=sim_utils.UsdFileCfg(
             usd_path=env_parameters.usd_path,
-            # scale=(1.0, 1.0, 1.0),
+            scale=env_parameters.scale,
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=env_parameters.position,
+            rot=env_parameters.orientation,
         ),
         collision_group=-1, # Keep collision settings
         debug_vis=cfg_mode.debug
@@ -65,8 +71,15 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             - [v_zero, ω_high_right] (Rotate in Place right)
     '''
     # action_space = spaces.Discrete(6)
-    # [linear velocity, angular velocity, PTZ pan velocity, PTZ tilt velocity]
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
+    # Fixed-camera baseline: [linear velocity, angular velocity, PTZ pan
+    # velocity, PTZ tilt velocity]. Enabling camera zoom appends a fifth,
+    # continuous action which selects a discrete focal length.
+    action_space = spaces.Box(
+        low=-1.0,
+        high=1.0,
+        shape=(5 if CAMERA_ZOOM_ENABLED else 4,),
+        dtype=np.float32,
+    )
     viewer = ViewerCfg( eye=(-10, 5, 8.4), lookat=(0, 0, 0.0))
     
     # outside wall
@@ -133,7 +146,8 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         "robot-pose": spaces.Box(
             low=float("-inf"), 
             high=float("inf"),
-            shape=(13 + action_dim + 2,), # Plus ptz joint position
+            # Zoom-enabled policies also observe the applied zoom level.
+            shape=(13 + action_dim + 2 + (1 if CAMERA_ZOOM_ENABLED else 0),),
             dtype=np.float32
         ),
         "cameras": spaces.Box(

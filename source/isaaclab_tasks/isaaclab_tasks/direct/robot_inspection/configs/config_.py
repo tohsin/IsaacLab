@@ -47,7 +47,8 @@ class Inpsection_Target:
 class Environment:
     def __init__(self, custom_name, usd_path, prim_path, 
                  semantics_type="class", semantics_name="inspection_goal", 
-                 inspection_targets=None, scale=None):
+                 inspection_targets=None, scale=None, position=(0.0, 0.0, 0.0),
+                 orientation=(1.0, 0.0, 0.0, 0.0), add_mesh_colliders=False):
         self.custom_name = custom_name
         self.semantics_type = semantics_type
         self.semantics_name = semantics_name
@@ -55,6 +56,20 @@ class Environment:
         self.prim_path = prim_path
         self.inspection_targets = inspection_targets
         self.scale = scale
+        self.position = position
+        self.orientation = orientation
+        self.add_mesh_colliders = add_mesh_colliders
+
+
+def _environment_vector(name, default):
+    """Read a three-component environment override with a clear error."""
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    values = tuple(float(value.strip()) for value in raw_value.split(","))
+    if len(values) != 3:
+        raise ValueError(f"{name} must contain exactly three comma-separated numbers")
+    return values
 
 inspection_datasets = {}
 
@@ -72,14 +87,25 @@ for key, value in usd_data_set.items():
         orientation = value.get("orientation", (1.0, 0.0, 0.0, 0.0))
     )
 
+environment_usd_override = os.environ.get("ISAACLAB_INSPECTION_ENV_USD")
+environment_name = os.environ.get("ISAACLAB_INSPECTION_ENV_NAME", "simple_warehouse")
+environment_scale = _environment_vector("ISAACLAB_INSPECTION_ENV_SCALE", None)
+environment_position = _environment_vector("ISAACLAB_INSPECTION_ENV_OFFSET", (0.0, 0.0, 0.0))
+environment_add_mesh_colliders = os.environ.get(
+    "ISAACLAB_INSPECTION_ENV_ADD_MESH_COLLIDERS", "0"
+).lower() in {"1", "true", "yes", "on"}
+
 inspection_environment = Environment(
-        custom_name="empty_room",
+        custom_name=environment_name,
         # These would be global even if we randomize the inspection goal
         semantics_type = "class",
         semantics_name = list(usd_data_set.keys()),
-        usd_path = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse.usd",
+        usd_path = environment_usd_override or f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse.usd",
         prim_path = "/World/envs/env_.*/warehouse",
         inspection_targets = inspection_datasets,
+        scale = environment_scale,
+        position = environment_position,
+        add_mesh_colliders = environment_add_mesh_colliders,
     )
 
 env_parameters = inspection_environment

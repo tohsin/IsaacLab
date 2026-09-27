@@ -28,6 +28,11 @@ eval_dataset = {'ur10' :'ur10_mount',
                 'sortbot_housing':'sortbot_housing'}
 class debug_Cfg:
     debug = True
+    # Optical zoom changes rendered USD camera state at runtime. Keep it off
+    # by default; enabling it changes the policy from 4 to 5 actions.
+    enable_camera_zoom: bool = False
+    enable_map_ray_chunking: bool = False
+    map_ray_chunk_percent: float = 12.5
     egocentric_map = True
     min_episode_length: int = 500
     logging_interval: int = 1500
@@ -82,6 +87,14 @@ class debug_Cfg:
 
 class train_Cfg_base: # For pretriaing as a base
     debug = False
+    # False restores the stable, fixed-35-mm, four-action baseline. Set True
+    # only when training/evaluating a checkpoint that includes the zoom action.
+    enable_camera_zoom: bool = False
+    # Split each filtered mapping point cloud into roughly eight Warp launches.
+    # This shortens individual kernels; clamping and synchronization still
+    # happen once after all chunks.
+    enable_map_ray_chunking: bool = True
+    map_ray_chunk_percent: float = 25.0
     egocentric_map = True
     min_episode_length: int = 500
     max_episode_length: int = 1200
@@ -95,7 +108,7 @@ class train_Cfg_base: # For pretriaing as a base
     use_wandb =  True #not debug
     headless = True
     nav_camera_modality = "depth" # "rgb", "depth", or "rgbd"
-    ptz_camera_modality = "rgbd" # "rgb", "depth", or "rgbd"
+    ptz_camera_modality = "depth" # "rgb", "depth", or "rgbd"
 
     enable_depth_sensor_noise = True
     depth_pixel_dropout_prob = 0.01
@@ -165,6 +178,13 @@ eval_dataset = {'ur10' :'ur10_mount',
                 'sortbot_housing':'sortbot_housing'}
 class eval_Cfg:
     debug = False
+    # This must match the checkpoint architecture: False for four-action
+    # baseline checkpoints, True for five-action zoom checkpoints.
+    enable_camera_zoom: bool = False
+    # Evaluation defaults to the original single-launch path. Enabling this is
+    # architecture-neutral and can be useful for large vectorized evaluations.
+    enable_map_ray_chunking: bool = True
+    map_ray_chunk_percent: float = 25.0
     # Evaluate the August 31 policy on an out-of-distribution target using the
     # current physics, spawning, sensor noise, and collision detector.
     inspection_dataset = "evaluation"
@@ -204,7 +224,7 @@ class eval_Cfg:
     headless = True
     num_envs = 1 # Single environment for easier debugging
     nav_camera_modality = "depth"
-    ptz_camera_modality = "rgbd"
+    ptz_camera_modality = "depth" #rgbd
     use_depth_mask = False
     use_optical_flow_penalty = False
     use_optical_flow_as_quality = True
@@ -220,8 +240,6 @@ class eval_Cfg:
     reset_on_crash = True
     enable_voxel_visualization = False
 
-
-    
 
     add_high_res_inspection_camera = True
     high_res_camera_width = 512
@@ -322,6 +340,13 @@ modes = [debug_Cfg, #0
     record_depth_Cfg] #3
 cfg_mode = modes[2]
 
+# inspection_null.py uses this process-local override for imported factory or
+# workshop scenes, which already contain their own clutter. Normal training and
+# evaluation processes never set it and therefore retain their configured data.
+if os.environ.get("ISAACLAB_INSPECTION_DISABLE_PROCEDURAL_OBSTACLES", "0") == "1":
+    cfg_mode.is_simplified = True
+    cfg_mode.max_obstacles = 0
+
     # record_Cfg, #3
 
 
@@ -330,6 +355,9 @@ cfg_mode = modes[2]
 
 class record_Cfg:
     debug = False
+    enable_camera_zoom: bool = False
+    enable_map_ray_chunking: bool = False
+    map_ray_chunk_percent: float = 12.5
     egocentric_map = False
     min_episode_length: int = 900
     logging_interval: int = 100

@@ -121,6 +121,7 @@ def main():
                     else:
                         actions = torch.tensor([[fwd_speed, 0.0, 0.0, tilt]], device=env.unwrapped.device)
 
+                    actions = torch.nn.functional.pad(actions, (0, 1))
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

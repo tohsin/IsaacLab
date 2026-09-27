@@ -147,6 +147,97 @@ class ContinuousPositionalEncoding(nn.Module):
         encoded = torch.cat([x.unsqueeze(-1), sin_x, cos_x], dim=-1)
         return encoded.view(*x.shape[:-1], self.input_dim * (1 + self.num_frequencies * 2))
 
+
+VALID_FUSION_MODES = {"attention", "concat_mlp", "token_ffn"}
+
+
+def resolve_fusion_mode(fusion_mode, use_attention_fusion):
+    """Resolve the explicit fusion mode while supporting older configurations."""
+    if fusion_mode is None:
+        fusion_mode = "attention" if use_attention_fusion else "concat_mlp"
+    fusion_mode = str(fusion_mode).lower()
+    if fusion_mode not in VALID_FUSION_MODES:
+        raise ValueError(
+            f"fusion_mode must be one of {sorted(VALID_FUSION_MODES)}, got "
+            f"{fusion_mode!r}"
+        )
+    return fusion_mode
+
+
+class TokenFFNBlock(nn.Module):
+    """Pre-LN residual Transformer FFN with no token-mixing operation."""
+
+    def __init__(self, d_model=512, dim_feedforward=512):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.activation = nn.GELU()
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+    def forward(self, tokens):
+        residual = tokens
+        tokens = self.norm(tokens)
+        tokens = self.linear2(self.activation(self.linear1(tokens)))
+        return residual + tokens
+
+
+class TokenFFNEncoder(nn.Module):
+    """Stack position-wise FFNs and normalize, without cross-token attention."""
+
+    def __init__(self, d_model=512, dim_feedforward=512, num_layers=2):
+        super().__init__()
+        self.layers = nn.ModuleList(
+            [
+                TokenFFNBlock(
+                    d_model=d_model,
+                    dim_feedforward=dim_feedforward,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, tokens):
+        for layer in self.layers:
+            tokens = layer(tokens)
+        return self.norm(tokens)
+
+
+def resolve_initial_log_std(num_actions: int, device: torch.device) -> torch.Tensor:
+    """Resolve scalar/vector std configuration to one log-std per action."""
+    configured_std = getattr(CONFIG, "init_std", None)
+    if configured_std is not None:
+        initial_std = torch.as_tensor(
+            configured_std, dtype=torch.float32, device=device
+        ).flatten()
+        if initial_std.numel() == 1:
+            initial_std = initial_std.repeat(num_actions)
+        elif initial_std.numel() != num_actions:
+            raise ValueError(
+                "init_std must be a positive scalar or contain exactly one "
+                f"value per action ({num_actions}); got {initial_std.numel()}"
+            )
+        if not torch.isfinite(initial_std).all() or (initial_std <= 0.0).any():
+            raise ValueError(f"init_std values must be finite and positive: {configured_std}")
+        return torch.log(initial_std)
+
+    # Backward compatibility for older local configurations and checkpoints.
+    configured_log_std = getattr(CONFIG, "init_log_std", 0.0)
+    initial_log_std = torch.as_tensor(
+        configured_log_std, dtype=torch.float32, device=device
+    ).flatten()
+    if initial_log_std.numel() == 1:
+        initial_log_std = initial_log_std.repeat(num_actions)
+    elif initial_log_std.numel() != num_actions:
+        raise ValueError(
+            "init_log_std must be a scalar or contain exactly one value per "
+            f"action ({num_actions}); got {initial_log_std.numel()}"
+        )
+    if not torch.isfinite(initial_log_std).all():
+        raise ValueError(f"init_log_std values must be finite: {configured_log_std}")
+    return initial_log_std
+
+
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self,
                 observation_space,
@@ -155,23 +246,27 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 cfg,
                 clip_actions=False,
                 # clip_log_std=True, min_log_std=-20, max_log_std=2,
-                init_log_std = getattr(CONFIG, "init_log_std", 0.0),
                 clip_log_std=True, min_log_std=-20, max_log_std=getattr(CONFIG, "max_log_std", 2.0),
                 num_envs=1,
                 sequence_length=32,
                 _hidden_size=128,
                 _hidden_size_gru=256,
-                use_attention_fusion=False):
+                use_attention_fusion=False,
+                fusion_mode=None):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         DeterministicMixin.__init__(self, False)
-        self.init_log_std = init_log_std
         self.cfg = cfg
         self.num_envs = num_envs
         self.sequence_length = sequence_length
         self._hidden_size = _hidden_size
         self._hidden_size_gru = _hidden_size_gru
-        self.use_attention_fusion = use_attention_fusion
+        self.fusion_mode = resolve_fusion_mode(
+            fusion_mode=fusion_mode,
+            use_attention_fusion=use_attention_fusion,
+        )
+        self.use_attention_fusion = self.fusion_mode == "attention"
+        self.use_token_fusion = self.fusion_mode in {"attention", "token_ffn"}
 
         camera_space = observation_space.spaces["cameras"]
         self.camera_shape = camera_space.shape
@@ -214,9 +309,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
         self.combined_features_size = camera_features_size + self.encoded_pose_dim + map_features_size
         
-        if self.use_attention_fusion:
-            # --- ATTENTION-BASED FUSION ---
-            print("[INFO] Using Attention-Based Fusion")
+        if self.use_token_fusion:
+            # --- PROJECTED TOKEN FUSION ---
             self.d_model = int(getattr(CONFIG, "attention_d_model", 512))
             self.attention_pooling = str(
                 getattr(CONFIG, "attention_pooling", "cls")
@@ -225,6 +319,11 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 raise ValueError(
                     "attention_pooling must be either 'cls' or 'mean', got "
                     f"{self.attention_pooling!r}"
+                )
+            if self.fusion_mode == "token_ffn" and self.attention_pooling != "mean":
+                raise ValueError(
+                    "token_ffn fusion requires attention_pooling='mean': a CLS "
+                    "token cannot collect modality information without attention"
                 )
             
             # Projectors
@@ -244,9 +343,20 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 # to the GRU instead of averaging modalities equally.
                 self.cls_token = nn.Parameter(torch.randn(1, 1, self.d_model) * 0.02)
             
-            self.use_transformer_encoder = getattr(CONFIG, "use_transformer_encoder", False)
-            
-            if self.use_transformer_encoder:
+            self.use_transformer_encoder = bool(
+                getattr(CONFIG, "use_transformer_encoder", False)
+            )
+
+            if self.fusion_mode == "token_ffn":
+                # Exact no-MHA ablation: retain the token projections,
+                # normalization, modality embeddings, Transformer FFN width,
+                # residual structure, layer count, and final normalization.
+                self.sensor_ffn = TokenFFNEncoder(
+                    d_model=self.d_model,
+                    dim_feedforward=512,
+                    num_layers=2,
+                )
+            elif self.use_transformer_encoder:
                 # Transformer Encoder
                 # We add norm_first=True (Pre-LN) which is much more stable for RL
                 encoder_layer = nn.TransformerEncoderLayer(
@@ -269,8 +379,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 self.mha_norm = nn.LayerNorm(self.d_model)
             
             print(
-                f"[INFO] Attention configuration: d_model={self.d_model}, "
-                f"pooling={self.attention_pooling}"
+                f"[INFO] Fusion configuration: mode={self.fusion_mode}, "
+                f"d_model={self.d_model}, pooling={self.attention_pooling}"
             )
             self.gru_input_size = self.d_model
         else:
@@ -324,7 +434,12 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             nn.Linear(256, 1)
         )
         # Action Head, MU and STD
-        self.log_std_parameter = nn.Parameter(self.init_log_std * torch.ones(self.num_actions))
+        self.initial_log_std = resolve_initial_log_std(self.num_actions, self.device)
+        self.log_std_parameter = nn.Parameter(self.initial_log_std.clone())
+        print(
+            "[INFO] Initial action standard deviations: "
+            f"{torch.exp(self.initial_log_std).detach().cpu().tolist()}"
+        )
         if getattr(CONFIG, "manual_std_decay", False):
             self.log_std_parameter.requires_grad = False
 
@@ -407,7 +522,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         map_features = self.map_encoder(local_map_permuted)
         encoded_pose = self.pose_encoder(robot_pose)
         
-        if self.use_attention_fusion:
+        if self.use_token_fusion:
             # Sanity checks before projection
             if not torch.isfinite(camera_features).all(): print("[MODEL DEBUG] NaN/Inf in camera_features!")
             if not torch.isfinite(map_features).all(): print("[MODEL DEBUG] NaN/Inf in map_features!")
@@ -435,7 +550,9 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 cls_token = self.cls_token.expand(tokens.shape[0], -1, -1)
                 tokens = torch.cat((cls_token, tokens), dim=1)
             
-            if self.use_transformer_encoder:
+            if self.fusion_mode == "token_ffn":
+                fused_tokens = self.sensor_ffn(tokens)
+            elif self.use_transformer_encoder:
                 # Safety net: clamp extreme outliers gracefully without affecting nominal gradients
                 # tokens = torch.clamp(tokens, min=-20.0, max=20.0)
                 
@@ -443,10 +560,10 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 import torch.nn.attention as attn
                 if hasattr(attn, 'sdpa_kernel'):
                     with attn.sdpa_kernel(attn.SDPBackend.MATH):
-                        attended_tokens = self.sensor_attention(tokens)
+                        fused_tokens = self.sensor_attention(tokens)
                 else:
                     with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
-                        attended_tokens = self.sensor_attention(tokens)
+                        fused_tokens = self.sensor_attention(tokens)
             else:
                 # Use a simple Multi-Head Self-Attention layer instead of a deep Transformer
                 # This is more stable for RL and prevents feature explosion without needing clamps
@@ -459,14 +576,14 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                         attn_output, _ = self.mha(tokens, tokens, tokens, need_weights=False)
                 
                 # Residual connection + LayerNorm
-                attended_tokens = self.mha_norm(tokens + attn_output)
+                fused_tokens = self.mha_norm(tokens + attn_output)
             
             if self.attention_pooling == "cls":
-                fusion_features = attended_tokens[:, 0]
+                fusion_features = fused_tokens[:, 0]
             else:
                 # Legacy August 31 checkpoint behavior: average the attended
                 # camera, occupancy-map, and pose tokens.
-                fusion_features = attended_tokens.mean(dim=1)
+                fusion_features = fused_tokens.mean(dim=1)
         else:
             combined_features = torch.cat((camera_features, map_features, encoded_pose), dim=1)
             fusion_features = self.feature_mlp(combined_features)
@@ -570,7 +687,8 @@ models['policy'] = Shared(env.observation_space,
                             cfg=model_config,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length,
-                            use_attention_fusion=getattr(CONFIG, "use_attention_fusion", False))
+                            use_attention_fusion=getattr(CONFIG, "use_attention_fusion", False),
+                            fusion_mode=getattr(CONFIG, "fusion_mode", None))
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
 total_timesteps = CONFIG.global_timesteps // (env.num_envs * world_size)
 
@@ -579,13 +697,13 @@ cfg = PPO_DEFAULT_CONFIG.copy()
 # heavyball.utils.compile_mode = None
 cfg["rollouts"] = rollout_length  # memory_size
 cfg["learning_epochs"] = 3  # Reduced from 4 to limit policy drift per rollout
-cfg["mini_batches"] = 8   # 16 horizon_length * num_actors / minibatch_size   8192 * 128 /64
+cfg["mini_batches"] = 8  # Larger minibatches reduce PPO gradient variance
 cfg["discount_factor"] = 0.995
 cfg["lambda"] = 0.95 #0.95 0.97
 
 def get_custom_optimizer(params, lr, **kwargs):
     policy_params = []
-    attention_params = []
+    fusion_params = []
     std_params = []
     use_separate_attention_lr = bool(
         getattr(CONFIG, "use_separate_attention_lr", True)
@@ -593,7 +711,7 @@ def get_custom_optimizer(params, lr, **kwargs):
 
     # Keep the rapidly-changing fusion representation on a lower learning
     # rate while leaving the encoders, GRU, and policy/value heads unchanged.
-    attention_parameter_roots = {
+    fusion_parameter_roots = {
         "camera_proj",
         "map_proj",
         "pose_proj",
@@ -601,6 +719,7 @@ def get_custom_optimizer(params, lr, **kwargs):
         "modality_embeddings",
         "cls_token",
         "sensor_attention",
+        "sensor_ffn",
         "mha",
         "mha_norm",
     }
@@ -609,20 +728,24 @@ def get_custom_optimizer(params, lr, **kwargs):
             std_params.append(p)
         elif (
             use_separate_attention_lr
-            and name.split(".", 1)[0] in attention_parameter_roots
+            and name.split(".", 1)[0] in fusion_parameter_roots
         ):
-            attention_params.append(p)
+            fusion_params.append(p)
         else:
             policy_params.append(p)
 
+    configured_fusion_mode = resolve_fusion_mode(
+        fusion_mode=getattr(CONFIG, "fusion_mode", None),
+        use_attention_fusion=getattr(CONFIG, "use_attention_fusion", False),
+    )
     if (
         use_separate_attention_lr
-        and getattr(CONFIG, "use_attention_fusion", False)
-        and not attention_params
+        and configured_fusion_mode in {"attention", "token_ffn"}
+        and not fusion_params
     ):
         raise RuntimeError(
-            "Attention fusion is enabled, but no attention parameters were assigned "
-            "to the reduced-learning-rate optimizer group"
+            "Projected-token fusion is enabled, but no fusion parameters were "
+            "assigned to the reduced-learning-rate optimizer group"
         )
     
     opt_class = Muon if getattr(CONFIG, "optimizer_class", "adam").lower() == "muon" else torch.optim.Adam
@@ -630,12 +753,12 @@ def get_custom_optimizer(params, lr, **kwargs):
     parameter_groups = [
         {"params": policy_params, "lr": lr, "name": "policy"},
     ]
-    if attention_params:
+    if fusion_params:
         parameter_groups.append(
             {
-                "params": attention_params,
+                "params": fusion_params,
                 "lr": getattr(CONFIG, "attention_learning_rate", 1.5e-5),
-                "name": "attention_fusion",
+                "name": "token_fusion",
             }
         )
 
@@ -670,7 +793,24 @@ cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs.copy()
 if "total_iters" in cfg["learning_rate_scheduler_kwargs"]:
         cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps # Delayed decay # 50 mil steps we do 3/10
 elif "T_max" in cfg["learning_rate_scheduler_kwargs"]:
-        cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_max_steps
+        scheduler_decay_fraction = float(
+            getattr(CONFIG, "scheduler_decay_fraction", 1.0)
+        )
+        if not 0.0 < scheduler_decay_fraction <= 1.0:
+            raise ValueError(
+                "scheduler_decay_fraction must be in the interval (0, 1], "
+                f"got {scheduler_decay_fraction}"
+            )
+        scheduler_decay_steps = max(
+            1, int(round(scheduler_max_steps * scheduler_decay_fraction))
+        )
+        cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_decay_steps
+        print(
+            "[INFO] LR schedule: cosine decay for "
+            f"{scheduler_decay_fraction:.0%} of training "
+            f"({scheduler_decay_steps:,}/{scheduler_max_steps:,} scheduler steps), "
+            "then hold eta_min"
+        )
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = getattr(CONFIG, "grad_clip_norm", 0.7)
@@ -679,7 +819,9 @@ cfg["kl_threshold"] = getattr(CONFIG, "kl_threshold", 0.0)
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = CONFIG.entropy_coef
 cfg["value_loss_scale"] = getattr(CONFIG, "value_loss_scale", 1.0)
-cfg["action_std_names"] = ["linear_velocity", "angular_velocity", "pan", "tilt"]
+action_std_names = ["linear_velocity", "angular_velocity", "pan", "tilt", "zoom"]
+num_policy_actions = int(np.prod(env.action_space.shape))
+cfg["action_std_names"] = action_std_names[:num_policy_actions]
 cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 1.0
 cfg["time_limit_bootstrap"] = True
 
@@ -699,7 +841,9 @@ log_root_path = os.path.abspath(log_root_path)
 # experiment_name = "Pretrain" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 time_stmp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # experiment_name = "Alblation_MLP_FUSION" + "_"+time_stmp
-experiment_name = "Alblation_ATTN_FUS" + "_"+time_stmp
+experiment_name  = getattr(CONFIG, "experiment_name")
+experiment_name = experiment_name + "_"+time_stmp
+# experiment_name = "Alblation_ATTN_FUS" + "_"+time_stmp
 log_dir = os.path.join(log_root_path, experiment_name)
 
 is_main_process = int(os.environ.get("REAL_LOCAL_RANK", 0)) == 0
@@ -792,9 +936,76 @@ if _use_wandb:
         print(f"[WARNING] Failed to extract curriculum config for WandB: {e}")
 # Pass manual decay variables into agent's configuration for SKRL library hook
 cfg["manual_std_decay"] = getattr(CONFIG, "manual_std_decay", False)
+cfg["init_std"] = getattr(CONFIG, "init_std", None)
 cfg["init_log_std"] = getattr(CONFIG, "init_log_std", 0.0)
+cfg["final_std"] = getattr(CONFIG, "final_std", None)
 cfg["final_log_std"] = getattr(CONFIG, "final_log_std", -2.0)
 cfg["std_decay_fraction"] = getattr(CONFIG, "std_decay_fraction", 0.25)
+
+# Select an additional checkpoint from training-only safety statistics. The
+# curriculum and logger clear their episode windows whenever the level changes;
+# requiring the curriculum success buffer to refill guarantees that the window
+# contains only episodes collected after reaching the hardest level.
+if not is_eval and getattr(CONFIG, "safety_checkpoint_interval", 0) > 0:
+    safety_metrics_env = env.unwrapped if hasattr(env, "unwrapped") else env
+    if hasattr(safety_metrics_env, "curriculum") and hasattr(safety_metrics_env, "logger"):
+        safety_curriculum = safety_metrics_env.curriculum
+        safety_logger = safety_metrics_env.logger
+
+        def get_safety_checkpoint_metrics():
+            success_values = list(safety_curriculum.success_buffer)
+            crash_values = list(
+                safety_logger.episode_log_buffer["episode_summary/crash_rate"]
+            )
+            coverage_values = list(
+                safety_logger.episode_log_buffer["coverage_percent"]
+            )
+            window_size = int(
+                safety_curriculum.success_buffer.maxlen
+                or safety_logger.window_size
+            )
+            episode_count = min(
+                len(success_values), len(crash_values), len(coverage_values)
+            )
+            fresh_window = episode_count >= window_size
+            if episode_count:
+                success_values = success_values[-episode_count:]
+                crash_values = crash_values[-episode_count:]
+                coverage_values = coverage_values[-episode_count:]
+
+            return {
+                "at_max_curriculum": (
+                    safety_curriculum.current_coverage_threshold
+                    >= safety_curriculum.max_coverage_threshold - 1e-8
+                ),
+                "fresh_window": fresh_window,
+                "episode_count": episode_count,
+                "success_sum": float(sum(success_values)),
+                "crash_sum": float(sum(crash_values)),
+                "coverage_sum": float(sum(coverage_values)),
+            }
+
+        cfg["safety_checkpoint_metrics_provider"] = get_safety_checkpoint_metrics
+        cfg["safety_checkpoint_path"] = os.path.join(
+            log_dir, "checkpoints", "safest_agent.pt"
+        )
+        cfg["safety_checkpoint_interval"] = int(
+            CONFIG.safety_checkpoint_interval
+        )
+        cfg["safety_checkpoint_min_success_rate"] = float(
+            getattr(CONFIG, "safety_checkpoint_min_success_rate", 0.90)
+        )
+        if is_main_process:
+            print(
+                "[INFO] Safety checkpoint enabled: require a fresh hardest-"
+                "curriculum window and success rate >= "
+                f"{cfg['safety_checkpoint_min_success_rate']:.0%}"
+            )
+    elif is_main_process:
+        print(
+            "[WARNING] Safety checkpoint disabled: environment does not expose "
+            "curriculum and logger metrics"
+        )
 
 agent = PPO(models=models, 
             memory=memory,
@@ -815,7 +1026,12 @@ if args_cli.checkpoint:
         with torch.no_grad():
              # Assuming shared model or separate policy has this specific parameter name
              if hasattr(agent.policy, "log_std_parameter"):
-                 agent.policy.log_std_parameter.fill_(getattr(CONFIG, "init_log_std", 0.0)) # Reset to initial configured value
+                 agent.policy.log_std_parameter.copy_(
+                     agent.policy.initial_log_std.to(
+                         device=agent.policy.log_std_parameter.device,
+                         dtype=agent.policy.log_std_parameter.dtype,
+                     )
+                 )
              else:
                  print("[WARNING] Could not find log_std_parameter to reset.")
 elif is_eval:

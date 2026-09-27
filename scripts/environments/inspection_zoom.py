@@ -64,7 +64,7 @@ def main():
                 
 
                 for i in range(3000):
-                    actions = torch.tensor([[0.0, 0.0, -1.0, 0.0]], device=env.unwrapped.device)
+                    actions = torch.tensor([[0.0, 0.0, -1.0, 0.0, 1.0]], device=env.unwrapped.device)
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     obs_v = obs['policy']
                 #now 

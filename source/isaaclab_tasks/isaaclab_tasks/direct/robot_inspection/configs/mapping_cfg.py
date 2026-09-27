@@ -25,6 +25,9 @@ class MappingCfg:
 
 
     resolution: float = 0.1 # Voxel size in meters
-    map_update_interval: float = 1 # steps between map updates
+    map_update_interval: int = 1 # steps between map updates
+    # Bounds peak temporary VRAM while reducing the full global maps for
+    # information-gain, visibility, and episode-summary metrics.
+    global_map_reward_chunk_size: int = 65536
     # Increased local_map_dims for testing the field of view
     local_map_dims: tuple =(29, 29, 15) # Size of the egocentric local map

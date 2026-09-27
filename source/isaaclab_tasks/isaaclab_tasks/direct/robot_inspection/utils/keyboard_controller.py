@@ -8,10 +8,11 @@ class InspectionKeyboardController:
     """A keyboard controller for the robot inspection environment.
     
     Controls:
-        W / S: Forward / Backward (Linear Velocity)
-        A / D: Left / Right (Angular Velocity)
-        Up / Down Arrows: PTZ Tilt Up / Down
-        Left / Right Arrows: PTZ Pan Left / Right
+        Up / Down Arrows: Forward / Backward
+        Left / Right Arrows: Turn Left / Right
+        S / X: PTZ Tilt Up / Down
+        A / D: PTZ Pan Left / Right
+        Q / E: Zoom Out / In
     """
     def __init__(self, device="cuda:0", max_vel_speed = 0.5):
         self._device = device
@@ -31,8 +32,8 @@ class InspectionKeyboardController:
         self._create_key_bindings()
         
         self._pressed_keys = set()
-        # Action space: [linear_vel, angular_vel, pan_vel, tilt_vel]
-        self._base_command = np.zeros(4, dtype=np.float32)
+        # Action space: [linear_vel, angular_vel, pan_vel, tilt_vel, zoom]
+        self._base_command = np.zeros(5, dtype=np.float32)
 
     def __del__(self):
         """Release the keyboard interface."""
@@ -42,9 +43,9 @@ class InspectionKeyboardController:
 
     def advance(self) -> torch.Tensor:
         """Provides the current action tensor based on keyboard state.
-        Shape is (1, 4) to match environment input expectations for 1 environment.
+        Shape is (1, 5) to match environment input expectations for 1 environment.
         """
-        command = np.zeros(4, dtype=np.float32)
+        command = np.zeros(5, dtype=np.float32)
         for key in self._pressed_keys:
             if key in self._INPUT_KEY_MAPPING:
                 command += self._INPUT_KEY_MAPPING[key]
@@ -59,17 +60,19 @@ class InspectionKeyboardController:
 
     def _create_key_bindings(self):
         """Creates default key binding."""
-        # Action mapping: [lin_vel, ang_vel, pan, tilt]
+        # Action mapping: [lin_vel, ang_vel, pan, tilt, zoom]
         self._INPUT_KEY_MAPPING = {
             # Robot Base (Arrow Keys)
-            "UP": np.asarray([self.max_vel_speed, 0.0, 0.0, 0.0]),
-            "DOWN": np.asarray([-self.max_vel_speed, 0.0, 0.0, 0.0]),
-            "LEFT": np.asarray([0.0, 1.0, 0.0, 0.0]),
-            "RIGHT": np.asarray([0.0, -1.0, 0.0, 0.0]),
+            "UP": np.asarray([self.max_vel_speed, 0.0, 0.0, 0.0, 0.0]),
+            "DOWN": np.asarray([-self.max_vel_speed, 0.0, 0.0, 0.0, 0.0]),
+            "LEFT": np.asarray([0.0, 1.0, 0.0, 0.0, 0.0]),
+            "RIGHT": np.asarray([0.0, -1.0, 0.0, 0.0, 0.0]),
             
             # PTZ Camera (A/S/D/X to avoid W entirely)
-            "S": np.asarray([0.0, 0.0, 0.0, -1.0]),  # Up
-            "X": np.asarray([0.0, 0.0, 0.0, 1.0]),   # Down
-            "A": np.asarray([0.0, 0.0, 1.0, 0.0]),   # Left
-            "D": np.asarray([0.0, 0.0, -1.0, 0.0]),  # Right
+            "S": np.asarray([0.0, 0.0, 0.0, -1.0, 0.0]),  # Up
+            "X": np.asarray([0.0, 0.0, 0.0, 1.0, 0.0]),   # Down
+            "A": np.asarray([0.0, 0.0, 1.0, 0.0, 0.0]),   # Left
+            "D": np.asarray([0.0, 0.0, -1.0, 0.0, 0.0]),  # Right
+            "Q": np.asarray([0.0, 0.0, 0.0, 0.0, -1.0]),  # Wide
+            "E": np.asarray([0.0, 0.0, 0.0, 0.0, 1.0]),   # Telephoto
         }

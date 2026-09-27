@@ -8,8 +8,28 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
+
+# Change only this value to switch the manually driven debug scene. The same
+# selection is also available through --environment on the command line.
+DEFAULT_ENVIRONMENT = "simple_warehouse"
+
+ISAACLAB_REPO_ROOT = Path(__file__).resolve().parents[2]
+ENVIRONMENT_PRESETS = {
+    "simple_warehouse": None,
+    "usd_explorer_factory": (
+        ISAACLAB_REPO_ROOT
+        / "assets/environments/nvidia_usd_explorer"
+        / "Usd_Explorer/Samples/Examples/2023_2/Factory/Factory.usd"
+    ),
+    "defect_workshop": (
+        ISAACLAB_REPO_ROOT
+        / "assets/environments/nvidia_defect_detection/shop.usdc"
+    ),
+}
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Inspection environment null test.")
@@ -17,6 +37,48 @@ parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument(
+    "--environment",
+    choices=tuple(ENVIRONMENT_PRESETS) + ("custom",),
+    default=DEFAULT_ENVIRONMENT,
+    help="Environment preset. Use custom together with --environment_usd.",
+)
+parser.add_argument(
+    "--environment_usd",
+    type=str,
+    default=None,
+    help="Local USD/USDA/USDC scene path. This overrides --environment.",
+)
+parser.add_argument(
+    "--environment_scale",
+    type=float,
+    nargs=3,
+    metavar=("X", "Y", "Z"),
+    default=None,
+    help="Optional scale applied to an external environment reference.",
+)
+parser.add_argument(
+    "--environment_offset",
+    type=float,
+    nargs=3,
+    metavar=("X", "Y", "Z"),
+    default=None,
+    help="Optional XYZ offset applied to an external environment reference.",
+)
+parser.add_argument(
+    "--add_environment_mesh_colliders",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help=(
+        "Add static triangle-mesh colliders to external scene meshes that do not already have collision. "
+        "Enabled by default for the NVIDIA factory/workshop presets."
+    ),
+)
+parser.add_argument(
+    "--keep_procedural_obstacles",
+    action="store_true",
+    help="Keep the task's generated obstacles when loading an external environment.",
+)
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -24,6 +86,51 @@ parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli = parser.parse_args()
+
+# Pass the selection through the environment because the task configuration is
+# imported only after Isaac Sim starts. Training and evaluation scripts that do
+# not set these variables retain the original Simple Warehouse unchanged.
+environment_path_overridden = args_cli.environment_usd is not None
+selected_environment_usd = args_cli.environment_usd
+if selected_environment_usd is None:
+    selected_environment_usd = ENVIRONMENT_PRESETS.get(args_cli.environment)
+
+if args_cli.environment == "custom" and selected_environment_usd is None:
+    parser.error("--environment custom requires --environment_usd PATH")
+
+if selected_environment_usd is not None:
+    selected_environment_usd = Path(selected_environment_usd).expanduser().resolve()
+    if not selected_environment_usd.is_file():
+        preset_hint = ""
+        if args_cli.environment in {"usd_explorer_factory", "defect_workshop"}:
+            preset_hint = (
+                " Install it first with: python scripts/environments/"
+                f"install_inspection_environment.py {args_cli.environment}"
+            )
+        parser.error(f"Environment USD not found: {selected_environment_usd}.{preset_hint}")
+    os.environ["ISAACLAB_INSPECTION_ENV_USD"] = str(selected_environment_usd)
+    selected_environment_name = args_cli.environment
+    if environment_path_overridden and selected_environment_name == "simple_warehouse":
+        selected_environment_name = "custom"
+    os.environ["ISAACLAB_INSPECTION_ENV_NAME"] = selected_environment_name
+
+    add_mesh_colliders = args_cli.add_environment_mesh_colliders
+    if add_mesh_colliders is None:
+        add_mesh_colliders = environment_path_overridden or args_cli.environment in {
+            "usd_explorer_factory",
+            "defect_workshop",
+            "custom",
+        }
+    os.environ["ISAACLAB_INSPECTION_ENV_ADD_MESH_COLLIDERS"] = "1" if add_mesh_colliders else "0"
+
+    if args_cli.environment_scale is not None:
+        os.environ["ISAACLAB_INSPECTION_ENV_SCALE"] = ",".join(map(str, args_cli.environment_scale))
+    if args_cli.environment_offset is not None:
+        os.environ["ISAACLAB_INSPECTION_ENV_OFFSET"] = ",".join(map(str, args_cli.environment_offset))
+
+    if not args_cli.keep_procedural_obstacles:
+        os.environ["ISAACLAB_INSPECTION_DISABLE_PROCEDURAL_OBSTACLES"] = "1"
+
 args_cli.enable_cameras =  True
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -67,6 +174,7 @@ def main():
         print("[INFO]: Keyboard Controller Initialized.")
         print("[INFO]: Use Arrow Keys (UP/DOWN/LEFT/RIGHT) to move the robot base.")
         print("[INFO]: Use A/S/D/X to pan/tilt the PTZ camera (S: Up, X: Down, A: Left, D: Right).")
+        print("[INFO]: Hold Q/E to select wide/telephoto zoom; release for the middle zoom level.")
 
         # simulate environment
         while simulation_app.is_running():

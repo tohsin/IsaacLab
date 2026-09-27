@@ -13,7 +13,13 @@ class RobotPhysicsCfg:
     # PTZ Camera control configurations
     pan_speed: float = 0.7  # Speed of the pan-tilt unit
     tilt_speed: float = 0.7  # Speed of the pan-tilt unit
-    default_focal_length: float = 35.0  # Fixed inspection-camera focal length
+    # Zoom is intentionally discrete. Re-authoring many rendered USD cameras
+    # every control step was unstable, so the environment applies at most a
+    # small number of real focal-length changes per step.
+    zoom_focal_lengths: tuple[float, ...] = (24.0, 35.0, 50.0)
+    default_focal_length: float = 35.0
+    zoom_action_hysteresis: float = 0.08
+    max_zoom_updates_per_step: int = 32
     # optical flow parameters
     flow_safe_zone: float = 12.5
     flow_drop_speed: float = 12.0

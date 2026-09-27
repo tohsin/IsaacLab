@@ -8,6 +8,8 @@ def mark_visible_voxels(
     sensor_origins: wp.array(dtype=wp.vec3),
     map_origins: wp.array(dtype=wp.vec3),
     env_indices: wp.array(dtype=int),
+    num_envs: int,
+    point_offset: int,
     # Map parameters
     voxel_size: float,
     map_dims: wp.vec3i,
@@ -16,14 +18,16 @@ def mark_visible_voxels(
     mark_visible_value: float,
     surface_hits_only: bool
 ):
-    tid = wp.tid()
+    point_idx = point_offset + wp.tid()
     # indexing by environment
-    env_id = env_indices[tid]
+    env_id = env_indices[point_idx]
+    if env_id < 0 or env_id >= num_envs:
+        return
     ray_start = sensor_origins[env_id]
     map_origin = map_origins[env_id]
 
 
-    ray_end = point_cloud[tid]
+    ray_end = point_cloud[point_idx]
     ray_vec = ray_end - ray_start
     original_ray_dist = wp.length(ray_vec)
 

@@ -133,6 +133,9 @@ def main():
                     else:
                         actions = torch.tensor([[fwd_speed, 0.0, 0.0, 0.0]], device=env.unwrapped.device)
 
+                    # This scripted trajectory controls base/pan/tilt only;
+                    # keep the new zoom selector at its middle level.
+                    actions = torch.nn.functional.pad(actions, (0, 1))
                     obs, rewards, terminated, truncated, info  = env.step(actions)
                     
                     if terminated.any() or truncated.any():

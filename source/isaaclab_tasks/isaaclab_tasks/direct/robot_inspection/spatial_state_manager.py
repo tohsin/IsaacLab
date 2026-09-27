@@ -129,6 +129,8 @@ class SpatialStateManager:
                 log_odds_occupied : float = 0.8,
                 clamp_min : float = -5.0,
                 clamp_max : float = 5.0,
+                ray_chunking_enabled: bool = False,
+                ray_chunk_percent: float = 12.5,
                 visualize_env_id: int | None = None,
                 visualization_mode: any = None,
                 device="cuda"):
@@ -167,6 +169,13 @@ class SpatialStateManager:
         self.log_odds_neutral = 0.0
         self.clamp_min = clamp_min      # Min log-odds
         self.clamp_max = clamp_max       # Max log-odds
+        self.ray_chunking_enabled = ray_chunking_enabled
+        self.ray_chunk_percent = ray_chunk_percent
+        if not 0.0 < self.ray_chunk_percent <= 100.0:
+            raise ValueError(
+                "ray_chunk_percent must be greater than 0 and at most 100, "
+                f"got {self.ray_chunk_percent}"
+            )
 
         self.log_odds_visible = 0.4
         
@@ -231,6 +240,13 @@ class SpatialStateManager:
             world_coords += (self.voxel_size / 2.0)
         return world_coords[0] if is_1d else world_coords
 
+    def _get_ray_chunk_size(self, num_total_points: int) -> int:
+        """Return the number of rays per Warp launch for this point cloud."""
+        if not self.ray_chunking_enabled:
+            return num_total_points
+        chunk_size = int(np.ceil(num_total_points * self.ray_chunk_percent / 100.0))
+        return max(1, min(num_total_points, chunk_size))
+
     def update_occupancy(self, sensor_origins: torch.Tensor, point_clouds: list[torch.Tensor] | tuple[torch.Tensor, torch.Tensor]):
         """
         Updates the occupancy grid with a new point cloud measurement.
@@ -258,22 +274,27 @@ class SpatialStateManager:
         wp_env_indices = wp.from_torch(env_indices.contiguous(), dtype=wp.int32)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
-        wp.launch(
-            kernel=update_occupancy_fast,
-            dim=num_total_points,
-            inputs=[
-                wp_point_cloud,
-                wp_sensor_origins,
-                self.wp_world_map_origins,
-                wp_env_indices,
-                self.voxel_size,
-                wp_map_dims,
-                self.occupancy_map,
-                self.log_odds_free,
-                self.log_odds_occupied,
-            ],
-            device=self.device
-        )
+        ray_chunk_size = self._get_ray_chunk_size(num_total_points)
+        for point_offset in range(0, num_total_points, ray_chunk_size):
+            points_in_chunk = min(ray_chunk_size, num_total_points - point_offset)
+            wp.launch(
+                kernel=update_occupancy_fast,
+                dim=points_in_chunk,
+                inputs=[
+                    wp_point_cloud,
+                    wp_sensor_origins,
+                    self.wp_world_map_origins,
+                    wp_env_indices,
+                    self.num_envs,
+                    point_offset,
+                    self.voxel_size,
+                    wp_map_dims,
+                    self.occupancy_map,
+                    self.log_odds_free,
+                    self.log_odds_occupied,
+                ],
+                device=self.device
+            )
             
         wp.launch(
             kernel=clamp_map_values,
@@ -304,22 +325,27 @@ class SpatialStateManager:
         wp_env_indices = wp.from_torch(env_indices.contiguous(), dtype=wp.int32)
         wp_map_dims = wp.vec3i(self.map_dims[0], self.map_dims[1], self.map_dims[2])
 
-        wp.launch(
-            kernel=mark_visible_voxels,
-            dim=num_total_points,
-            inputs=[
-                wp_point_cloud,
-                wp_sensor_origins,
-                self.wp_world_map_origins,
-                wp_env_indices,
-                self.voxel_size,
-                wp_map_dims,
-                self.visibility_map, # Pass the visibility map here
-                self.log_odds_visible, # Pass the value to add
-                self.visibility_surface_hits_only 
-            ],
-            device=self.device
-        )
+        ray_chunk_size = self._get_ray_chunk_size(num_total_points)
+        for point_offset in range(0, num_total_points, ray_chunk_size):
+            points_in_chunk = min(ray_chunk_size, num_total_points - point_offset)
+            wp.launch(
+                kernel=mark_visible_voxels,
+                dim=points_in_chunk,
+                inputs=[
+                    wp_point_cloud,
+                    wp_sensor_origins,
+                    self.wp_world_map_origins,
+                    wp_env_indices,
+                    self.num_envs,
+                    point_offset,
+                    self.voxel_size,
+                    wp_map_dims,
+                    self.visibility_map, # Pass the visibility map here
+                    self.log_odds_visible, # Pass the value to add
+                    self.visibility_surface_hits_only
+                ],
+                device=self.device
+            )
         
         # Optionally clamp the visibility map to prevent values from growing infinitely
         wp.launch(

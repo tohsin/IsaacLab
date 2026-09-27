@@ -56,6 +56,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
     def __init__(self, cfg: Isaac3dinspectionEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        self.camera_zoom_enabled = bool(getattr(run_cfg, "enable_camera_zoom", False))
     
         self._wheel_joint_indices, self._wheel_joint_names = self.robot.find_joints(".*wheel.*")
         self._ptz_joint_indices, _ = self.robot.find_joints(".*ptz.*")
@@ -99,11 +101,29 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 log_odds_occupied=getattr(self.cfg.mapping_cfg, "log_odds_occupied", 0.8),
                 clamp_min=getattr(self.cfg.mapping_cfg, "clamp_min", -5.0),
                 clamp_max=getattr(self.cfg.mapping_cfg, "clamp_max", 5.0),
+                ray_chunking_enabled=bool(
+                    getattr(run_cfg, "enable_map_ray_chunking", False)
+                ),
+                ray_chunk_percent=float(
+                    getattr(run_cfg, "map_ray_chunk_percent", 12.5)
+                ),
                 visualization_mode = run_cfg.visualisation_mode,
                 env_origins= self.scene.env_origins.cpu().numpy(),
                 device=self.device,
                 visualize_env_id=getattr(run_cfg, 'visualize_env_id', 0) if (run_cfg.debug and getattr(run_cfg, 'enable_voxel_visualization', False)) else None
             )
+            # These values are constant for the lifetime of the environment.
+            # Keeping their Torch representation avoids a host-to-device copy
+            # in every visitation-reward call.
+            self._map_origins_torch = torch.as_tensor(
+                self.map_manager.world_map_origins,
+                device=self.device,
+            )
+
+        # The full pixel grids are shared by both camera unprojection paths
+        # and remain constant while zoom only changes camera intrinsics.
+        self._unprojection_grid_cache = {}
+        self._map_updated_this_step = False
         self.curriculum = Curriculum(
             num_envs=self.num_envs,
             device=self.device,
@@ -121,6 +141,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.cfg.reward_cfg.visitation_reward_scale *= res_ratio
 
         self._setup_tensor_buffers()
+        if self.camera_zoom_enabled:
+            self._setup_camera_zoom()
         
         # Initialize point cloud markers if needed
         self.pc_markers = None
@@ -234,6 +256,149 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.data_collector.save() # Just prints final stats now
             
         super().close()
+
+    def _setup_camera_zoom(self):
+        """Initialize bounded, discrete optical zoom control.
+
+        Focal-length changes invalidate rendered camera state. The old zoom
+        implementation changed every requested camera in the same control
+        step, which could overwhelm Hydra/Vulkan for large vectorized runs.
+        Desired and applied levels are therefore tracked separately and only a
+        configured number of cameras are committed per step.
+        """
+        focal_lengths = tuple(float(value) for value in self.cfg.robot_phys_cfg.zoom_focal_lengths)
+        if len(focal_lengths) < 2:
+            raise ValueError("zoom_focal_lengths must contain at least two values")
+        if any(right <= left for left, right in zip(focal_lengths, focal_lengths[1:])):
+            raise ValueError("zoom_focal_lengths must be strictly increasing")
+
+        self.zoom_focal_lengths = torch.tensor(focal_lengths, device=self.device, dtype=torch.float32)
+        zoom_half_bin = 1.0 / len(focal_lengths)
+        self.zoom_action_centers = torch.linspace(
+            -1.0 + zoom_half_bin,
+            1.0 - zoom_half_bin,
+            len(focal_lengths),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        default_focal_length = float(self.cfg.robot_phys_cfg.default_focal_length)
+        self.default_zoom_level = int(
+            torch.argmin(torch.abs(self.zoom_focal_lengths - default_focal_length)).item()
+        )
+        if not np.isclose(focal_lengths[self.default_zoom_level], default_focal_length):
+            raise ValueError("default_focal_length must be one of zoom_focal_lengths")
+
+        self.desired_zoom_levels = torch.full(
+            (self.num_envs,), self.default_zoom_level, device=self.device, dtype=torch.long
+        )
+        self.applied_zoom_levels = self.desired_zoom_levels.clone()
+        self.current_focal_lengths = torch.full(
+            (self.num_envs,), default_focal_length, device=self.device, dtype=torch.float32
+        )
+        self._zoom_update_cursor = 0
+
+        stage = get_current_stage()
+        self.camera_prims = []
+        self.high_res_camera_prims = [None] * self.num_envs
+        for env_id in range(self.num_envs):
+            camera_path = self.cfg.sensor_cfg.ptz_camera.prim_path.replace("env_.*", f"env_{env_id}")
+            camera_prim = stage.GetPrimAtPath(camera_path)
+            if not camera_prim.IsValid():
+                raise RuntimeError(f"Camera prim not found at path: {camera_path}")
+            self.camera_prims.append(UsdGeom.Camera(camera_prim))
+
+            if hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
+                high_res_path = self.cfg.sensor_cfg.high_res_ptz_camera.prim_path.replace(
+                    "env_.*", f"env_{env_id}"
+                )
+                high_res_prim = stage.GetPrimAtPath(high_res_path)
+                if high_res_prim.IsValid():
+                    self.high_res_camera_prims[env_id] = UsdGeom.Camera(high_res_prim)
+
+    def _update_zoom(self, zoom_actions: torch.Tensor):
+        """Select discrete zoom levels and commit a bounded subset of changes."""
+        num_levels = self.zoom_focal_lengths.numel()
+        half_bin = 1.0 / num_levels
+        proposed_levels = torch.floor((zoom_actions + 1.0) * 0.5 * num_levels).long()
+        proposed_levels.clamp_(0, num_levels - 1)
+
+        # Keep the current desired level slightly beyond its nominal bin. This
+        # prevents a noisy continuous policy from repeatedly crossing a zoom
+        # boundary and filling the render-update queue.
+        current_centers = self.zoom_action_centers[self.desired_zoom_levels]
+        hysteresis = float(self.cfg.robot_phys_cfg.zoom_action_hysteresis)
+        keep_current = torch.abs(zoom_actions - current_centers) <= half_bin + hysteresis
+        self.desired_zoom_levels.copy_(
+            torch.where(keep_current, self.desired_zoom_levels, proposed_levels)
+        )
+
+        pending = (self.desired_zoom_levels != self.applied_zoom_levels).nonzero(
+            as_tuple=False
+        ).squeeze(-1)
+        if pending.numel() == 0:
+            return
+
+        # Circular ordering prevents low-numbered environments from starving
+        # later ones if their policies keep changing zoom levels.
+        circular_distance = (pending - self._zoom_update_cursor) % self.num_envs
+        pending = pending[torch.argsort(circular_distance)]
+        max_updates = max(1, int(self.cfg.robot_phys_cfg.max_zoom_updates_per_step))
+        env_ids = pending[:max_updates]
+        self._commit_zoom_updates(env_ids)
+        self._zoom_update_cursor = (int(env_ids[-1].item()) + 1) % self.num_envs
+
+    def _commit_zoom_updates(self, env_ids: torch.Tensor):
+        """Apply selected focal lengths consistently to rendered and ray cameras."""
+        new_levels = self.desired_zoom_levels[env_ids]
+        focal_lengths = self.zoom_focal_lengths[new_levels]
+        env_ids_list = env_ids.detach().cpu().tolist()
+        focal_lengths_list = focal_lengths.detach().cpu().tolist()
+
+        for env_id, focal_length in zip(env_ids_list, focal_lengths_list):
+            self.camera_prims[env_id].GetFocalLengthAttr().Set(float(focal_length))
+            high_res_prim = self.high_res_camera_prims[env_id]
+            if high_res_prim is not None:
+                high_res_prim.GetFocalLengthAttr().Set(float(focal_length))
+
+        # Refresh only the cameras whose USD attributes changed. In contrast
+        # to the old implementation, this list is bounded even when all
+        # environments request zoom on the same policy step.
+        self._ptz_camera._update_intrinsic_matrices(env_ids_list)
+        if hasattr(self, "_high_res_ptz_camera"):
+            self._high_res_ptz_camera._update_intrinsic_matrices(env_ids_list)
+
+        self._update_raycaster_zoom(self._raycaster_camera, env_ids, focal_lengths)
+        if hasattr(self, "_high_res_raycaster_camera"):
+            self._update_raycaster_zoom(self._high_res_raycaster_camera, env_ids, focal_lengths)
+
+        self.applied_zoom_levels[env_ids] = new_levels
+        self.current_focal_lengths[env_ids] = focal_lengths
+
+    def _update_raycaster_zoom(
+        self,
+        raycaster: MultiMeshRayCasterCamera,
+        env_ids: torch.Tensor,
+        focal_lengths: torch.Tensor,
+    ):
+        """Match a ray-caster's intrinsics to the rendered camera zoom."""
+        pattern_cfg = raycaster.cfg.pattern_cfg
+        width, height = pattern_cfg.width, pattern_cfg.height
+        horizontal_aperture = pattern_cfg.horizontal_aperture
+        vertical_aperture = pattern_cfg.vertical_aperture
+        if vertical_aperture is None:
+            vertical_aperture = horizontal_aperture * (height / width)
+
+        fx = width * focal_lengths / horizontal_aperture
+        fy = height * focal_lengths / vertical_aperture
+        intrinsics = torch.zeros(
+            (env_ids.numel(), 3, 3), device=self.device, dtype=torch.float32
+        )
+        intrinsics[:, 0, 0] = fx
+        intrinsics[:, 1, 1] = fy
+        intrinsics[:, 0, 2] = pattern_cfg.horizontal_aperture_offset * fx + width / 2.0
+        intrinsics[:, 1, 2] = pattern_cfg.vertical_aperture_offset * fy + height / 2.0
+        intrinsics[:, 2, 2] = 1.0
+        raycaster.set_intrinsic_matrices(intrinsics, env_ids=env_ids)
         
     def _setup_tensor_buffers(self):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
@@ -422,6 +587,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # --- RESTORED MANUAL SPAWN LOGIC ---
         stage = get_current_stage()
+        if getattr(self.cfg.env_parameters, "add_mesh_colliders", False):
+            self._add_static_environment_mesh_colliders(stage)
         import re
         
         # Clone heavily populated structures immediately to build parallel env branches
@@ -572,6 +739,46 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+    def _add_static_environment_mesh_colliders(self, stage: Usd.Stage) -> None:
+        """Add static triangle-mesh collision to a visual-only external USD scene.
+
+        CAD and visualization sample stages frequently contain no physics
+        schemas. Only meshes without an authored collider are changed; existing
+        SimReady collision remains untouched. Instance proxies cannot be
+        overridden safely and are reported instead of being modified.
+        """
+        environment_prim_path = self.cfg.env_parameters.prim_path.replace("env_.*", "env_0")
+        environment_prim = stage.GetPrimAtPath(environment_prim_path)
+        if not environment_prim.IsValid():
+            raise RuntimeError(f"Environment prim not found at path: {environment_prim_path}")
+
+        added_count = 0
+        skipped_instance_count = 0
+        for prim in Usd.PrimRange(environment_prim):
+            if not prim.IsA(UsdGeom.Mesh) or prim.HasAPI(UsdPhysics.CollisionAPI):
+                continue
+            if prim.IsInstanceProxy():
+                skipped_instance_count += 1
+                continue
+
+            imageable = UsdGeom.Imageable(prim)
+            if imageable and imageable.ComputeVisibility() == UsdGeom.Tokens.invisible:
+                continue
+
+            UsdPhysics.CollisionAPI.Apply(prim)
+            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(prim)
+            # The environment has no rigid-body API, so exact triangle meshes
+            # are valid static colliders and retain narrow CAD geometry.
+            mesh_collision.GetApproximationAttr().Set("none")
+            if not prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
+                PhysxSchema.PhysxCollisionAPI.Apply(prim)
+            added_count += 1
+
+        print(
+            f"[INFO] External environment collision: added {added_count} static mesh colliders"
+            f"; skipped {skipped_instance_count} instance proxies."
+        )
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.previous_action_for_rewards.copy_(self.last_action)
@@ -757,6 +964,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             # Scale the wheel commands
             wheel_targets = self.wheel_commands * self.cfg.action_scale
+            if self.camera_zoom_enabled:
+                self._update_zoom(self.actions[:, 4])
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             '''
@@ -963,17 +1172,29 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         if K_candidates is None or K_candidates >= W * H:
             K_candidates = W * H
-            # Create a full grid of pixels to avoid duplicate samples
-            v_grid, u_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device), indexing='ij')
-            u = u_grid.flatten().unsqueeze(0).expand(N, -1)
-            v = v_grid.flatten().unsqueeze(0).expand(N, -1)
+            cache_key = (str(device), N, H, W)
+            cached_grid = self._unprojection_grid_cache.get(cache_key)
+            if cached_grid is None:
+                # Create a full grid once. The expanded tensors are views, so
+                # the cache stores only one H x W grid plus N batch indices.
+                v_grid, u_grid = torch.meshgrid(
+                    torch.arange(H, device=device),
+                    torch.arange(W, device=device),
+                    indexing='ij',
+                )
+                u = u_grid.flatten().unsqueeze(0).expand(N, -1)
+                v = v_grid.flatten().unsqueeze(0).expand(N, -1)
+                batch_idx = torch.arange(N, device=device).unsqueeze(1)
+                cached_grid = (u, v, batch_idx)
+                self._unprojection_grid_cache[cache_key] = cached_grid
+            u, v, batch_idx = cached_grid
         else:
             # Sample random pixels directly
             u = torch.randint(0, W, (N, K_candidates), device=device)
             v = torch.randint(0, H, (N, K_candidates), device=device)
+            batch_idx = torch.arange(N, device=device).unsqueeze(1)
         
         # Gather depth
-        batch_idx = torch.arange(N, device=device).unsqueeze(1)
         if depth_data.dim() == 4:
             z = depth_data[batch_idx, v, u, 0] # (N, K)
         else:
@@ -997,7 +1218,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         cam_quat_expanded = cam_quat.unsqueeze(1).expand(-1, K_candidates, -1)
         points_world = quat_apply(cam_quat_expanded, points_cam) + cam_pos.unsqueeze(1)
         
-        combined_mask = valid_mask
+        # Invalid intrinsics or transforms can turn finite depth into invalid
+        # world points. Never pass those values to the Warp traversal kernels.
+        combined_mask = valid_mask & torch.isfinite(points_world).all(dim=-1)
         
         if filter_floor:
             floor_mask = points_world[..., 2] > 0.05
@@ -1037,7 +1260,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             action_dim = self.last_action.shape[1]
             last_action_obs = self.last_action
             
-        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim+2), device=self.device)
+        zoom_obs_dim = 1 if self.camera_zoom_enabled else 0
+        obs_buffer = torch.zeros(
+            (self.num_envs, 13 + action_dim + 2 + zoom_obs_dim), device=self.device
+        )
 
         # pos_noise = (torch.rand_like(position) - 0.5) * 0.2
         # orientation_noise = (torch.rand_like(orientation) - 0.5) * 0.2
@@ -1063,6 +1289,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         ptz_joint_pos = self.robot.data.joint_pos[:, self._ptz_joint_indices]
         # print(f"PTZ Joint Positions: {ptz_joint_pos}")
         obs_buffer[..., 13 + action_dim : 13 + action_dim + 2] = ptz_joint_pos
+
+        if self.camera_zoom_enabled:
+            # The applied level can lag the desired action by a few steps
+            # because render reconfiguration is rate-limited. Exposing it
+            # keeps the observation Markovian during that queueing period.
+            zoom_denominator = max(1, self.zoom_focal_lengths.numel() - 1)
+            normalized_zoom = 2.0 * self.applied_zoom_levels.float() / zoom_denominator - 1.0
+            obs_buffer[..., 13 + action_dim + 2] = normalized_zoom
 
         if torch.isnan(obs_buffer).any():
             print("\n[ENV DEBUG] NaN detected in _compute_pose_observation!")
@@ -1252,10 +1486,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print(f"[DEBUG FATAL] CUDA Error BEFORE environment step: {e}")
             raise
 
+        self._map_updated_this_step = False
         if self.common_step_counter % self.cfg.mapping_cfg.map_update_interval == 0:
             try:
                 self._update_maps(visualise=run_cfg.debug)
                 torch.cuda.synchronize()
+                self._map_updated_this_step = True
             except Exception as e:
                 print(f"[DEBUG FATAL] CUDA Error inside `_update_maps` (Warp Kernels)! This proves the warp kernels are causing the timeout: {e}")
                 raise
@@ -1532,24 +1768,106 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # H = -(p*log(p) + (1-p)*log(1-p))
         entropy = F.binary_cross_entropy(p, p, reduction='none')
         return entropy
+
+    def _get_global_map_chunk_size(self, num_cells: int) -> int:
+        """Return a positive, bounded chunk size for global-map reductions."""
+        configured_size = int(
+            getattr(self.cfg.mapping_cfg, "global_map_reward_chunk_size", 65536)
+        )
+        return max(1, min(num_cells, max(1, configured_size)))
+
+    def _chunked_entropy_sum(
+        self,
+        flat_maps: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Compute per-environment map entropy without full-map temporaries."""
+        num_rows = self.num_envs if env_ids is None else env_ids.numel()
+        entropy_sum = torch.zeros(num_rows, device=flat_maps.device, dtype=flat_maps.dtype)
+        num_cells = flat_maps.shape[1]
+        chunk_size = self._get_global_map_chunk_size(num_cells)
+
+        for start in range(0, num_cells, chunk_size):
+            chunk = flat_maps[:, start:start + chunk_size]
+            if env_ids is not None:
+                chunk = torch.index_select(chunk, 0, env_ids)
+            entropy_sum.add_(self._calculate_entropy(chunk).sum(dim=1))
+
+        return entropy_sum
+
+    def _chunked_visibility_score(self, flat_maps: torch.Tensor, k: float) -> torch.Tensor:
+        """Compute the per-environment visibility score with bounded VRAM."""
+        score = torch.zeros(self.num_envs, device=flat_maps.device, dtype=flat_maps.dtype)
+        num_cells = flat_maps.shape[1]
+        chunk_size = self._get_global_map_chunk_size(num_cells)
+
+        for start in range(0, num_cells, chunk_size):
+            chunk = flat_maps[:, start:start + chunk_size]
+            score.sub_(torch.exp(-k * chunk).sum(dim=1))
+
+        return score
+
+    def _compute_reset_map_summaries(
+        self,
+        env_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Reduce only maps belonging to environments that are resetting."""
+        all_occ_maps = wp.to_torch(self.map_manager.occupancy_map).view(self.num_envs, -1)
+        all_vis_maps = wp.to_torch(self.map_manager.visibility_map).view(self.num_envs, -1)
+        all_visit_maps = wp.to_torch(self.map_manager.visitation_map).view(self.num_envs, -1)
+
+        final_entropies = self._chunked_entropy_sum(all_occ_maps, env_ids)
+        num_reset_envs = env_ids.numel()
+        final_robot_path_cells = torch.zeros(
+            num_reset_envs, device=self.device, dtype=torch.long
+        )
+        final_unique_visible_cells = torch.zeros_like(final_robot_path_cells)
+        num_cells = all_occ_maps.shape[1]
+        chunk_size = self._get_global_map_chunk_size(num_cells)
+
+        for start in range(0, num_cells, chunk_size):
+            visit_chunk = torch.index_select(
+                all_visit_maps[:, start:start + chunk_size], 0, env_ids
+            )
+            final_robot_path_cells.add_((visit_chunk > 0).sum(dim=1))
+            del visit_chunk
+
+            visibility_chunk = torch.index_select(
+                all_vis_maps[:, start:start + chunk_size], 0, env_ids
+            )
+            final_unique_visible_cells.add_((visibility_chunk > 0).sum(dim=1))
+            del visibility_chunk
+
+        return final_entropies, final_robot_path_cells, final_unique_visible_cells
     
     _show_face_ids_ = _show_face_ids_
     
     def _compute_exploration_rewards(self):
+        # _update_maps() is called before DirectRLEnv.step(), while the parent
+        # increments common_step_counter before requesting rewards. An explicit
+        # flag therefore avoids an off-by-one modulo test here. On skipped map
+        # steps both maps are unchanged, so both deltas are exactly zero.
+        if not self._map_updated_this_step:
+            zeros = torch.zeros(self.num_envs, device=self.device)
+            return zeros, zeros.clone()
+
         # --- Entropy / Information Gain ---
-        all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
-        all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
-        current_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
-        information_gain = torch.relu(self.prev_global_map_entropy - current_entropy)
-        self.prev_global_map_entropy = current_entropy.clone()
+        if getattr(self.cfg.mapping_cfg, 'compute_global_map_entropy', True):
+            all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
+            all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
+            current_entropy = self._chunked_entropy_sum(all_maps_log_odds)
+            information_gain = torch.relu(self.prev_global_map_entropy - current_entropy)
+            self.prev_global_map_entropy.copy_(current_entropy)
+        else:
+            information_gain = torch.zeros(self.num_envs, device=self.device)
 
         # ---Surface Visibility Increase ---
         k = self.cfg.reward_cfg.visibility_decay_factor
         all_vis_maps = wp.to_torch(self.map_manager.visibility_map)
         all_vis_maps = all_vis_maps.view(self.num_envs, -1)
-        current_visibility_score = -torch.exp(-k * all_vis_maps).sum(dim=1)
+        current_visibility_score = self._chunked_visibility_score(all_vis_maps, k)
         visibility_increase_reward = torch.relu(current_visibility_score - self.prev_visibility_score)
-        self.prev_visibility_score = current_visibility_score.clone()
+        self.prev_visibility_score.copy_(current_visibility_score)
 
         return information_gain, visibility_increase_reward
 
@@ -1559,7 +1877,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         The reward diminishes exponentially as a voxel is revisited.
         """
         robot_pos_w = self.robot.data.root_pos_w    # (num_envs, 2)
-        map_origins = torch.from_numpy(self.map_manager.world_map_origins).to(self.device)
+        map_origins = self._map_origins_torch
         voxel_size = self.map_manager.resolution
         map_dims = self.map_manager.map_dims
 
@@ -2017,6 +2335,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.last_action[env_ids] = 0.0
             self.previous_action_for_rewards[env_ids] = 0.0
             self.policy_actions[env_ids] = 0.0
+            if hasattr(self, "desired_zoom_levels"):
+                # Returning to the default is queued and rate-limited just like
+                # a policy request; synchronized episode resets therefore
+                # cannot reconfigure every rendered camera at once.
+                self.desired_zoom_levels[env_ids] = self.default_zoom_level
 
 
             current_q_values = self.best_q_per_face[env_ids]
@@ -2186,42 +2509,42 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 
             # Map Logging and Reset
             if self.cfg.mapping_cfg.use_occupancy_map:
+                reset_env_ids = env_ids.to(device=self.device, dtype=torch.long)
+                final_entropies, final_robot_path_cells, final_unique_visible_cells = (
+                    self._compute_reset_map_summaries(reset_env_ids)
+                )
+                num_total_cells = self.map_manager.num_voxels_per_map
 
-                all_vis_maps_torch = wp.to_torch(self.map_manager.visibility_map).view(self.num_envs, -1)
-                all_occ_maps_torch = wp.to_torch(self.map_manager.occupancy_map).view(self.num_envs, -1)
-                all_visit_maps_torch = wp.to_torch(self.map_manager.visitation_map).view(self.num_envs, -1) # NEW
-
-                final_vis_sums = all_vis_maps_torch.sum(dim=1)
-                final_entropies = self._calculate_entropy(all_occ_maps_torch).sum(dim=1)
-                final_robot_path_cells = (all_visit_maps_torch > 0).sum(dim=1)
-                final_unique_visible_cells = (all_vis_maps_torch > 0).sum(dim=1)
-
-                for env_id in env_ids.cpu().tolist():
+                for reset_idx, env_id in enumerate(env_ids.cpu().tolist()):
                     # Covergae for Trajectory
-                    self.episode_log_buffer["final_visited_cells_count"].append(final_robot_path_cells[env_id].item())
+                    self.episode_log_buffer["final_visited_cells_count"].append(
+                        final_robot_path_cells[reset_idx].item()
+                    )
                     #Surface Coverage Metric
-                    self.episode_log_buffer["final_unique_visible_cell_count"].append(final_unique_visible_cells[env_id].item())
+                    self.episode_log_buffer["final_unique_visible_cell_count"].append(
+                        final_unique_visible_cells[reset_idx].item()
+                    )
                     # Map Entropy
-                    self.episode_log_buffer["final_map_entropy"].append(final_entropies[env_id].item())
+                    self.episode_log_buffer["final_map_entropy"].append(
+                        final_entropies[reset_idx].item()
+                    )
                     
                     # Entropy % against Max Theoretical Entropy
                     # max entropy per cell = 1.0. Therefore max theoretically possible is just num_cells.
-                    num_total_cells = all_occ_maps_torch.shape[1]
-                    entropy_percent = (final_entropies[env_id].item() / num_total_cells) * 100.0
+                    entropy_percent = (final_entropies[reset_idx].item() / num_total_cells) * 100.0
                     self.episode_log_buffer["episode_summary/final_map_entropy_percent"].append(entropy_percent)
                     if run_cfg.debug and env_id == 0:
-                        print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[env_id].item()} ---")
-                        print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[env_id].item()} ---")
+                        print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[reset_idx].item()} ---")
+                        print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[reset_idx].item()} ---")
 
                 self.map_manager.reset_map(env_ids.cpu().tolist())
-                all_vis_maps = wp.to_torch(self.map_manager.visibility_map)
-                num_cells = all_vis_maps.view(self.num_envs, -1).shape[1]
-                initial_score = -float(num_cells)
+                initial_score = -float(num_total_cells)
                 self.prev_visibility_score[env_ids] = initial_score 
-                all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
-                all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
-                initial_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
-                self.prev_global_map_entropy[env_ids] = initial_entropy[env_ids]
+                if getattr(self.cfg.mapping_cfg, 'compute_global_map_entropy', True):
+                    # A freshly reset log-odds map is all zeros, whose binary
+                    # entropy is ln(2) per cell. Avoid rescanning every map.
+                    initial_entropy = float(np.log(2.0) * num_total_cells)
+                    self.prev_global_map_entropy[env_ids] = initial_entropy
                 
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0
