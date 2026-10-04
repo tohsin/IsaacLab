@@ -14,9 +14,14 @@ class InspectionKeyboardController:
         A / D: PTZ Pan Left / Right
         Q / E: Zoom Out / In
     """
-    def __init__(self, device="cuda:0", max_vel_speed = 0.5):
+    def __init__(self, device="cuda:0", max_vel_speed=0.5, action_dim=4):
         self._device = device
         self.max_vel_speed = max_vel_speed
+        if action_dim not in (2, 4, 5):
+            raise ValueError(
+                f"Inspection keyboard action_dim must be 2, 4, or 5; got {action_dim}"
+            )
+        self.action_dim = action_dim
         
         # acquire omniverse interfaces
         self._appwindow = omni.appwindow.get_default_app_window()
@@ -32,7 +37,8 @@ class InspectionKeyboardController:
         self._create_key_bindings()
         
         self._pressed_keys = set()
-        # Action space: [linear_vel, angular_vel, pan_vel, tilt_vel, zoom]
+        # Canonical action order. advance() returns only the prefix exposed by
+        # the current environment (base-only, PT, or PTZ).
         self._base_command = np.zeros(5, dtype=np.float32)
 
     def __del__(self):
@@ -43,13 +49,15 @@ class InspectionKeyboardController:
 
     def advance(self) -> torch.Tensor:
         """Provides the current action tensor based on keyboard state.
-        Shape is (1, 5) to match environment input expectations for 1 environment.
+        Shape is ``(1, action_dim)`` for one manually controlled environment.
         """
         command = np.zeros(5, dtype=np.float32)
         for key in self._pressed_keys:
             if key in self._INPUT_KEY_MAPPING:
                 command += self._INPUT_KEY_MAPPING[key]
-        return torch.tensor([command], dtype=torch.float32, device=self._device)
+        return torch.tensor(
+            [command[: self.action_dim]], dtype=torch.float32, device=self._device
+        )
 
     def _on_keyboard_event(self, event, *args, **kwargs):
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:

@@ -4,6 +4,14 @@ from .config_ import env_parameters
 from isaaclab.sensors import TiledCameraCfg, RayCasterCameraCfg, patterns, MultiMeshRayCasterCameraCfg,ContactSensorCfg
 from ..run_config import cfg_mode, record_Cfg
 from .robot_cfg import RobotPhysicsCfg
+
+INSPECTION_SEMANTIC_TYPE = env_parameters.semantics_type
+INSPECTION_SEMANTIC_FILTER = (
+    [f"{INSPECTION_SEMANTIC_TYPE}:{name}" for name in env_parameters.semantics_name]
+    if isinstance(env_parameters.semantics_name, list)
+    else f"{INSPECTION_SEMANTIC_TYPE}:{env_parameters.semantics_name}"
+)
+
 @configclass
 class SensorsCfg:
     """Configuration for all robot-mounted sensors."""
@@ -72,7 +80,7 @@ class SensorsCfg:
             convention="ros"
         ),
         colorize_semantic_segmentation=False,
-        semantic_filter=[f'class:{name}' for name in env_parameters.semantics_name] if isinstance(env_parameters.semantics_name, list) else f'class:{env_parameters.semantics_name}',
+        semantic_filter=INSPECTION_SEMANTIC_FILTER,
         update_latest_camera_pose=True,
         debug_vis=cfg_mode.debug
     )
@@ -168,7 +176,7 @@ class SensorsCfg:
                 convention="ros"
             ),
             colorize_semantic_segmentation=False,
-            semantic_filter=[f'class:{name}' for name in env_parameters.semantics_name] if isinstance(env_parameters.semantics_name, list) else f'class:{env_parameters.semantics_name}',
+            semantic_filter=INSPECTION_SEMANTIC_FILTER,
             update_latest_camera_pose=True,
             debug_vis=cfg_mode.debug
         )

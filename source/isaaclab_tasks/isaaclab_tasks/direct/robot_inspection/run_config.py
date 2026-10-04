@@ -14,20 +14,34 @@ class map_channels:
     VISITATION = "visitation"
     COLLISION = "collision"
 
+class policy_map_channel_sets:
+    """Fixed-shape policy observation sets for controlled map ablations."""
+
+    OCCUPANCY_ONLY = (map_channels.OCCUPANCY,)
+    OCCUPANCY_VISIBILITY = (map_channels.OCCUPANCY, map_channels.VISIBILITY)
+    ALL = (
+        map_channels.OCCUPANCY, map_channels.VISIBILITY, map_channels.VISITATION
+    )
+
 class visualisation_mode:
     def __init__(self,
                 channel=map_channels.OCCUPANCY, 
                 map_mode=map_view_mode.LOCAL):
         self.channel = channel
         self.map_mode = map_mode
-eval_dataset = {'ur10' :'ur10_mount', 
-                'caster':'caster',
-                'rubiks':'rubiks_cube',
-                'pallet':'pallet',
-                'bracket':'small_corner_bracket_physics',
-                'sortbot_housing':'sortbot_housing'}
+
+eval_dataset = {
+    "extinguisher": "extinguisher", # verified
+    "barrel": "barrel", #verified
+    "dolly": "dolly", # verified
+    "bracket": "small_corner_bracket_physics", #verified
+    "ur10": "ur10_mount", #veified
+    "pallet": "pallet", # verified
+    "caster": "caster", #verified
+}
 class debug_Cfg:
     debug = True
+    enable_pt_actuation: bool = True
     # Optical zoom changes rendered USD camera state at runtime. Keep it off
     # by default; enabling it changes the policy from 4 to 5 actions.
     enable_camera_zoom: bool = False
@@ -40,7 +54,11 @@ class debug_Cfg:
     # inspection_dataset = "primitive"
     # inspection_target = "tessellated_thin_legged_body"
     inspection_dataset = "evaluation"
-    inspection_target = eval_dataset['sortbot_housing']
+    inspection_target = eval_dataset["ur10"]
+    # Stable, repeatable pose for checking imported scale, orientation, and
+    # ground contact before quantitative evaluation.
+    kinematic_inspection_target = True
+    inspection_target_mass = 1000.0
     inspection_goal =  0.95
     visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
     display_ray_counts = True
@@ -87,6 +105,9 @@ class debug_Cfg:
 
 class train_Cfg_base: # For pretriaing as a base
     debug = False
+    # Fixed-camera ablation: remove pan/tilt from the policy action space and
+    # hold both joints at their neutral reset pose.
+    enable_pt_actuation: bool = False
     # False restores the stable, fixed-35-mm, four-action baseline. Set True
     # only when training/evaluating a checkpoint that includes the zoom action.
     enable_camera_zoom: bool = False
@@ -96,6 +117,8 @@ class train_Cfg_base: # For pretriaing as a base
     enable_map_ray_chunking: bool = True
     map_ray_chunk_percent: float = 25.0
     egocentric_map = True
+    # Keep the complete baseline map observation for the camera ablation.
+    policy_map_channels = policy_map_channel_sets.ALL
     min_episode_length: int = 500
     max_episode_length: int = 1200
     logging_interval: int = 1000
@@ -170,14 +193,22 @@ class train_Cfg_base: # For pretriaing as a base
     safety_shield_z_min: float = 0.10
     safety_shield_z_max: float = 0.80
     safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
-eval_dataset = {'ur10' :'ur10_mount', 
-                'caster':'caster',
-                'rubiks':'rubiks_cube',
-                'pallet':'pallet',
-                'bracket':'small_corner_bracket_physics',
-                'sortbot_housing':'sortbot_housing'}
 class eval_Cfg:
     debug = False
+    # Dedicated target semantics avoid collisions with authored ``class``
+    # labels on the target's child meshes and elsewhere in the warehouse. Set
+    # this temporarily to ``"class"`` only for old-evaluation compatibility.
+    inspection_semantics_type: str = "inspection_target"
+    # A semantic label alone can admit a face ID from a mismatched ray-caster
+    # row in a vectorized evaluation. Require the active target mesh slot and
+    # agreement between rendered depth and ray-cast depth at every counted
+    # pixel. Set False to reproduce the legacy semantic-mask-only metric.
+    use_strict_face_visibility_filter: bool = False
+    face_depth_abs_tolerance_m: float = 0.05
+    face_depth_rel_tolerance: float = 0.01
+    # Must match the checkpoint architecture. Set False for the fixed-camera
+    # ablation checkpoint and True for the active-PT models.
+    enable_pt_actuation: bool = True
     # This must match the checkpoint architecture: False for four-action
     # baseline checkpoints, True for five-action zoom checkpoints.
     enable_camera_zoom: bool = False
@@ -188,7 +219,7 @@ class eval_Cfg:
     # Evaluate the August 31 policy on an out-of-distribution target using the
     # current physics, spawning, sensor noise, and collision detector.
     inspection_dataset = "evaluation"
-    inspection_target = eval_dataset['caster']
+    inspection_target = eval_dataset['ur10']
     # inspection_dataset = "primitive"
     # inspection_target = 'tessellated_thin_legged_body'
     kinematic_inspection_target = True
@@ -338,7 +369,20 @@ modes = [debug_Cfg, #0
     train_Cfg_base, #1
     eval_Cfg, #2
     record_depth_Cfg] #3
-cfg_mode = modes[2]
+mode_by_name = {
+    "debug": modes[0],
+    "train": modes[1],
+    "eval": modes[2],
+    "record": modes[3],
+}
+mode = 'eval'
+requested_mode = os.environ.get("ISAACLAB_INSPECTION_RUN_MODE", mode).lower()
+if requested_mode not in mode_by_name:
+    raise ValueError(
+        "ISAACLAB_INSPECTION_RUN_MODE must be one of "
+        f"{tuple(mode_by_name)}, got {requested_mode!r}"
+    )
+cfg_mode = mode_by_name[requested_mode]
 
 # inspection_null.py uses this process-local override for imported factory or
 # workshop scenes, which already contain their own clutter. Normal training and
@@ -355,6 +399,7 @@ if os.environ.get("ISAACLAB_INSPECTION_DISABLE_PROCEDURAL_OBSTACLES", "0") == "1
 
 class record_Cfg:
     debug = False
+    enable_pt_actuation: bool = True
     enable_camera_zoom: bool = False
     enable_map_ray_chunking: bool = False
     map_ray_chunk_percent: float = 12.5

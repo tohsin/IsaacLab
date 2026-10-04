@@ -203,6 +203,36 @@ class TokenFFNEncoder(nn.Module):
         return self.norm(tokens)
 
 
+VALID_TEMPORAL_MODES = {"gru", "feedforward"}
+
+
+def resolve_temporal_mode(temporal_mode):
+    """Resolve the recurrent or parameter-matched memoryless temporal block."""
+    temporal_mode = "gru" if temporal_mode is None else str(temporal_mode).lower()
+    if temporal_mode not in VALID_TEMPORAL_MODES:
+        raise ValueError(
+            f"temporal_mode must be one of {sorted(VALID_TEMPORAL_MODES)}, "
+            f"got {temporal_mode!r}"
+        )
+    return temporal_mode
+
+
+class ParameterMatchedTemporalMLP(nn.Module):
+    """Stateless residual MLP matching the parameter count of a 512x512 GRU."""
+
+    def __init__(self, feature_size=512, hidden_size=1536, activation="elu"):
+        super().__init__()
+        self.linear1 = nn.Linear(feature_size, hidden_size)
+        self.activation = nn.SiLU() if activation.lower() == "silu" else nn.ELU()
+        self.linear2 = nn.Linear(hidden_size, feature_size)
+        self.norm = nn.LayerNorm(feature_size)
+
+    def forward(self, features):
+        residual = features
+        features = self.linear2(self.activation(self.linear1(features)))
+        return self.norm(residual + features)
+
+
 def resolve_initial_log_std(num_actions: int, device: torch.device) -> torch.Tensor:
     """Resolve scalar/vector std configuration to one log-std per action."""
     configured_std = getattr(CONFIG, "init_std", None)
@@ -212,10 +242,19 @@ def resolve_initial_log_std(num_actions: int, device: torch.device) -> torch.Ten
         ).flatten()
         if initial_std.numel() == 1:
             initial_std = initial_std.repeat(num_actions)
+        elif (
+            bool(getattr(CONFIG, "slice_init_std_to_action_space", False))
+            and initial_std.numel() > num_actions
+        ):
+            # Preserve the canonical action-order configuration while allowing
+            # ablations that expose only its leading subset of actions.
+            initial_std = initial_std[:num_actions]
         elif initial_std.numel() != num_actions:
             raise ValueError(
                 "init_std must be a positive scalar or contain exactly one "
-                f"value per action ({num_actions}); got {initial_std.numel()}"
+                f"value per action ({num_actions}); got {initial_std.numel()}. "
+                "Set slice_init_std_to_action_space=True only when the active "
+                "action space is a leading subset of that vector."
             )
         if not torch.isfinite(initial_std).all() or (initial_std <= 0.0).any():
             raise ValueError(f"init_std values must be finite and positive: {configured_std}")
@@ -252,7 +291,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                 _hidden_size=128,
                 _hidden_size_gru=256,
                 use_attention_fusion=False,
-                fusion_mode=None):
+                fusion_mode=None,
+                temporal_mode=None):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         DeterministicMixin.__init__(self, False)
@@ -267,6 +307,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         )
         self.use_attention_fusion = self.fusion_mode == "attention"
         self.use_token_fusion = self.fusion_mode in {"attention", "token_ffn"}
+        self.temporal_mode = resolve_temporal_mode(temporal_mode)
+        self.use_gru = self.temporal_mode == "gru"
 
         camera_space = observation_space.spaces["cameras"]
         self.camera_shape = camera_space.shape
@@ -399,14 +441,53 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             )
             
             self.gru_input_size = 512 # Output of the feature MLP
-        self.gru_hidden_size = 512 #H output size of GRU
-        self.gru_num_layers = 1
-        # print(f"DEBUG: gru_input_size: {self.gru_input_size}")
+        self.gru_hidden_size = int(getattr(CONFIG, "gru_hidden_size", 512))
+        self.gru_num_layers = int(getattr(CONFIG, "gru_num_layers", 1))
+        self.temporal_output_size = self.gru_hidden_size
 
-        self.gru = nn.GRU(input_size=self.gru_input_size,
-                          hidden_size=self.gru_hidden_size,
-                          num_layers=self.gru_num_layers,
-                          batch_first=True)  # batch_first -> (batch, sequence, features)
+        if self.use_gru:
+            self.gru = nn.GRU(
+                input_size=self.gru_input_size,
+                hidden_size=self.gru_hidden_size,
+                num_layers=self.gru_num_layers,
+                batch_first=True,
+            )
+            print(
+                f"[INFO] Temporal configuration: GRU, input={self.gru_input_size}, "
+                f"hidden={self.gru_hidden_size}, layers={self.gru_num_layers}, "
+                f"sequence_length={self.sequence_length}"
+            )
+        else:
+            if self.gru_input_size != self.gru_hidden_size:
+                raise ValueError(
+                    "The parameter-matched feed-forward ablation requires equal "
+                    "GRU input and hidden sizes"
+                )
+            temporal_mlp_hidden_size = int(
+                getattr(CONFIG, "temporal_mlp_hidden_size", 1536)
+            )
+            self.temporal_ffn = ParameterMatchedTemporalMLP(
+                feature_size=self.gru_input_size,
+                hidden_size=temporal_mlp_hidden_size,
+                activation=getattr(CONFIG, "activation_fn", "elu"),
+            )
+            temporal_parameter_count = sum(
+                parameter.numel() for parameter in self.temporal_ffn.parameters()
+            )
+            reference_gru_parameter_count = 3 * self.gru_hidden_size * (
+                self.gru_input_size + self.gru_hidden_size + 2
+            )
+            if temporal_parameter_count != reference_gru_parameter_count:
+                raise ValueError(
+                    "temporal_mlp_hidden_size does not parameter-match the GRU: "
+                    f"MLP={temporal_parameter_count:,}, "
+                    f"GRU={reference_gru_parameter_count:,}"
+                )
+            print(
+                "[INFO] Temporal configuration: stateless parameter-matched MLP, "
+                f"512->{temporal_mlp_hidden_size}->512, "
+                f"parameters={temporal_parameter_count:,}"
+            )
         #output heads
 
         act_str = getattr(CONFIG, "activation_fn", "elu").lower()
@@ -414,7 +495,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             return nn.SiLU() if act_str == "silu" else nn.ELU()
 
         self.policy_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, 1024),
+            nn.Linear(self.temporal_output_size, 1024),
             get_activation(),
             nn.Linear(1024, 512),
             get_activation(),
@@ -425,7 +506,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         )
 
         self.value_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, 1024),
+            nn.Linear(self.temporal_output_size, 1024),
             get_activation(),
             nn.Linear(1024, 512),
             get_activation(),
@@ -445,6 +526,8 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
 
     def get_specification(self) -> dict:
+        if not self.use_gru:
+            return {}
         return {
                 "rnn": {
                         "sequence_length": self.sequence_length,
@@ -500,7 +583,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
     def compute(self, inputs, role):
         states = inputs["states"]
         terminated = inputs.get("terminated", None)
-        hidden_states = inputs["rnn"][0]
+        hidden_states = inputs["rnn"][0] if self.use_gru else None
 
         camera_obs, local_map, robot_pose,  = self.unflatten_observations(states)
 
@@ -588,48 +671,54 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             combined_features = torch.cat((camera_features, map_features, encoded_pose), dim=1)
             fusion_features = self.feature_mlp(combined_features)
 
-        if self.training:
-            # just return dummy action to debug sim
-            # return torch.zeros((self.num_envs, self.num_actions), device=self.device), {"rnn": [hidden_states]}
-            rnn_input = fusion_features.view(-1, self.sequence_length, fusion_features.shape[-1])
-            hidden_states = hidden_states.view(self.gru_num_layers, -1, self.sequence_length, self.gru_hidden_size)
-            # get the hidden states corresponding to the initial sequence
-            hidden_states = hidden_states[:, :, 0, :].contiguous()
+        if self.use_gru:
+            if self.training:
+                rnn_input = fusion_features.view(
+                    -1, self.sequence_length, fusion_features.shape[-1]
+                )
+                hidden_states = hidden_states.view(
+                    self.gru_num_layers,
+                    -1,
+                    self.sequence_length,
+                    self.gru_hidden_size,
+                )
+                hidden_states = hidden_states[:, :, 0, :].contiguous()
 
-            if terminated is not None and torch.any(terminated):
-                rnn_outputs = []
-                terminated = terminated.view(-1, self.sequence_length)
+                if terminated is not None and torch.any(terminated):
+                    rnn_outputs = []
+                    terminated = terminated.view(-1, self.sequence_length)
+                    indexes = [0] + (
+                        terminated[:, :-1].any(dim=0).nonzero(as_tuple=True)[0] + 1
+                    ).tolist() + [self.sequence_length]
 
-                indexes = [0] + (terminated[:, :-1].any(dim=0).nonzero(as_tuple=True)[0] + 1).tolist() + [self.sequence_length]
-
-                for i in range(len(indexes) - 1):
-                    i0, i1 = indexes[i], indexes[i+1]
-                    rnn_output, hidden_states = self.gru(
-                        rnn_input[:, i0:i1, :], hidden_states
-                    )
-                    # Clone hidden states before modifying them to avoid breaking autograd BPTT
-                    hidden_states = hidden_states.clone()
-                    hidden_states[:, terminated[:, i1 - 1], :] = 0
-                    rnn_outputs.append(rnn_output)
-                rnn_output = torch.cat(rnn_outputs, dim=1)
+                    for i in range(len(indexes) - 1):
+                        i0, i1 = indexes[i], indexes[i + 1]
+                        rnn_output, hidden_states = self.gru(
+                            rnn_input[:, i0:i1, :], hidden_states
+                        )
+                        hidden_states = hidden_states.clone()
+                        hidden_states[:, terminated[:, i1 - 1], :] = 0
+                        rnn_outputs.append(rnn_output)
+                    rnn_output = torch.cat(rnn_outputs, dim=1)
+                else:
+                    rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
             else:
+                rnn_input = fusion_features.unsqueeze(1)
                 rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
+
+            temporal_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)
+            outputs = {"rnn": [hidden_states]}
         else:
-            rnn_input = fusion_features.unsqueeze(1)
-            rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
-
-
-        #flatten  rnn output
-        # flat_gru_output = gru_output.reshape(-1, self.gru_hidden_size)
-        rnn_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)
+            temporal_output = self.temporal_ffn(fusion_features)
+            outputs = {}
 
         if role == "policy":
-            mean_actions = self.policy_head(rnn_output)
+            mean_actions = self.policy_head(temporal_output)
             log_std = self.log_std_parameter.expand_as(mean_actions)
-            return mean_actions, log_std, {"rnn": [hidden_states]}
+            return mean_actions, log_std, outputs
         elif role == "value":
-            value_estimate = self.value_head(rnn_output)
-            return value_estimate, {"rnn": [hidden_states]}
+            value_estimate = self.value_head(temporal_output)
+            return value_estimate, outputs
 
 
 #multi GPU code
@@ -688,7 +777,8 @@ models['policy'] = Shared(env.observation_space,
                             num_envs=env.num_envs,
                             sequence_length=sequence_length,
                             use_attention_fusion=getattr(CONFIG, "use_attention_fusion", False),
-                            fusion_mode=getattr(CONFIG, "fusion_mode", None))
+                            fusion_mode=getattr(CONFIG, "fusion_mode", None),
+                            temporal_mode=getattr(CONFIG, "temporal_mode", None))
 models['value'] = models["policy"]  # Shared(env.observation_space, env.action_space, env.device)
 total_timesteps = CONFIG.global_timesteps // (env.num_envs * world_size)
 
@@ -1086,6 +1176,11 @@ if is_eval:
     safety_shield_intervention_rate_list = []
     safety_shield_forward_interventions_list = []
     safety_shield_reverse_interventions_list = []
+    face_filter_semantic_pixels_list = []
+    face_filter_missing_ray_pixels_list = []
+    face_filter_wrong_mesh_pixels_list = []
+    face_filter_depth_rejected_pixels_list = []
+    face_filter_accepted_pixels_list = []
     base_env = env.unwrapped if hasattr(env, "unwrapped") else env
     evaluation_num_envs = int(env.num_envs)
     target_index_to_name = tuple(getattr(base_env, "target_index_to_name", ()))
@@ -1197,6 +1292,21 @@ if is_eval:
                             shield_reverse_interventions = infos["log"].get(
                                 "safety_shield_reverse_interventions", None
                             )
+                            face_filter_semantic_pixels = log_values.get(
+                                "face_filter_semantic_pixels", None
+                            )
+                            face_filter_missing_ray_pixels = log_values.get(
+                                "face_filter_missing_ray_pixels", None
+                            )
+                            face_filter_wrong_mesh_pixels = log_values.get(
+                                "face_filter_wrong_mesh_pixels", None
+                            )
+                            face_filter_depth_rejected_pixels = log_values.get(
+                                "face_filter_depth_rejected_pixels", None
+                            )
+                            face_filter_accepted_pixels = log_values.get(
+                                "face_filter_accepted_pixels", None
+                            )
 
                             faces_values = _flat_values(val)[:remaining]
                             coverage_values = _flat_values(coverage_percent)[:remaining]
@@ -1260,6 +1370,11 @@ if is_eval:
                                 (shield_intervention_rate, safety_shield_intervention_rate_list),
                                 (shield_forward_interventions, safety_shield_forward_interventions_list),
                                 (shield_reverse_interventions, safety_shield_reverse_interventions_list),
+                                (face_filter_semantic_pixels, face_filter_semantic_pixels_list),
+                                (face_filter_missing_ray_pixels, face_filter_missing_ray_pixels_list),
+                                (face_filter_wrong_mesh_pixels, face_filter_wrong_mesh_pixels_list),
+                                (face_filter_depth_rejected_pixels, face_filter_depth_rejected_pixels_list),
+                                (face_filter_accepted_pixels, face_filter_accepted_pixels_list),
                             ):
                                 if value is None:
                                     continue
@@ -1337,6 +1452,7 @@ if is_eval:
                 "p01": float(np.percentile(faces_array, 1)),
                 "p05": float(np.percentile(faces_array, 5)),
                 "p95": float(np.percentile(faces_array, 95)),
+                "p99": float(np.percentile(faces_array, 99)),
             },
         }
         coverage_array = np.asarray(coverage_percent_list, dtype=np.float64)
@@ -1365,6 +1481,21 @@ if is_eval:
         )
         shield_reverse_array = np.asarray(
             safety_shield_reverse_interventions_list, dtype=np.int64
+        )
+        face_filter_semantic_array = np.asarray(
+            face_filter_semantic_pixels_list, dtype=np.int64
+        )
+        face_filter_missing_ray_array = np.asarray(
+            face_filter_missing_ray_pixels_list, dtype=np.int64
+        )
+        face_filter_wrong_mesh_array = np.asarray(
+            face_filter_wrong_mesh_pixels_list, dtype=np.int64
+        )
+        face_filter_depth_rejected_array = np.asarray(
+            face_filter_depth_rejected_pixels_list, dtype=np.int64
+        )
+        face_filter_accepted_array = np.asarray(
+            face_filter_accepted_pixels_list, dtype=np.int64
         )
         if len(coverage_array) == len(faces_array):
             summary["coverage_percent"] = {
@@ -1500,6 +1631,7 @@ if is_eval:
         print(f"Std Deviation:         {np.std(faces_array):.2f}")
         print(f"Min Faces:             {np.min(faces_array)}")
         print(f"Max Faces:             {np.max(faces_array)}")
+        print(f"P99 Faces:             {np.percentile(faces_array, 99):.2f}")
         if len(coverage_array) == len(faces_array):
             print(f"Mean Coverage:          {np.mean(coverage_array):.2f}%")
             print(f"Std Coverage:           {np.std(coverage_array):.2f}%")
@@ -1675,6 +1807,67 @@ if is_eval:
                     f"{np.mean(shield_intervention_rate_array) * 100.0:.2f}%"
                 )
 
+        face_filter_arrays = (
+            face_filter_semantic_array,
+            face_filter_missing_ray_array,
+            face_filter_wrong_mesh_array,
+            face_filter_depth_rejected_array,
+            face_filter_accepted_array,
+        )
+        if all(len(values) == len(faces_array) for values in face_filter_arrays):
+            semantic_total = int(face_filter_semantic_array.sum())
+            missing_ray_total = int(face_filter_missing_ray_array.sum())
+            wrong_mesh_total = int(face_filter_wrong_mesh_array.sum())
+            depth_rejected_total = int(face_filter_depth_rejected_array.sum())
+            accepted_total = int(face_filter_accepted_array.sum())
+            denominator = max(1, semantic_total)
+            summary["strict_face_visibility_filter"] = {
+                "enabled": bool(
+                    getattr(
+                        base_env,
+                        "strict_face_visibility_filter_enabled",
+                        getattr(CONFIG, "use_strict_face_visibility_filter", False),
+                    )
+                ),
+                "depth_absolute_tolerance_m": float(
+                    getattr(CONFIG, "face_depth_abs_tolerance_m", 0.05)
+                ),
+                "depth_relative_tolerance": float(
+                    getattr(CONFIG, "face_depth_rel_tolerance", 0.01)
+                ),
+                "semantic_pixels": semantic_total,
+                "missing_ray_pixels": missing_ray_total,
+                "wrong_target_mesh_pixels": wrong_mesh_total,
+                "depth_rejected_pixels": depth_rejected_total,
+                "accepted_pixels": accepted_total,
+                "missing_ray_percent": 100.0 * missing_ray_total / denominator,
+                "wrong_target_mesh_percent": 100.0 * wrong_mesh_total / denominator,
+                "depth_rejected_percent": 100.0 * depth_rejected_total / denominator,
+                "accepted_percent": 100.0 * accepted_total / denominator,
+            }
+            print("\nStrict Face Visibility Filter:")
+            print(
+                "  Enabled: "
+                f"{summary['strict_face_visibility_filter']['enabled']}"
+            )
+            print(f"  Semantic target pixels: {semantic_total}")
+            print(
+                "  Missing ray hit:       "
+                f"{missing_ray_total} ({100.0 * missing_ray_total / denominator:.3f}%)"
+            )
+            print(
+                "  Wrong target slot:     "
+                f"{wrong_mesh_total} ({100.0 * wrong_mesh_total / denominator:.3f}%)"
+            )
+            print(
+                "  Depth mismatch:        "
+                f"{depth_rejected_total} ({100.0 * depth_rejected_total / denominator:.3f}%)"
+            )
+            print(
+                "  Accepted:              "
+                f"{accepted_total} ({100.0 * accepted_total / denominator:.3f}%)"
+            )
+
         print("="*50 + "\n")
 
         result_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1729,6 +1922,12 @@ if is_eval:
             raw_results["safety_shield_forward_interventions"] = shield_forward_array
         if len(shield_reverse_array) == len(faces_array):
             raw_results["safety_shield_reverse_interventions"] = shield_reverse_array
+        if all(len(values) == len(faces_array) for values in face_filter_arrays):
+            raw_results["face_filter_semantic_pixels"] = face_filter_semantic_array
+            raw_results["face_filter_missing_ray_pixels"] = face_filter_missing_ray_array
+            raw_results["face_filter_wrong_mesh_pixels"] = face_filter_wrong_mesh_array
+            raw_results["face_filter_depth_rejected_pixels"] = face_filter_depth_rejected_array
+            raw_results["face_filter_accepted_pixels"] = face_filter_accepted_array
             
         np.savez_compressed(raw_path, **raw_results)
 

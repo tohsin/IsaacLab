@@ -79,6 +79,18 @@ parser.add_argument(
     action="store_true",
     help="Keep the task's generated obstacles when loading an external environment.",
 )
+parser.add_argument(
+    "--inspection_dataset",
+    choices=("primitive", "evaluation"),
+    default=None,
+    help="Override debug_Cfg.inspection_dataset for this process.",
+)
+parser.add_argument(
+    "--inspection_target",
+    type=str,
+    default=None,
+    help="Load one target from the selected inspection dataset.",
+)
 
 # parser.add_argument("--task", type=str, default="Isaac-Cartpole-RGB-Camera-Direct-v0", help="Name of the task.")
 parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-v0", help="Name of the task.")
@@ -86,6 +98,14 @@ parser.add_argument("--task", type=str, default="Isaac-Inspection-Camera-Direct-
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli = parser.parse_args()
+
+# This utility always needs the interactive configuration. Keeping the choice
+# process-local avoids changing the default used by subsequent training runs.
+os.environ["ISAACLAB_INSPECTION_RUN_MODE"] = "debug"
+if args_cli.inspection_dataset is not None:
+    os.environ["ISAACLAB_INSPECTION_DATASET"] = args_cli.inspection_dataset
+if args_cli.inspection_target is not None:
+    os.environ["ISAACLAB_INSPECTION_TARGET"] = args_cli.inspection_target
 
 # Pass the selection through the environment because the task configuration is
 # imported only after Isaac Sim starts. Training and evaluation scripts that do
@@ -130,6 +150,18 @@ if selected_environment_usd is not None:
 
     if not args_cli.keep_procedural_obstacles:
         os.environ["ISAACLAB_INSPECTION_DISABLE_PROCEDURAL_OBSTACLES"] = "1"
+else:
+    # Make the default debug launch match the normal task environment even if
+    # the parent shell happens to contain overrides from an earlier run.
+    os.environ["ISAACLAB_INSPECTION_ENV_NAME"] = "simple_warehouse"
+    for variable_name in (
+        "ISAACLAB_INSPECTION_ENV_USD",
+        "ISAACLAB_INSPECTION_ENV_SCALE",
+        "ISAACLAB_INSPECTION_ENV_OFFSET",
+        "ISAACLAB_INSPECTION_ENV_ADD_MESH_COLLIDERS",
+        "ISAACLAB_INSPECTION_DISABLE_PROCEDURAL_OBSTACLES",
+    ):
+        os.environ.pop(variable_name, None)
 
 args_cli.enable_cameras =  True
 # launch omniverse app
@@ -170,11 +202,17 @@ def main():
 
         env.reset()
         # Initialize the teleop keyboard controller
-        keyboard_controller = InspectionKeyboardController(device=env.unwrapped.device, max_vel_speed = 0.8)
+        action_dim = int(env.unwrapped.cfg.action_space.shape[0])
+        keyboard_controller = InspectionKeyboardController(
+            device=env.unwrapped.device,
+            max_vel_speed=0.8,
+            action_dim=action_dim,
+        )
         print("[INFO]: Keyboard Controller Initialized.")
         print("[INFO]: Use Arrow Keys (UP/DOWN/LEFT/RIGHT) to move the robot base.")
         print("[INFO]: Use A/S/D/X to pan/tilt the PTZ camera (S: Up, X: Down, A: Left, D: Right).")
-        print("[INFO]: Hold Q/E to select wide/telephoto zoom; release for the middle zoom level.")
+        if action_dim == 5:
+            print("[INFO]: Hold Q/E to select wide/telephoto zoom; release for the middle zoom level.")
 
         # simulate environment
         while simulation_app.is_running():

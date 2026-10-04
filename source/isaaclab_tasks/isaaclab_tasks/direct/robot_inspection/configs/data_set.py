@@ -1,5 +1,7 @@
 """Select inspection targets from the active run configuration."""
 
+import os
+
 from .eval_dataset import evaluation_data_set
 from .primitive_dataset import primitive_data_set, primitive_test_data_set
 from ..run_config import cfg_mode
@@ -11,7 +13,10 @@ train_data_set = primitive_data_set
 
 def _select_data_set() -> dict:
     """Return the dataset (and optional single target) requested by cfg_mode."""
-    data_set_name = getattr(cfg_mode, "inspection_dataset", "primitive")
+    data_set_name = os.environ.get(
+        "ISAACLAB_INSPECTION_DATASET",
+        getattr(cfg_mode, "inspection_dataset", "primitive"),
+    )
     available_data_sets = {
         "primitive": primitive_test_data_set,
         "evaluation": evaluation_data_set,
@@ -23,7 +28,10 @@ def _select_data_set() -> dict:
         )
 
     selected_data_set = available_data_sets[data_set_name]
-    target_name = getattr(cfg_mode, "inspection_target", None)
+    target_name = os.environ.get(
+        "ISAACLAB_INSPECTION_TARGET",
+        getattr(cfg_mode, "inspection_target", None),
+    )
     if target_name is None:
         return selected_data_set
     if target_name not in selected_data_set:

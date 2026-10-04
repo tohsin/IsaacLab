@@ -65,31 +65,59 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
 
 
 Models = {
-    'Base_model' :{
-        'path': "Alblation_ATTN_FUS_2026-09-19_10-47-23"
-    },
-    'Diverse_dataset':
-    {
-        'path': "Alblation_ATTN_FUS_2026-09-16_14-38-37"
-    },
+    # 'Base_model' :{
+    #     'path': "Alblation_ATTN_FUS_2026-09-19_10-47-23"
+    # },
+    # 'Diverse_dataset':
+    # {
+    #     'path': "Alblation_ATTN_FUS_2026-09-16_14-38-37"
+    # },
     # Albaltion study models
     'Paper-Baseline':{
         'path': 'Alblation_ATTN_FUS_2026-09-22_08-11-39',
         'Attention': True,
         'Fusion': 'attention',
     },
-    'MLP_Fusion':{
-        'path': "Alblation_MLP_FUS_2026-09-24_11-45-07",
-        'Attention': False,
-        'Fusion': 'concat_mlp',
-    },
+    # 'MLP_Fusion':{
+    #     'path': "Alblation_MLP_FUS_2026-09-24_11-45-07",
+    #     'Attention': False,
+    #     'Fusion': 'concat_mlp',
+    # },
     # Replace the path with the timestamped run name after training, then
     # select Albation('No_MHA_Fusion') for evaluation.
     'No_MHA_Fusion':{
         'path': "Alblation_NO_MHA_FUS_2026-09-25_18-36-35",
         'Attention': False,
         'Fusion': 'token_ffn',
-    }
+    },
+    # You need to go back to the other run config to set the map
+    'Map_OCC_Only':{
+        'path': "Alblation_MAP_OCC_ONLY_2026-09-28_12-31-28",
+        'Attention': True,
+        'Fusion': 'attention',
+    },
+    # Replace the path after the occupancy + visibility model finishes.
+    'Map_OCC_Visibility':{
+        'path': "Alblation_MAP_OCC_VIS_2026-09-29_12-31-34",
+        'Attention': True,
+        'Fusion': 'attention',
+    },
+    # Replace the path after the parameter-matched no-GRU model finishes.
+    'No_GRU':{
+        'path': "Alblation_NO_GRU_2026-10-01_00-26-29",
+        'Attention': True,
+        'Fusion': 'attention',
+        'Temporal': 'feedforward',
+    },
+    # Replace the path after training. Evaluation also requires
+    # eval_Cfg.enable_pt_actuation=False in the environment run config.
+    'Fixed_Camera':{
+        'path': "Alblation_FIXED_CAMERA_2026-10-01_22-13-59",
+        'Attention': True,
+        'Fusion': 'attention',
+        'Temporal': 'gru',
+        'PTActuation': False,
+    },
 }
 class Albation:
     def __init__(self, model_name):
@@ -99,9 +127,11 @@ class Albation:
             'Fusion',
             'attention' if Models[model_name].get('Attention', True) else 'concat_mlp',
         )
+        self.temporal_mode = Models[model_name].get('Temporal', 'gru')
+        self.pt_actuation = Models[model_name].get('PTActuation', True)
         # Compatibility attribute for older configuration code.
         self.attention = self.fusion_mode == 'attention'
-CURR_EXPeriment = Albation('No_MHA_Fusion')
+CURR_EXPeriment = Albation('Paper-Baseline')
 path_pretrained = get_checkpoint_path(
     project_name="Alblation-Baseline",
     run_name= CURR_EXPeriment.path,
@@ -122,11 +152,15 @@ class TrainingConfig_PreTrain:
     num_envs = 128
     reset_std = True
     batch_size = 8192 # 8192
-    # Surgical MHA ablation: retain projections, normalization, modality
-    # embeddings, Transformer FFNs, mean pooling, and the GRU.
-    fusion_mode = "token_ffn"  # "attention", "concat_mlp", or "token_ffn"
+    fusion_mode = "attention"  # "attention", "concat_mlp", or "token_ffn"
     use_attention_fusion = fusion_mode == "attention"
     use_transformer_encoder = True
+    # Keep the complete recurrent attention baseline; only PT actuation is
+    # ablated in this run.
+    temporal_mode = "gru"  # "gru" or "feedforward"
+    gru_hidden_size = 512
+    gru_num_layers = 1
+    temporal_mlp_hidden_size = 1536
     attention_d_model = 512
     # Capacity-matched attention ablation: retain d_model=512 and change only
     # the readout from a learned CLS token to mean pooling over modality tokens.
@@ -148,10 +182,10 @@ class TrainingConfig_PreTrain:
     # KL exceeds this guardrail. This complements the smooth cosine LR decay
     # by catching localized KL spikes that are hidden by the mean KL.
     kl_threshold = 0.08
-    # Standard deviations are configured directly in action order:
-    # [linear velocity, angular velocity, pan, tilt]. A scalar is also valid
-    # and is expanded to every action automatically.
+    # Canonical order: [linear velocity, angular velocity, pan, tilt]. The
+    # fixed-camera action space exposes the leading two entries only.
     init_std = (0.85, 0.85, 0.90, 0.90)
+    slice_init_std_to_action_space = True
     manual_std_decay = False
     final_std = 0.3
     std_decay_fraction = 0.90
@@ -166,7 +200,7 @@ class TrainingConfig_PreTrain:
         "T_max": -1,  # Will be dynamically set
         "eta_min": learning_rate * 0.01,
     }
-    experiment_name = "Alblation_NO_MHA_FUS"
+    experiment_name = "Alblation_FIXED_CAMERA"
 
 
 
@@ -183,6 +217,7 @@ class EvaluationConfig:
     reset_std = False
     fusion_mode = CURR_EXPeriment.fusion_mode
     use_attention_fusion = fusion_mode == "attention"
+    temporal_mode = CURR_EXPeriment.temporal_mode
     use_transformer_encoder = True
     attention_d_model = 512
     attention_pooling = "mean"
@@ -215,6 +250,7 @@ class LegacyAugust31EvaluationConfig(EvaluationConfig):
     checkpoint_path = legacy_aug31_checkpoint
     fusion_mode = "attention"
     use_attention_fusion = True
+    temporal_mode = "gru"
     attention_d_model = 256
     attention_pooling = "mean"
     encoder_res_blocks_per_stage = 2
@@ -226,7 +262,7 @@ configs_ = [TrainingConfig_PreTrain(),
             # TrainingConfig_FineTune(),
               EvaluationConfig(),
               LegacyAugust31EvaluationConfig()]
-CONFIG = configs_[1]  # Train the no-MHA token-FFN ablation
+CONFIG = configs_[1]  # Train the full-map, full-MHA, GRU fixed-camera ablation.
 #~/evaluate_agent.sh --seed 42 --max_episodes 128 --eval-max-episode-steps 1200
 # ~/evaluate_agent.sh --seed 43 --max_episodes 128 --eval-max-episode-steps 1200
 # ~/evaluate_agent.sh --seed 44 --max_episodes 128 --eval-max-episode-steps 1200
