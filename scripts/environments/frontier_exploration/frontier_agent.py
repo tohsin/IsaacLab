@@ -5,6 +5,7 @@
 
 """Script to run a frontier exploration agent in the Isaac Lab environment."""
 
+import genericpath
 import argparse
 
 from isaaclab.app import AppLauncher
@@ -38,8 +39,10 @@ from isaaclab_tasks.utils import parse_env_cfg
 # Import our custom frontier logic
 from frontier_utils import find_frontiers, cluster_frontiers, select_best_frontier
 from a_star import a_star
+import matplotlib.pyplot as plt
 
-def get_action_towards_goal(robot_pose: torch.Tensor, goal_world: tuple) -> torch.Tensor:
+
+def get_action_towards_goal(pan, robot_pose: torch.Tensor, goal_world: tuple) -> torch.Tensor:
     """
     Robot goes towards the goal.
     
@@ -100,8 +103,32 @@ def get_action_towards_goal(robot_pose: torch.Tensor, goal_world: tuple) -> torc
     #print(f"[DEBUG_NAV] Yaw: {current_yaw:.2f} | Tgt Yaw: {target_yaw:.2f} | Err: {yaw_error:.2f} | Fwd: {fwd_speed:.2f} Turn: {turn_speed:.2f}")
         
     # Return [v, w, ptz_pan, ptz_tilt, zoom]
-    return torch.tensor([[fwd_speed, turn_speed, 0.0, 0.0, 0.0]])
+    return torch.tensor([[fwd_speed, turn_speed, pan, 0.0, 0.0]])
 
+def get_pan_action(step_idx): 
+    """
+    Generates oscillating Pan and Tilt actions.
+    
+    Args:
+        step_idx (int): Current simulation step.
+        
+    Returns:
+        tuple: (pan_action, tilt_action) floats between -1.0 and 1.0
+
+    taken from inspection_pan_scan.py
+    """
+    # Parameters for scanning
+    pan_freq = 0.05  # Frequency of Left/Right scan
+    pan_amp = 1.0     # Full range (-1 to 1)
+    
+    tilt_freq = 0.08  # Frequency of Up/Down scan
+    tilt_amp = 0.8    # Full range
+    
+    # Calculate Sine Waves
+    pan = pan_amp * math.sin(step_idx * pan_freq)
+    tilt = tilt_amp * math.sin(step_idx * tilt_freq)
+    
+    return pan
 
 def main():
     """Frontier Exploration agent with Isaac Lab environment."""
@@ -135,11 +162,14 @@ def main():
         last_positions = []
         stuck_frames = 0
         recovery_mode = 0
-        
+        no_frontier_steps = 0 # get episode to end early if no frontiers detected
+        pan = get_pan_action(step_counter)
         while simulation_app.is_running():
             with torch.inference_mode():
                 step_counter += 1
-                
+                pan = get_pan_action(step_counter) 
+                #constantly pan tilt ptz on sine wave without changing base robot movement
+
                 # For simplicity, we process only the first environment (index 0)
                 # Ensure we are using the 'policy' dictionary
                 if isinstance(obs, dict) and "policy" in obs:
@@ -156,7 +186,6 @@ def main():
                 if map_tensor is None or pose_tensor is None:
                     # Fallback to random actions if maps aren't correctly exposed
                     actions = torch.rand((env.unwrapped.num_envs, 5), device=env.unwrapped.device) * 2.0 - 1.0
-                    print("what1")
                 else:
                     # 1. Convert PyTorch tensor map to NumPy grid for OpenCV/SciPy processing
                     # The environment normalizes the map by dividing by 5.0, so we multiply by 5.0 to restore raw log-odds
@@ -164,9 +193,9 @@ def main():
                     
                     # Project 3D map (X, Y, Z) to 2D (X, Y)
                     if occ_map_np.ndim == 3:
-                        # Ignore the floor level (Z=0 and Z=1, up to 0.4m) when looking for obstacles, 
-                        # because the depth camera raycast will mark the floor as an obstacle since we stopped filtering out floor points!
-                        max_val = np.max(occ_map_np[:, :, 2:], axis=2)
+                        # Ignore only the floor level (Z=0, up to 0.2m) when looking for obstacles, 
+                        # because Z=1 (0.2m - 0.4m) contains the base of the walls.
+                        max_val = np.max(occ_map_np[:, :, 1:], axis=2)
                         min_val = np.min(occ_map_np, axis=2)
                         
                         # A 2D column is:
@@ -181,7 +210,6 @@ def main():
                     # debugging... because what??
                     if step_counter % 15 == 1:
                         try:
-                            import matplotlib.pyplot as plt
                             plt.figure(figsize=(10, 8))
                             plt.imshow(occ_map_np, cmap='coolwarm', origin='lower')
                             plt.colorbar(label='Log-Odds')
@@ -212,7 +240,10 @@ def main():
                     clusters = cluster_frontiers(frontiers)
                     
                     # 4. Select best frontier
-                    robot_pose_0 = pose_tensor[0]
+                    robot_pose_0 = pose_tensor[0] # Local/Relative pose
+                    # For global map navigation, we MUST use the true world pose!
+                    robot_pose_w = env.unwrapped.robot.data.root_state_w[0]
+                    
                     map_shape = occ_map_np.shape
                     is_global = True #(map_shape[0] == 100) # Global map is 100x153
                     resolution = 0.2
@@ -220,18 +251,18 @@ def main():
                     if is_global:
                         # compute the robot's pixel coordinates
                         map_origin_x, map_origin_y = -10.5, -12.5
-                        rx, ry = robot_pose_0[0].item(), robot_pose_0[1].item()
+                        rx, ry = robot_pose_w[0].item(), robot_pose_w[1].item()
                         robot_px = (int((rx - map_origin_x) / resolution), int((ry - map_origin_y) / resolution))
                     else:
                         # Local map is ego-centric
                         robot_px = (map_shape[0] // 2, map_shape[1] // 2)
+                        rx, ry = robot_pose_0[0].item(), robot_pose_0[1].item()
                         
                     # --- STUCK DETECTION ---
-                    
+                    """
                     if len(last_positions) >= 30:
                         dist_moved = math.sqrt((rx - last_positions[-30][0])**2 + (ry - last_positions[-30][1])**2)
                         # If we tried to move but barely made forward progress over 30 frames (0.5s), we are stuck!
-                        # (We use 0.3m because physics collisions bounce the robot back, making it seem like it moved)
                         if dist_moved < 0.3 and target_px is not None:
                             stuck_frames += 1
                         else:
@@ -243,7 +274,7 @@ def main():
                         print(f"[WARNING] Robot is stuck! Blacklisting current frontier {current_frontier_px} and entering recovery mode...")
                         if current_frontier_px is not None:
                             blacklist.append(current_frontier_px)
-                        recovery_mode = 30  # Back up and turn for 30 frames
+                        recovery_mode = 10  # Back up and turn for 30 frames
                         stuck_frames = 0
                         target_px = None    # Force replan after recovery
                         current_frontier_px = None
@@ -255,7 +286,7 @@ def main():
                         env.step(actions)
                         recovery_mode -= 1
                         continue
-                    
+                    """
                     # -----------------------
 
                     # --- GOAL REACHED DETECTION ---
@@ -275,7 +306,7 @@ def main():
                                 blacklist.append(current_frontier_px)
                             target_px = None
                     else:
-                        print("what2")
+                        print("No frontiers...")
                     # ------------------------------
                     
                     # Replan path every 15 steps to prevent Isaac Sim Python thread from stalling/core dumping
@@ -285,7 +316,9 @@ def main():
                         
                         if best_frontier_px is not None:
                             # 5. Plan path with A*
+                            import scipy.ndimage as ndimage
                             obstacle_grid = occ_map_np > 0.1
+                            obstacle_grid = ndimage.binary_dilation(obstacle_grid, iterations=2)
                             path = a_star(robot_px, best_frontier_px, obstacle_grid)
                             
                             if path and len(path) > 1:
@@ -298,18 +331,19 @@ def main():
                             target_px = None
                             
                     if target_px is not None:
+                        no_frontier_steps = 0  # Reset counter
                         if is_global:
                             # Map shape is (X, Y) so target_px is (X_idx, Y_idx)
                             goal_x = map_origin_x + target_px[0] * resolution
                             goal_y = map_origin_y + target_px[1] * resolution
-                            action_0 = get_action_towards_goal(robot_pose_0, (goal_x, goal_y))
+                            action_0 = get_action_towards_goal(pan,robot_pose_w, (goal_x, goal_y))
                         else:
                             # Local map is relative to the robot
                             relative_x = (target_px[0] - robot_px[0]) * resolution
                             relative_y = (target_px[1] - robot_px[1]) * resolution
                             # Fake pose: (0,0) position, and valid quaternion for yaw=0
                             fake_robot_pose = torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
-                            action_0 = get_action_towards_goal(fake_robot_pose, (relative_x, relative_y))
+                            action_0 = get_action_towards_goal(pan,fake_robot_pose, (relative_x, relative_y))
                     else:
                         # No frontiers found (map fully explored or stuck)
                         # Spin to look around
@@ -319,10 +353,20 @@ def main():
                     actions = action_0.repeat(env.unwrapped.num_envs, 1).to(env.unwrapped.device)
 
                 obs, rewards, terminated, truncated, info = env.step(actions)
+
                 
                 if terminated.any() or truncated.any():
                     print("[INFO] Episode terminated/truncated. Resetting...")
                     obs, _ = env.reset()
+                    
+                    # Reset episode tracking variables
+                    target_px = None
+                    current_frontier_px = None
+                    blacklist = []
+                    last_positions = []
+                    stuck_frames = 0
+                    recovery_mode = 0
+                    no_frontier_steps = 0
                     
     except KeyboardInterrupt:
         print("\n[INFO] KeyboardInterrupt received. Closing environment...")

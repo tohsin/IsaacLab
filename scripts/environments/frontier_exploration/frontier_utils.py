@@ -2,6 +2,8 @@ import numpy as np
 import cv2
 import scipy.ndimage as ndimage
 
+#TODO: debug statement that says how far from obstacle in front, disable wall stuck and let it hit wall
+
 def find_frontiers(occupancy_grid: np.ndarray, free_thresh: float = 0.2, unknown_thresh: float = 0.5) -> np.ndarray:
     """
     Finds frontier cells in an occupancy grid.
@@ -90,6 +92,8 @@ def select_best_frontier(clusters, robot_pose_px, occupancy_grid=None, is_global
     if occupancy_grid is not None:
         # Assuming values > 0.1 represent occupied space
         obstacle_grid = occupancy_grid > 0.1
+        # Inflate obstacles to keep the robot from colliding with walls
+        obstacle_grid = ndimage.binary_dilation(obstacle_grid, iterations=2)
     
     cluster_info = []
     for cluster in clusters:
@@ -99,6 +103,18 @@ def select_best_frontier(clusters, robot_pose_px, occupancy_grid=None, is_global
         centroid_y = int(np.mean(y_coords))
         centroid_x = int(np.mean(x_coords))
         centroid = (centroid_y, centroid_x)
+        
+        # If centroid is inside an obstacle, find a point in the cluster that is NOT in an obstacle
+        if obstacle_grid is not None and obstacle_grid[centroid_y, centroid_x]:
+            valid_points = [p for p in cluster if not obstacle_grid[p[0], p[1]]]
+            if valid_points:
+                # Pick the valid point closest to the centroid
+                valid_points.sort(key=lambda p: (p[0] - centroid_y)**2 + (p[1] - centroid_x)**2)
+                centroid = valid_points[0]
+                centroid_y, centroid_x = centroid
+            else:
+                # If all points in the cluster are in an obstacle, this frontier is unreachable. Skip it.
+                continue
         
         # Check against blacklist (3 pixel radius = 0.6m)
         is_blacklisted = False

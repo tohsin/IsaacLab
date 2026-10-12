@@ -28,7 +28,7 @@ class debug_Cfg:
     logging_interval: int = 1500
     max_episode_length: int = 1250
     inspection_goal =  0.95
-    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.LOCAL)
+    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.GLOBAL)
     display_ray_counts = True
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -190,9 +190,11 @@ class record_depth_Cfg(eval_Cfg):
     inspection_dataset = eval_Cfg.inspection_dataset
     inspection_target = eval_Cfg.inspection_target
     egocentric_map = True
-    min_episode_length: int = 1250
+    min_episode_length: int = 600#1250
     logging_interval: int = 100
-    max_episode_length: int = 1250
+    max_episode_length: int = 600#1250
+    visualisation_mode = visualisation_mode(channel=map_channels.OCCUPANCY, map_mode=map_view_mode.GLOBAL)
+    visualise_task_area = True
 
     enable_depth_sensor_noise = True
     depth_pixel_dropout_prob = 0.01
@@ -239,4 +241,4 @@ modes = [debug_Cfg, #0
     eval_Cfg, #2
     record_Cfg, #3
     record_depth_Cfg] #4
-cfg_mode = modes[1]
+cfg_mode = modes[4]
