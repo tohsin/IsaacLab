@@ -1,0 +1,447 @@
+==================================================
+EVALUATION RESULTS (128 Episodes)
+==================================================
+Mean Faces Discovered: 10983.12
+Std Deviation:         1938.73
+Min Faces:             759
+Max Faces:             12321
+P99 Faces:             12220.60
+Mean Coverage:          21.97%
+Std Coverage:           3.88%
+Mean Inspection Quality: 0.2728
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 108 (84.38%)
+  Reached 1200-step horizon: 104 (81.25%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            81.25% (104 episodes)
+After Step 1000:
+  Episodes reaching boundary: 108 (84.38%)
+  Mean coverage at step 1000: 21.86%
+  Mean additional coverage:  0.71%
+  Crashes after step 1000:    4
+Per-target results:
+  ur10_mount: 128 episodes | Faces: 10983.12 | Coverage: 21.97%
+Mean Crashes: 0.19
+Median Crashes: 0.00
+Episodes With Crash: 18.75%
+Total Terminated Due to Crash: 24 / 128
+Mean Faces Discovered (NO CRASHES): 11266.93
+Crash Sources (primary base_link contact):
+  inspection_target/ur10_mount: 11 (45.83% of crashes)
+  obstacle: 13 (54.17% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 24 (100.00%)
+  Reverse: 0 (0.00%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================
+================================================
+EVALUATION RESULTS (128 Episodes)
+==================================================
+Mean Faces Discovered: 15308.52
+Std Deviation:         1012.00
+Min Faces:             8929
+Max Faces:             16459
+P99 Faces:             16344.30
+Mean Coverage:          30.62%
+Std Coverage:           2.02%
+Mean Inspection Quality: 0.2869
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 119 (92.97%)
+  Reached 1200-step horizon: 113 (88.28%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            88.28% (113 episodes)
+After Step 1000:
+  Episodes reaching boundary: 119 (92.97%)
+  Mean coverage at step 1000: 30.04%
+  Mean additional coverage:  0.79%
+  Crashes after step 1000:    6
+Per-target results:
+  ur10_mount: 128 episodes | Faces: 15308.52 | Coverage: 30.62%
+Mean Crashes: 0.12
+Median Crashes: 0.00
+Episodes With Crash: 11.72%
+Total Terminated Due to Crash: 15 / 128
+Mean Faces Discovered (NO CRASHES): 15422.66
+Crash Sources (primary base_link contact):
+  inspection_target/ur10_mount: 9 (60.00% of crashes)
+  obstacle: 6 (40.00% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 15 (100.00%)
+  Reverse: 0 (0.00%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================
+
+==================================================
+EVALUATION RESULTS (256 Episodes)
+==================================================
+Mean Faces Discovered: 635.47
+Std Deviation:         205.76
+Min Faces:             28
+Max Faces:             980
+P99 Faces:             927.25
+Mean Coverage:          1.27%
+Std Coverage:           0.41%
+Mean Inspection Quality: 0.4961
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 245 (95.70%)
+  Reached 1200-step horizon: 238 (92.97%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            92.97% (238 episodes)
+After Step 1000:
+  Episodes reaching boundary: 245 (95.70%)
+  Mean coverage at step 1000: 1.14%
+  Mean additional coverage:  0.16%
+  Crashes after step 1000:    7
+Per-target results:
+  extinguisher: 256 episodes | Faces: 635.47 | Coverage: 1.27%
+Mean Crashes: 0.07
+Median Crashes: 0.00
+Episodes With Crash: 7.03%
+Total Terminated Due to Crash: 18 / 256
+Mean Faces Discovered (NO CRASHES): 652.18
+Crash Sources (primary base_link contact):
+  inspection_target/extinguisher: 4 (22.22% of crashes)
+  obstacle: 13 (72.22% of crashes)
+  warehouse_wall: 1 (5.56% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 16 (88.89%)
+  Reverse: 2 (11.11%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================
+
+[INFO] Evaluation summary saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-22_08-11-39/checkpoints/eval_results/eval_deterministic_2026-10-08_18-25-42.json
+[INFO] Raw episode results saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-22_08-11-39/checkpoints/eval_results/eval_deterministic_2026-10-08_18-25-42.npz
+==================================================
+EVALUATION RESULTS (526 Episodes)
+==================================================
+Mean Faces Discovered: 1038.39
+Std Deviation:         100.69
+Min Faces:             255
+Max Faces:             1111
+P99 Faces:             1107.00
+Mean Coverage:          2.08%
+Std Coverage:           0.20%
+Mean Inspection Quality: 0.7821
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 515 (97.91%)
+  Reached 1200-step horizon: 508 (96.58%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            96.58% (508 episodes)
+After Step 1000:
+  Episodes reaching boundary: 515 (97.91%)
+  Mean coverage at step 1000: 1.97%
+  Mean additional coverage:  0.12%
+  Crashes after step 1000:    7
+Per-target results:
+  barrel: 526 episodes | Faces: 1038.39 | Coverage: 2.08%
+Mean Crashes: 0.03
+Median Crashes: 0.00
+Episodes With Crash: 3.42%
+Total Terminated Due to Crash: 18 / 526
+Mean Faces Discovered (NO CRASHES): 1045.40
+Crash Sources (primary base_link contact):
+  inspection_target/barrel: 8 (44.44% of crashes)
+  obstacle: 10 (55.56% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 17 (94.44%)
+  Reverse: 1 (5.56%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================
+
+[INFO] Evaluation summary saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-22_08-11-39/checkpoints/eval_results/eval_deterministic_2026-10-08_20-47-21.json
+[INFO] Raw episode results saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-22_08-11-39/checkpoints/eval_results/eval_deterministic_2026-10-08_20-47-21.npz
+=================================================
+EVALUATION RESULTS (526 Episodes)
+==================================================
+Mean Faces Discovered: 9660.92
+Std Deviation:         1176.08
+Min Faces:             616
+Max Faces:             11352
+P99 Faces:             11179.75
+Mean Coverage:          19.32%
+Std Coverage:           2.35%
+Mean Inspection Quality: 0.2847
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 370 (70.34%)
+  Reached 1200-step horizon: 335 (63.69%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            63.69% (335 episodes)
+After Step 1000:
+  Episodes reaching boundary: 370 (70.34%)
+  Mean coverage at step 1000: 19.06%
+  Mean additional coverage:  0.85%
+  Crashes after step 1000:    34
+Per-target results:
+  dolly: 526 episodes | Faces: 9660.92 | Coverage: 19.32%
+Mean Crashes: 0.36
+Median Crashes: 0.00
+Episodes With Crash: 36.31%
+Total Terminated Due to Crash: 191 / 526
+Mean Faces Discovered (NO CRASHES): 9989.03
+Crash Sources (primary base_link contact):
+  inspection_target/dolly: 136 (71.20% of crashes)
+  obstacle: 54 (28.27% of crashes)
+  warehouse_wall: 1 (0.52% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 187 (97.91%)
+  Reverse: 4 (2.09%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================
+==================================================
+EVALUATION RESULTS (526 Episodes)
+==================================================
+Mean Faces Discovered: 2952.52
+Std Deviation:         341.94
+Min Faces:             25
+Max Faces:             3222
+P99 Faces:             3196.25
+Mean Coverage:          5.91%
+Std Coverage:           0.68%
+Mean Inspection Quality: 0.3001
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 502 (95.44%)
+  Reached 1200-step horizon: 491 (93.35%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            93.35% (491 episodes)
+After Step 1000:
+  Episodes reaching boundary: 502 (95.44%)
+  Mean coverage at step 1000: 5.77%
+  Mean additional coverage:  0.20%
+  Crashes after step 1000:    10
+Per-target results:
+  small_corner_bracket_physics: 526 episodes | Faces: 2952.52 | Coverage: 5.91%
+Mean Crashes: 0.07
+Median Crashes: 0.00
+Episodes With Crash: 6.65%
+Total Terminated Due to Crash: 35 / 526
+Mean Faces Discovered (NO CRASHES): 2987.87
+Crash Sources (primary base_link contact):
+  inspection_target/small_corner_bracket_physics: 15 (42.86% of crashes)
+  obstacle: 20 (57.14% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 35 (100.00%)
+  Reverse: 0 (0.00%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================
+==================================================
+EVALUATION RESULTS (526 Episodes)
+==================================================
+Mean Faces Discovered: 17658.56
+Std Deviation:         2060.62
+Min Faces:             431
+Max Faces:             19919
+P99 Faces:             19738.00
+Mean Coverage:          35.32%
+Std Coverage:           4.12%
+Mean Inspection Quality: 0.1728
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 485 (92.21%)
+  Reached 1200-step horizon: 461 (87.64%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            87.64% (461 episodes)
+After Step 1000:
+  Episodes reaching boundary: 485 (92.21%)
+  Mean coverage at step 1000: 34.35%
+  Mean additional coverage:  1.64%
+  Crashes after step 1000:    24
+Per-target results:
+  pallet: 526 episodes | Faces: 17658.56 | Coverage: 35.32%
+Mean Crashes: 0.12
+Median Crashes: 0.00
+Episodes With Crash: 12.36%
+Total Terminated Due to Crash: 65 / 526
+Mean Faces Discovered (NO CRASHES): 18018.80
+Crash Sources (primary base_link contact):
+  inspection_target/pallet: 48 (73.85% of crashes)
+  obstacle: 17 (26.15% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 62 (95.38%)
+  Reverse: 3 (4.62%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================
+=================================================
+EVALUATION RESULTS (526 Episodes)
+==================================================
+Mean Faces Discovered: 12804.12
+Std Deviation:         1807.84
+Min Faces:             1433
+Max Faces:             14895
+P99 Faces:             14637.50
+Mean Coverage:          25.61%
+Std Coverage:           3.62%
+Mean Inspection Quality: 0.3402
+Episode Lengths:
+  Median: 1199.0 steps
+  P90:    1199.0 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 444 (84.41%)
+  Reached 1200-step horizon: 411 (78.14%)
+Success Rate:            0.00% (0 episodes)
+Timeout Rate:            78.14% (411 episodes)
+After Step 1000:
+  Episodes reaching boundary: 444 (84.41%)
+  Mean coverage at step 1000: 25.37%
+  Mean additional coverage:  1.22%
+  Crashes after step 1000:    32
+Per-target results:
+  caster: 526 episodes | Faces: 12804.12 | Coverage: 25.61%
+Mean Crashes: 0.22
+Median Crashes: 0.00
+Episodes With Crash: 21.86%
+Total Terminated Due to Crash: 115 / 526
+Mean Faces Discovered (NO CRASHES): 13328.66
+Crash Sources (primary base_link contact):
+  inspection_target/caster: 87 (75.65% of crashes)
+  obstacle: 26 (22.61% of crashes)
+  warehouse_wall: 2 (1.74% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 112 (97.39%)
+  Reverse: 3 (2.61%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+
+Strict Face Visibility Filter:
+  Enabled: False
+  Semantic target pixels: 0
+  Missing ray hit:       0 (0.000%)
+  Wrong target slot:     0 (0.000%)
+  Depth mismatch:        0 (0.000%)
+  Accepted:              0 (0.000%)
+==================================================

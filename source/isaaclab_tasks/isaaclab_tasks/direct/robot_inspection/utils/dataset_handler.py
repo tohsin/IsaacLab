@@ -7,6 +7,7 @@ class ObstacleDatasetHandler:
     def __init__(self, max_obstacles: int = 10):
         self.max_obstacles = max_obstacles
         self.horizontal_radii: list[float] = []
+        self.root_heights: list[float] = []
         # Use a fixed seed for obstacle generation so they are consistent across runs
         # The randomize aspect will handle positions in the curriculum
         self.rng = random.Random(42)
@@ -14,6 +15,7 @@ class ObstacleDatasetHandler:
     def get_obstacle_configs(self) -> list[RigidObjectCfg]:
         configs = []
         self.horizontal_radii.clear()
+        self.root_heights.clear()
         for i in range(self.max_obstacles):
             # random choice between cylinder, cuboid
             obstacle_type = self.rng.choice(["cylinder", "cuboid", "sphere", "cone"])
@@ -25,10 +27,14 @@ class ObstacleDatasetHandler:
                 radius = self.rng.uniform(0.2, 0.5)
                 horizontal_radius = radius
                 height = self.rng.uniform(0.5, 2.5)
+                root_height = 0.5 * height
                 spawn_cfg = sim_utils.CylinderCfg(
                     radius=radius,
                     height=height,
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        rigid_body_enabled=True,
+                        kinematic_enabled=True,
+                    ),
                     mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
                     collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
@@ -40,9 +46,13 @@ class ObstacleDatasetHandler:
                 # Obstacles currently keep identity yaw, so the circumscribed
                 # XY circle is a conservative footprint for spawn clearance.
                 horizontal_radius = 0.5 * (size_x**2 + size_y**2) ** 0.5
+                root_height = 0.5 * size_z
                 spawn_cfg = sim_utils.CuboidCfg(
                     size=(size_x, size_y, size_z),
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        rigid_body_enabled=True,
+                        kinematic_enabled=True,
+                    ),
                     mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
                     collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
@@ -50,9 +60,13 @@ class ObstacleDatasetHandler:
             elif obstacle_type == "sphere":
                 radius = self.rng.uniform(0.2, 0.5)
                 horizontal_radius = radius
+                root_height = radius
                 spawn_cfg = sim_utils.SphereCfg(
                     radius=radius,
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        rigid_body_enabled=True,
+                        kinematic_enabled=True,
+                    ),
                     mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
                     collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
@@ -61,10 +75,14 @@ class ObstacleDatasetHandler:
                 radius = self.rng.uniform(0.2, 0.5)
                 horizontal_radius = radius
                 height = self.rng.uniform(0.5, 2.0)
+                root_height = 0.5 * height
                 spawn_cfg = sim_utils.ConeCfg(
                     radius=radius,
                     height=height,
-                    rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        rigid_body_enabled=True,
+                        kinematic_enabled=True,
+                    ),
                     mass_props=sim_utils.MassPropertiesCfg(density=500.0, mass=1000.0),
                     collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
@@ -77,8 +95,13 @@ class ObstacleDatasetHandler:
             )
             configs.append(cfg)
             self.horizontal_radii.append(horizontal_radius)
+            self.root_heights.append(root_height)
         return configs
 
     def get_horizontal_radii(self) -> list[float]:
         """Return conservative XY footprint radii in obstacle-config order."""
         return self.horizontal_radii.copy()
+
+    def get_root_heights(self) -> list[float]:
+        """Return centered primitive heights that place obstacle bases at ground level."""
+        return self.root_heights.copy()

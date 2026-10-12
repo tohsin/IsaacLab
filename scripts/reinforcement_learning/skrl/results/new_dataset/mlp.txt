@@ -1,0 +1,46 @@
+==================================================
+EVALUATION RESULTS (512 Episodes)
+==================================================
+Mean Faces Discovered: 10238.69
+Std Deviation:         4053.32
+Min Faces:             0
+Max Faces:             12679
+Mean Coverage:          85.32%
+Std Coverage:           33.78%
+Mean Inspection Quality: 0.2208
+Episode Lengths:
+  Median: 425.0 steps
+  P90:    979.2 steps
+  P95:    1199.0 steps
+  Reached 1000-step horizon: 49 (9.57%)
+  Reached 1200-step horizon: 35 (6.84%)
+Success Rate:            78.91% (404 episodes)
+Timeout Rate:            6.84% (35 episodes)
+After Step 1000:
+  Episodes reaching boundary: 49 (9.57%)
+  Mean coverage at step 1000: 51.19%
+  Mean additional coverage:  14.83%
+  Crashes after step 1000:    1
+Per-target results:
+  ur10_mount: 512 episodes | Faces: 10238.69 | Coverage: 85.32%
+Mean Crashes: 0.14
+Median Crashes: 0.00
+Episodes With Crash: 14.26%
+Total Terminated Due to Crash: 73 / 512
+Mean Faces Discovered (NO CRASHES): 11663.75
+Crash Sources (primary base_link contact):
+  inspection_target/ur10_mount: 10 (13.70% of crashes)
+  obstacle: 57 (78.08% of crashes)
+  warehouse_wall: 6 (8.22% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 28 (38.36%)
+  Reverse: 45 (61.64%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+==================================================

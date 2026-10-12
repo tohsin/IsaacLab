@@ -2,7 +2,7 @@ import argparse
 from isaaclab.app import AppLauncher
 
 # Argument Parser
-parser = argparse.ArgumentParser(description="Test Visibility Map with Zoom/Pan.")
+parser = argparse.ArgumentParser(description="Test the visibility map with scripted PTZ motion.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 args_cli = parser.parse_args()
 
@@ -46,7 +46,7 @@ def main():
         print("[INFO] Watch the Visualization Window (Green = Visible Voxels)")
 
         # Robot Physics Config for normalizing actions if needed
-        # Action space: [left_wheel, right_wheel, pan, tilt, zoom]
+        # Action space: [linear velocity, angular velocity, pan, tilt]
         # Range often [-1, 1] mapped to speeds
         
         # Scripted Sequence
@@ -55,19 +55,15 @@ def main():
         # 100 steps ~ 6 seconds.
         
         sequences = [
-            ("Wait", 50,  [0.0, 0.0, 0.0, 0.0, 0.0]),
-            ("Zoom In", 80, [0.0, 0.0, 0.0, 0.0, 1.0]),  # Zoom/action index 4
-            ("Wait", 30,  [0.0, 0.0, 0.0, 0.0, 0.0]),
-            ("Pan Right", 60, [0.0, 0.0, 0.5, 0.0, 0.0]), # Pan/action index 2
-            ("Wait", 30,  [0.0, 0.0, 0.0, 0.0, 0.0]),
-            ("Pan Left", 120,[0.0, 0.0, -0.5, 0.0, 0.0]),
-            ("Wait", 30,  [0.0, 0.0, 0.0, 0.0, 0.0]),
-            ("Tilt Up", 40,  [0.0, 0.0, 0.0, -0.5, 0.0]), # Tilt/action index 3
-            ("Wait", 20,  [0.0, 0.0, 0.0, 0.0, 0.0]),
-            ("Tilt Down", 40, [0.0, 0.0, 0.0, 0.5, 0.0]),
-            ("Wait", 20,  [0.0, 0.0, 0.0, 0.0, 0.0]),
-            ("Zoom Out", 80, [0.0, 0.0, 0.0, 0.0, -1.0]),
-            ("Wait (End)", 100, [0.0, 0.0, 0.0, 0.0, 0.0]),
+            ("Wait", 50, [0.0, 0.0, 0.0, 0.0]),
+            ("Pan Right", 60, [0.0, 0.0, 0.5, 0.0]),  # Pan/action index 2
+            ("Wait", 30, [0.0, 0.0, 0.0, 0.0]),
+            ("Pan Left", 120, [0.0, 0.0, -0.5, 0.0]),
+            ("Wait", 30, [0.0, 0.0, 0.0, 0.0]),
+            ("Tilt Up", 40, [0.0, 0.0, 0.0, -0.5]),  # Tilt/action index 3
+            ("Wait", 20, [0.0, 0.0, 0.0, 0.0]),
+            ("Tilt Down", 40, [0.0, 0.0, 0.0, 0.5]),
+            ("Wait (End)", 100, [0.0, 0.0, 0.0, 0.0]),
         ]
 
         step_count = 0

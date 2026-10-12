@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 from skrl.resources.schedulers.torch import KLAdaptiveRL
 
@@ -6,12 +7,31 @@ ISAACLAB_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 
 import glob
 
+
+class CosineAnnealingWithHoldLR(torch.optim.lr_scheduler.CosineAnnealingLR):
+    """Cosine-anneal to ``eta_min``, then hold that floor indefinitely."""
+
+    def get_lr(self):
+        if self.last_epoch >= self.T_max:
+            return [self.eta_min for _ in self.base_lrs]
+        return super().get_lr()
+
+    def _get_closed_form_lr(self):
+        progress = min(max(self.last_epoch, 0), self.T_max) / self.T_max
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return [
+            self.eta_min + (base_lr - self.eta_min) * cosine
+            for base_lr in self.base_lrs
+        ]
+
+
 def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
     """
     Helper to automatically fetch the checkpoint path.
     :param project_name: Name of the project/experiment group (e.g. "SEEIR-Baseline")
     :param run_name: Name of the specific run (e.g. "SEEIR-2026-08-12_18-37-46")
-    :param checkpoint_type: 0 for 'best_agent.pt', 1 for the latest 'agent_*.pt'
+    :param checkpoint_type: 0 for 'best_agent.pt', 1 for the latest
+        'agent_*.pt', or 2 for 'safest_agent.pt'
     """
     base_dir = os.path.join(ISAACLAB_ROOT, "scripts/reinforcement_learning/skrl/logs/skrl", project_name, run_name, "checkpoints")
     
@@ -33,15 +53,99 @@ def get_checkpoint_path(project_name, run_name, checkpoint_type=0):
                 return -1
                 
         return max(files, key=extract_step)
+    elif checkpoint_type == 2:
+        return os.path.join(base_dir, "safest_agent.pt")
     else:
-        raise ValueError("checkpoint_type must be 0 (best) or 1 (latest)")
+        raise ValueError(
+            "checkpoint_type must be 0 (best), 1 (latest), or 2 (safest)"
+        )
 
-# Old hardcoded paths
 
+
+
+
+Models = {
+    # 'Base_model' :{
+    #     'path': "Alblation_ATTN_FUS_2026-09-19_10-47-23"
+    # },
+    # 'Diverse_dataset':
+    # {
+    #     'path': "Alblation_ATTN_FUS_2026-09-16_14-38-37"
+    # },
+    # Albaltion study models
+    'Paper-Baseline':{
+        'path': 'Alblation_ATTN_FUS_2026-09-22_08-11-39',
+        'Attention': True,
+        'Fusion': 'attention',
+    },
+    # Evaluate the same trained baseline checkpoint with a stricter 95%
+    # coverage-success threshold while keeping its results separate.
+
+    # 'MLP_Fusion':{
+    #     'path': "Alblation_MLP_FUS_2026-09-24_11-45-07",
+    #     'Attention': False,
+    #     'Fusion': 'concat_mlp',
+    # },
+    # Replace the path with the timestamped run name after training, then
+    # select Albation('No_MHA_Fusion') for evaluation.
+    'No_MHA_Fusion':{
+        'path': "Alblation_NO_MHA_FUS_2026-09-25_18-36-35",
+        'Attention': False,
+        'Fusion': 'token_ffn',
+    },
+    # You need to go back to the other run config to set the map
+    'Map_OCC_Only':{
+        'path': "Alblation_MAP_OCC_ONLY_2026-09-28_12-31-28",
+        'Attention': True,
+        'Fusion': 'attention',
+    },
+    # Replace the path after the occupancy + visibility model finishes.
+    'Map_OCC_Visibility':{
+        'path': "Alblation_MAP_OCC_VIS_2026-09-29_12-31-34",
+        'Attention': True,
+        'Fusion': 'attention',
+    },
+    # Replace the path after the parameter-matched no-GRU model finishes.
+    'No_GRU':{
+        'path': "Alblation_NO_GRU_2026-10-01_00-26-29",
+        'Attention': True,
+        'Fusion': 'attention',
+        'Temporal': 'feedforward',
+    },
+    # Replace the path after training. Evaluation also requires
+    # eval_Cfg.enable_pt_actuation=False in the environment run config.
+    'Fixed_Camera':{
+        'path': "Alblation_FIXED_CAMERA_2026-10-01_22-13-59",
+        'Attention': True,
+        'Fusion': 'attention',
+        'Temporal': 'gru',
+        'PTActuation': False,
+    },
+}
+class Albation:
+    def __init__(self, model_name):
+        self.model_name = model_name
+        self.path = Models[model_name]['path']
+        self.fusion_mode = Models[model_name].get(
+            'Fusion',
+            'attention' if Models[model_name].get('Attention', True) else 'concat_mlp',
+        )
+        self.temporal_mode = Models[model_name].get('Temporal', 'gru')
+        self.pt_actuation = Models[model_name].get('PTActuation', True)
+        # Compatibility attribute for older configuration code.
+        self.attention = self.fusion_mode == 'attention'
+# CURR_EXPeriment = Albation('')
+CURR_EXPeriment = Albation('Fixed_Camera')
 path_pretrained = get_checkpoint_path(
-    project_name="SEEIR-Baseline",
-    run_name="SEEIR-2026-08-23_13-53-01",
-    checkpoint_type=0  # 0 for best_agent.pt, 1 for the latest agent_*.pt step
+    project_name="Alblation-Baseline",
+    run_name= CURR_EXPeriment.path,
+    checkpoint_type=0 # 0: best_agent.pt, 1: latest agent_*.pt, 2: safest_agent.pt
+)
+
+legacy_aug31_checkpoint = os.path.join(
+    ISAACLAB_ROOT,
+    "scripts/reinforcement_learning/skrl/logs/skrl/SEEIR-Baseline",
+    "SEEIR-2026-08-31_20-03-08/checkpoints/agent_135000.pt",
 )
 
 class TrainingConfig_PreTrain:
@@ -52,65 +156,85 @@ class TrainingConfig_PreTrain:
     num_envs = 128
     reset_std = True
     batch_size = 8192 # 8192
-    use_attention_fusion = True
+    fusion_mode = "attention"  # "attention", "concat_mlp", or "token_ffn"
+    use_attention_fusion = fusion_mode == "attention"
     use_transformer_encoder = True
+    # Keep the complete recurrent attention baseline; only PT actuation is
+    # ablated in this run.
+    temporal_mode = "gru"  # "gru" or "feedforward"
+    gru_hidden_size = 512
+    gru_num_layers = 1
+    temporal_mlp_hidden_size = 1536
+    attention_d_model = 512
+    # Capacity-matched attention ablation: retain d_model=512 and change only
+    # the readout from a learned CLS token to mean pooling over modality tokens.
+    attention_pooling = "mean"
+    encoder_res_blocks_per_stage = 1
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
-    entropy_coef =  3e-5
+    entropy_coef =  0.00004
     value_loss_scale = 1.0 #1.0 
-    learning_rate = 5e-5
-    std_learning_rate = 6e-5
-    grad_clip_norm = 0.7
-    init_log_std =  0.0 # 0.0 
+    learning_rate = 4e-5
+    attention_learning_rate = 2e-5
+    use_separate_attention_lr = True
+    std_learning_rate = 4e-5
+    grad_clip_norm = 0.8
+    safety_checkpoint_min_success_rate = 0.90
+    safety_checkpoint_interval = 3_000
+    # Stop the remaining minibatches in an epoch when the approximate policy
+    # KL exceeds this guardrail. This complements the smooth cosine LR decay
+    # by catching localized KL spikes that are hidden by the mean KL.
+    kl_threshold = 0.08
+    # Canonical order: [linear velocity, angular velocity, pan, tilt]. The
+    # fixed-camera action space exposes the leading two entries only.
+    init_std = (0.85, 0.85, 0.90, 0.90)
+    slice_init_std_to_action_space = True
     manual_std_decay = False
-    final_log_std = -1.2  # Decays std to ~0.3
+    final_std = 0.3
     std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 35_000_000
-    scheduler_class =  torch.optim.lr_scheduler.CosineAnnealingLR
+    global_timesteps = 45_000_000
+    # Run the cosine decay across the full training horizon. Reducing this
+    # fraction below 1.0 reaches eta_min earlier and holds it thereafter.
+    scheduler_decay_fraction = 1.0
+    scheduler_class = CosineAnnealingWithHoldLR
     scheduler_kwargs = {
         "T_max": -1,  # Will be dynamically set
-        "eta_min": learning_rate * 0.1,
+        "eta_min": learning_rate * 0.01,
     }
+    experiment_name = "Alblation_FIXED_CAMERA"
 
 
-class TrainingConfig_FineTune(TrainingConfig_PreTrain):
-    num_envs = 64
-    batch_size = 8192 # 8192
-    checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
-    entropy_coef = 3e-5
-    learning_rate = 1e-5
-    global_timesteps = 30_000_000
-    reset_std = False # log(0.2) approx -1.6, giving an std of ~0.2
-    
-    # Explicitly overriding the scheduler so it evaluates based on the NEW learning rate
-    scheduler_kwargs = {
-        "T_max": -1,  
-        "eta_min": learning_rate * 0.1,  # Decays to 6e-7
-    }
-    
+
 class EvaluationConfig:
     optimizer_class = "adam"
     is_eval = True
     deterministic_eval = True
-    max_episodes = 20  # Added this so you can set the number of sims here!
-    headless = False
+    max_episodes = 512 # Added this so you can set the number of sims here!
+    headless = True
     # Example path, user should update
     checkpoint_path = os.path.join(ISAACLAB_ROOT, path_pretrained)
     num_envs = 1
     use_wandb = False
     reset_std = False
-    use_attention_fusion = True
+    fusion_mode = CURR_EXPeriment.fusion_mode
+    use_attention_fusion = fusion_mode == "attention"
+    temporal_mode = CURR_EXPeriment.temporal_mode
     use_transformer_encoder = True
+    attention_d_model = 512
+    attention_pooling = "mean"
+    encoder_res_blocks_per_stage = 1
+    use_separate_attention_lr = True
     use_pose_fourier_encoding = True
     num_pose_frequencies = 4
     activation_fn = "elu"
-    batch_size = 8192
+    batch_size =  8192
     entropy_coef = 3e-7
     learning_rate = 3e-5
-    init_log_std = 0.0
+    kl_threshold = 0.0
+    init_std = 1.0
     max_log_std = 2.0
     global_timesteps = 30_000_000
     scheduler_class = torch.optim.lr_scheduler.LinearLR
@@ -121,9 +245,29 @@ class EvaluationConfig:
     }
     data_recording_path = os.path.join(ISAACLAB_ROOT, "data/recorded_depth_data_eval")
     save_depth = False
+    experiment_name = ""
+
+
+class LegacyAugust31EvaluationConfig(EvaluationConfig):
+    """Architecture-compatible evaluation for SEEIR-2026-08-31_20-03-08."""
+
+    checkpoint_path = legacy_aug31_checkpoint
+    fusion_mode = "attention"
+    use_attention_fusion = True
+    temporal_mode = "gru"
+    attention_d_model = 256
+    attention_pooling = "mean"
+    encoder_res_blocks_per_stage = 2
+    # The saved Adam state has the historical policy/std two-group layout.
+    use_separate_attention_lr = False
 
 # Select the configuration to use
 configs_ = [TrainingConfig_PreTrain(), 
-            TrainingConfig_FineTune(),
-              EvaluationConfig()]   
-CONFIG = configs_[0] # <-- Changed to 2 so EvaluationConfig is active
+            # TrainingConfig_FineTune(),
+              EvaluationConfig(),
+              LegacyAugust31EvaluationConfig()]
+CONFIG = configs_[1]  # Train the full-map, full-MHA, GRU fixed-camera ablation.
+#~/evaluate_agent.sh --seed 42 --max_episodes 128 --eval-max-episode-steps 1200
+# ~/evaluate_agent.sh --seed 43 --max_episodes 128 --eval-max-episode-steps 1200
+# ~/evaluate_agent.sh --seed 44 --max_episodes 128 --eval-max-episode-steps 1200
+# ~/evaluate_agent.sh --seed 45 --max_episodes 128 --eval-max-episode-steps 1200

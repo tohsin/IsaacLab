@@ -104,6 +104,30 @@ def test_raycast_multi_cubes(device, trimesh_box, rays):
     assert torch.equal(mesh_ids, torch.tensor([[0, 1]], dtype=torch.int32, device=device))
 
 
+def test_raycast_environment_subset_uses_matching_mesh_row(device, trimesh_box):
+    """A subset ray batch must retain its original per-environment mesh assignment."""
+    lower_mesh = convert_to_warp_mesh(trimesh_box.vertices, trimesh_box.faces, device)
+    raised_trimesh = trimesh_box.copy()
+    raised_trimesh.apply_translation((0.0, 0.0, 2.0))
+    raised_mesh = convert_to_warp_mesh(raised_trimesh.vertices, raised_trimesh.faces, device)
+    mesh_ids_wp = wp.array2d([[lower_mesh.id], [raised_mesh.id]], dtype=wp.uint64, device=device)
+
+    ray_starts = torch.tensor([[[0.0, 0.0, -5.0]]], dtype=torch.float32, device=device)
+    ray_directions = torch.tensor([[[0.0, 0.0, 1.0]]], dtype=torch.float32, device=device)
+    ray_hits, ray_distance, _, _, _ = raycast_dynamic_meshes(
+        ray_starts,
+        ray_directions,
+        mesh_ids_wp,
+        return_distance=True,
+        mesh_env_ids=torch.tensor([1], device=device),
+    )
+
+    torch.testing.assert_close(
+        ray_hits, torch.tensor([[[0.0, 0.0, 1.5]]], dtype=torch.float32, device=device)
+    )
+    torch.testing.assert_close(ray_distance, torch.tensor([[6.5]], dtype=torch.float32, device=device))
+
+
 def test_raycast_single_cube(device, single_mesh, rays):
     """Test raycasting against a single cube."""
     ray_starts, ray_directions, expected_ray_hits = rays

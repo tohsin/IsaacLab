@@ -1,0 +1,126 @@
+==================================================
+EVALUATION RESULTS (513 Episodes)
+==================================================
+Mean Faces Discovered: 11211.68
+Std Deviation:         1361.67
+Min Faces:             0
+Max Faces:             12087
+Mean Coverage:          94.14%
+Std Coverage:           11.43%
+Per-target results:
+  ur10_mount: 513 episodes | Faces: 11211.68 | Coverage: 94.14%
+Mean Crashes: 0.01
+Median Crashes: 0.00
+Episodes With Crash: 1.36%
+Total Terminated Due to Crash: 7 / 513
+Mean Faces Discovered (NO CRASHES): 11292.84
+Crash Sources (primary base_link contact):
+  inspection_target/ur10_mount: 1 (14.29% of crashes)
+  obstacle: 6 (85.71% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 6 (85.71%)
+  Reverse: 1 (14.29%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+==================================================
+
+[INFO] Evaluation summary saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-10_16-06-28/checkpoints/eval_results/eval_deterministic_2026-09-11_09-03-18.json
+[INFO] Raw episode results saved to: /home/tosin/Documents/GitHub/IsaacLab/scripts/reinforcement_learning/skrl/logs/skrl/Alblation-Baseline/Alblation_ATTN_FUS_2026-09-10_16-06-28/checkpoints/eval_results/eval_deterministic_2026-09-11_09-03-18.npz
+
+==================================================
+EVALUATION RESULTS (512 Episodes)
+==================================================
+Mean Faces Discovered: 2355.42
+Std Deviation:         194.77
+Min Faces:             124
+Max Faces:             2642
+Mean Coverage:          96.45%
+Std Coverage:           7.98%
+Per-target results:
+  small_corner_bracket_physics: 512 episodes | Faces: 2355.42 | Coverage: 96.45%
+Mean Crashes: 0.01
+Median Crashes: 0.00
+Episodes With Crash: 1.17%
+Total Terminated Due to Crash: 6 / 512
+Mean Faces Discovered (NO CRASHES): 2371.26
+Crash Sources (primary base_link contact):
+  inspection_target/small_corner_bracket_physics: 4 (66.67% of crashes)
+  obstacle: 2 (33.33% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 4 (66.67%)
+  Reverse: 2 (33.33%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+=================================================
+EVALUATION RESULTS (512 Episodes)
+==================================================
+Mean Faces Discovered: 1651.54
+Std Deviation:         218.78
+Min Faces:             395
+Max Faces:             1797
+Mean Coverage:          92.84%
+Std Coverage:           12.30%
+Per-target results:
+  sortbot_housing: 512 episodes | Faces: 1651.54 | Coverage: 92.84%
+Mean Crashes: 0.05
+Median Crashes: 0.00
+Episodes With Crash: 5.08%
+Total Terminated Due to Crash: 26 / 512
+Mean Faces Discovered (NO CRASHES): 1693.51
+Crash Sources (primary base_link contact):
+  inspection_target/sortbot_housing: 22 (84.62% of crashes)
+  obstacle: 4 (15.38% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 22 (84.62%)
+  Reverse: 4 (15.38%)
+
+Safety Shield:
+  Total interventions: 0
+  Episodes with intervention: 0.00%
+  Mean intervened steps: 0.00%
+=================================================
+EVALUATION RESULTS (512 Episodes)
+==================================================
+Mean Faces Discovered: 10363.54
+Std Deviation:         1661.78
+Min Faces:             927
+Max Faces:             11363
+Mean Coverage:          90.93%
+Std Coverage:           14.58%
+Per-target results:
+  caster: 512 episodes | Faces: 10363.54 | Coverage: 90.93%
+Mean Crashes: 0.05
+Median Crashes: 0.00
+Episodes With Crash: 4.69%
+Total Terminated Due to Crash: 24 / 512
+Mean Faces Discovered (NO CRASHES): 10620.60
+Crash Sources (primary base_link contact):
+  inspection_target/caster: 17 (70.83% of crashes)
+  obstacle: 7 (29.17% of crashes)
+  warehouse_wall: 0 (0.00% of crashes)
+  floor_scrape: 0 (0.00% of crashes)
+  tip_over: 0 (0.00% of crashes)
+
+Crash Directions (intended velocity at time of crash):
+  Forward: 18 (75.00%)
+  Reverse: 6 (25.00%)
+
+

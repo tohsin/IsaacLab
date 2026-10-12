@@ -111,7 +111,7 @@ def main():
     
     print("[INFO] Processing frames...")
     for frame in tqdm(data['frames']):
-        # Per-frame Intrinsics (supports dynamic zoom)
+        # Per-frame camera intrinsics.
         K = np.eye(3)
         K[0, 0] = frame.get('fl_x', data['fl_x'])
         K[1, 1] = frame.get('fl_y', data['fl_y'])

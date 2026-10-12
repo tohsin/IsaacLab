@@ -28,6 +28,15 @@ from  .configs.robot_cfg import RobotPhysicsCfg
 from .configs.config_ import ROBOT_CONFIGS, env_parameters
 from .run_config import cfg_mode
 
+CAMERA_ZOOM_ENABLED = bool(getattr(cfg_mode, "enable_camera_zoom", False))
+PT_ACTUATION_ENABLED = bool(getattr(cfg_mode, "enable_pt_actuation", True))
+
+if CAMERA_ZOOM_ENABLED and not PT_ACTUATION_ENABLED:
+    raise ValueError(
+        "enable_camera_zoom must be False for the fixed-camera ablation "
+        "(enable_pt_actuation=False)"
+    )
+
 @configclass
 class WarehouseSceneCfg(InteractiveSceneCfg):
     # scene
@@ -35,7 +44,11 @@ class WarehouseSceneCfg(InteractiveSceneCfg):
         prim_path = env_parameters.prim_path,
         spawn=sim_utils.UsdFileCfg(
             usd_path=env_parameters.usd_path,
-            # scale=(1.0, 1.0, 1.0),
+            scale=env_parameters.scale,
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=env_parameters.position,
+            rot=env_parameters.orientation,
         ),
         collision_group=-1, # Keep collision settings
         debug_vis=cfg_mode.debug
@@ -65,7 +78,15 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             - [v_zero, ω_high_right] (Rotate in Place right)
     '''
     # action_space = spaces.Discrete(6)
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
+    # Active PT: [linear velocity, angular velocity, pan velocity, tilt
+    # velocity], with an optional fifth zoom action. The fixed-camera ablation
+    # exposes only the two chassis actions.
+    action_space = spaces.Box(
+        low=-1.0,
+        high=1.0,
+        shape=((5 if CAMERA_ZOOM_ENABLED else 4) if PT_ACTUATION_ENABLED else 2,),
+        dtype=np.float32,
+    )
     viewer = ViewerCfg( eye=(-10, 5, 8.4), lookat=(0, 0, 0.0))
     
     # outside wall
@@ -102,7 +123,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
             ),
             "ptz_acts": ImplicitActuatorCfg(
                 joint_names_expr=ROBOT_CONFIGS["jackal_ptz"]["ptz_joint_expr"], 
-                stiffness=0.0, # High stiffness drives the joint to a specific angle
+                # Active PT uses velocity control. The fixed-camera ablation
+                # uses an overdamped position drive to hold the neutral pose.
+                stiffness=0.0 if PT_ACTUATION_ENABLED else 1000.0,
                 damping= 200.0     # Moderate damping prevents oscillation #  40 -Position control
             )
         },
@@ -122,34 +145,36 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     else:
         action_dim = action_space.shape[0]
 
-    _x_dim = int(np.ceil((mapping_cfg.bounds["x_max"] - mapping_cfg.bounds["x_min"]) / mapping_cfg.resolution))
-    _y_dim = int(np.ceil((mapping_cfg.bounds["y_max"] - mapping_cfg.bounds["y_min"]) / mapping_cfg.resolution))
-    _z_dim = int(np.ceil((mapping_cfg.bounds["z_max"] - mapping_cfg.bounds["z_min"]) / mapping_cfg.resolution))
+    nav_channels = 4 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgbd" else (3 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgb" else 1)
+    ptz_channels = 4 if getattr(cfg_mode, "ptz_camera_modality", "rgb") == "rgbd" else (3 if getattr(cfg_mode, "ptz_camera_modality", "rgb") == "rgb" else 1)
+    sem_channels = 1
+    total_camera_channels = nav_channels + ptz_channels + sem_channels
 
     observation_space = spaces.Dict({
 
         "robot-pose": spaces.Box(
             low=float("-inf"), 
             high=float("inf"),
-            shape=(13 + action_dim + 2,), # Plus ptz joint position
+            # Fixed-camera policies omit the constant pan/tilt state as well
+            # as the two camera actions from the action history.
+            shape=(
+                13
+                + action_dim
+                + (2 if PT_ACTUATION_ENABLED else 0)
+                + (1 if CAMERA_ZOOM_ENABLED else 0),
+            ),
             dtype=np.float32
         ),
         "cameras": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
-            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, 8 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgbd" else (7 if getattr(cfg_mode, "nav_camera_modality", "rgb") == "rgb" else 5))
+            shape=(sensor_cfg.camera_width, sensor_cfg.camera_height, total_camera_channels)
         ),
         "local-map": spaces.Box(
             low=float("-inf"),
             high=float("inf"), 
             # Shape is (X, Y, Z, Channels). We have 2 channels: Occupancy, Visibility, Visitation
             shape=(*mapping_cfg.local_map_dims, 3), 
-            dtype=np.float32,
-        ),
-        "global-map": spaces.Box(
-            low=float("-inf"),
-            high=float("inf"), 
-            shape=(_x_dim, _y_dim, _z_dim, 3), 
             dtype=np.float32,
         )
     })

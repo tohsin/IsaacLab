@@ -83,4 +83,7 @@ data/recorded_depth_data_eval
 data/Flange_recorded
 multi_gpu_troubleshooting_notes.md
 scripts/reinforcement_learning/skrl/plots/
-debug_occ_map.png
+
+
+/data/ablation
+/data/collision_mesh_diagnostics

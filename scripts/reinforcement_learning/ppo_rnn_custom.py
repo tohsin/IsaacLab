@@ -2,6 +2,8 @@ from typing import Any, Mapping, Optional, Tuple, Union
 
 import copy
 import itertools
+import json
+import os
 import gymnasium
 from packaging import version
 
@@ -48,6 +50,18 @@ PPO_DEFAULT_CONFIG = {
 
     "entropy_loss_scale": 0.0,      # entropy loss scaling factor
     "value_loss_scale": 1.0,        # value loss scaling factor
+
+    # Optional labels used to log the standard deviation of each action dimension.
+    # If omitted, dimensions are logged as action_0, action_1, etc.
+    "action_std_names": None,
+
+    # Optional training-only checkpoint selected from environment safety
+    # statistics. The provider returns local rolling-window sums; PPO combines
+    # them across distributed workers before rank 0 writes the checkpoint.
+    "safety_checkpoint_metrics_provider": None,
+    "safety_checkpoint_path": None,
+    "safety_checkpoint_interval": 0,
+    "safety_checkpoint_min_success_rate": 0.90,
 
     "kl_threshold": 0,              # KL divergence threshold for early stopping
 
@@ -161,6 +175,21 @@ class PPO_RNN(Agent):
 
         self._rewards_shaper = self.cfg["rewards_shaper"]
         self._time_limit_bootstrap = self.cfg["time_limit_bootstrap"]
+
+        self._safety_checkpoint_metrics_provider = self.cfg.get(
+            "safety_checkpoint_metrics_provider"
+        )
+        # Keep the live callback out of TensorBoard/W&B configuration
+        # serialization. The bound attribute above remains callable.
+        self.cfg["safety_checkpoint_metrics_provider"] = None
+        self._safety_checkpoint_path = self.cfg.get("safety_checkpoint_path")
+        self._safety_checkpoint_interval = int(
+            self.cfg.get("safety_checkpoint_interval", 0)
+        )
+        self._safety_checkpoint_min_success_rate = float(
+            self.cfg.get("safety_checkpoint_min_success_rate", 0.90)
+        )
+        self._best_safety_checkpoint_metrics = None
 
         self._mixed_precision = self.cfg["mixed_precision"]
 
@@ -439,27 +468,147 @@ class PPO_RNN(Agent):
         # write tracking data and checkpoints
         super().post_interaction(timestep, timesteps)
 
+        safety_checkpoint_due = (
+            self._safety_checkpoint_interval > 0
+            and (
+                not (timestep + 1) % self._safety_checkpoint_interval
+                or timestep + 1 >= timesteps
+            )
+        )
+        if safety_checkpoint_due:
+            self._maybe_save_safest_checkpoint(timestep + 1)
+
         try:
             if self.cfg.get("manual_std_decay", False) and timestep % 100 ==0:
                 import math
                 decay_fraction = self.cfg.get("std_decay_fraction", 0.25)
                 progress = min(1.0, timestep / (timesteps* decay_fraction))
-                init_log_std = self.cfg.get("init_log_std", 0.0)
-                final_log_std = self.cfg.get("final_log_std", -2.0)
-                
-                init_std = math.exp(init_log_std)
-                final_std = math.exp(final_log_std)
+                log_std_parameter = self.policy.log_std_parameter
+
+                init_std_cfg = self.cfg.get("init_std")
+                if init_std_cfg is None:
+                    init_std_cfg = math.exp(self.cfg.get("init_log_std", 0.0))
+                init_std = torch.as_tensor(
+                    init_std_cfg,
+                    dtype=log_std_parameter.dtype,
+                    device=log_std_parameter.device,
+                ).flatten()
+                if init_std.numel() == 1:
+                    init_std = init_std.repeat(log_std_parameter.numel())
+
+                final_std_cfg = self.cfg.get("final_std")
+                if final_std_cfg is None:
+                    final_std_cfg = math.exp(self.cfg.get("final_log_std", -2.0))
+                final_std = torch.as_tensor(
+                    final_std_cfg,
+                    dtype=log_std_parameter.dtype,
+                    device=log_std_parameter.device,
+                ).flatten()
+                if final_std.numel() == 1:
+                    final_std = final_std.repeat(log_std_parameter.numel())
                 
                 # Cosine annealing: starts flat at init_std, smooth drop, flattens at final_std
                 cosine_progress = 0.5 * (1.0 + math.cos(math.pi * progress))
                 current_std = final_std + (init_std - final_std) * cosine_progress
-                current_log_std = math.log(current_std)
+                current_log_std = torch.log(current_std)
                 
                 with torch.no_grad():
                     if hasattr(self, "policy") and hasattr(self.policy, "log_std_parameter"):
-                        self.policy.log_std_parameter.fill_(current_log_std)
+                        self.policy.log_std_parameter.copy_(current_log_std)
         except Exception as e:
             print(f"[SKRL Library Warning]: Manual std decay fail {e}")
+
+    def _maybe_save_safest_checkpoint(self, timestep: int) -> None:
+        """Save the safest competent policy using fresh hardest-level metrics."""
+        provider = self._safety_checkpoint_metrics_provider
+        if provider is None or not self._safety_checkpoint_path:
+            return
+
+        try:
+            local_metrics = provider()
+        except Exception as error:
+            local_metrics = {}
+            if not config.torch.is_distributed or torch.distributed.get_rank() == 0:
+                print(f"[WARNING] Safety checkpoint metrics unavailable: {error}")
+
+        # All ranks execute this at the same trainer timestep. Summing the
+        # sufficient statistics produces one global window without requiring
+        # asynchronous collectives from environment reset callbacks.
+        metric_values = torch.tensor(
+            [
+                float(bool(local_metrics.get("at_max_curriculum", False))),
+                float(bool(local_metrics.get("fresh_window", False))),
+                float(local_metrics.get("episode_count", 0)),
+                float(local_metrics.get("success_sum", 0.0)),
+                float(local_metrics.get("crash_sum", 0.0)),
+                float(local_metrics.get("coverage_sum", 0.0)),
+            ],
+            dtype=torch.float64,
+            device=self.device,
+        )
+
+        world_size = 1
+        if config.torch.is_distributed:
+            world_size = torch.distributed.get_world_size()
+            torch.distributed.all_reduce(
+                metric_values, op=torch.distributed.ReduceOp.SUM
+            )
+
+        all_at_max_curriculum = metric_values[0].item() == world_size
+        all_windows_fresh = metric_values[1].item() == world_size
+        episode_count = int(metric_values[2].item())
+        if not all_at_max_curriculum or not all_windows_fresh or episode_count <= 0:
+            return
+
+        success_rate = metric_values[3].item() / episode_count
+        crash_rate = metric_values[4].item() / episode_count
+        mean_coverage = metric_values[5].item() / episode_count
+        if success_rate < self._safety_checkpoint_min_success_rate:
+            return
+
+        candidate = {
+            "timestep": int(timestep),
+            "episode_count": episode_count,
+            "success_rate": success_rate,
+            "crash_rate": crash_rate,
+            "mean_coverage_percent": mean_coverage,
+        }
+        best = self._best_safety_checkpoint_metrics
+        candidate_rank = (-crash_rate, success_rate, mean_coverage)
+        best_rank = None if best is None else (
+            -best["crash_rate"],
+            best["success_rate"],
+            best["mean_coverage_percent"],
+        )
+        if best_rank is not None and candidate_rank <= best_rank:
+            return
+
+        # Keep every rank's selector state identical, while only rank 0 touches
+        # the shared filesystem.
+        self._best_safety_checkpoint_metrics = candidate
+        is_main_process = (
+            not config.torch.is_distributed or torch.distributed.get_rank() == 0
+        )
+        if not is_main_process:
+            return
+
+        checkpoint_path = os.path.abspath(self._safety_checkpoint_path)
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        temporary_checkpoint_path = checkpoint_path + ".tmp"
+        self.save(temporary_checkpoint_path)
+        os.replace(temporary_checkpoint_path, checkpoint_path)
+
+        metadata_path = os.path.splitext(checkpoint_path)[0] + ".json"
+        temporary_metadata_path = metadata_path + ".tmp"
+        with open(temporary_metadata_path, "w", encoding="utf-8") as file:
+            json.dump(candidate, file, indent=2, sort_keys=True)
+        os.replace(temporary_metadata_path, metadata_path)
+        print(
+            "[INFO] Saved safest eligible policy: "
+            f"crash_rate={crash_rate:.2%}, success_rate={success_rate:.2%}, "
+            f"coverage={mean_coverage:.2f}% over {episode_count:,} episodes -> "
+            f"{checkpoint_path}"
+        )
 
     def _update(self, timestep: int, timesteps: int) -> None:
         """Algorithm's main update step
@@ -557,6 +706,7 @@ class PPO_RNN(Agent):
         cumulative_policy_loss = 0
         cumulative_entropy_loss = 0
         cumulative_value_loss = 0
+        all_kl_divergences = []
 
         # learning epochs
         for epoch in range(self._learning_epochs):
@@ -612,10 +762,22 @@ class PPO_RNN(Agent):
                         ratio = next_log_prob - sampled_log_prob
                         kl_divergence = ((torch.exp(ratio) - 1) - ratio).mean()
                         kl_divergences.append(kl_divergence)
+                        all_kl_divergences.append(kl_divergence)
 
-                    # early stopping with KL divergence
-                    if self._kl_threshold and kl_divergence > self._kl_threshold:
-                        break
+                    # Early stopping must be a collective decision in distributed
+                    # training. If only one rank breaks here, the other rank enters
+                    # the parameter-gradient all-reduce below while the stopped rank
+                    # moves on to a scalar KL all-reduce, desynchronizing NCCL.
+                    if self._kl_threshold:
+                        stop_for_kl = (kl_divergence > self._kl_threshold).to(
+                            dtype=torch.int32
+                        )
+                        if config.torch.is_distributed:
+                            torch.distributed.all_reduce(
+                                stop_for_kl, op=torch.distributed.ReduceOp.MAX
+                            )
+                        if stop_for_kl.item():
+                            break
 
                     # compute entropy loss
                     if self._entropy_loss_scale:
@@ -688,7 +850,40 @@ class PPO_RNN(Agent):
                 "Loss / Entropy loss", cumulative_entropy_loss / (self._learning_epochs * self._mini_batches)
             )
 
-        self.track_data("Policy / Standard deviation", self.policy.distribution(role="policy").stddev.mean().item())
+        # Log the policy drift over the whole PPO update. Reduce the statistics
+        # across workers so rank 0 reports the global rather than local KL.
+        if all_kl_divergences:
+            local_kls = torch.stack(all_kl_divergences)
+            kl_sum = local_kls.sum()
+            kl_count = torch.tensor(local_kls.numel(), dtype=torch.float32, device=self.device)
+            kl_max = local_kls.max()
+
+            if config.torch.is_distributed:
+                torch.distributed.all_reduce(kl_sum, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(kl_count, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(kl_max, op=torch.distributed.ReduceOp.MAX)
+
+            self.track_data("Learning / KL divergence (mean)", (kl_sum / kl_count.clamp_min(1)).item())
+            self.track_data("Learning / KL divergence (max)", kl_max.item())
+
+        policy_stddev = self.policy.distribution(role="policy").stddev.detach()
+        self.track_data("Policy / Standard deviation", policy_stddev.mean().item())
+
+        # Keep the aggregate metric above for backwards-compatible dashboards, but
+        # also expose each action dimension so different exploration levels are not
+        # hidden by the mean.
+        if policy_stddev.ndim > 0:
+            per_action_stddev = policy_stddev.reshape(-1, policy_stddev.shape[-1]).mean(dim=0)
+            action_std_names = self.cfg.get("action_std_names")
+            if not action_std_names or len(action_std_names) != per_action_stddev.numel():
+                action_std_names = [f"action_{i}" for i in range(per_action_stddev.numel())]
+
+            for action_name, stddev in zip(action_std_names, per_action_stddev):
+                self.track_data(f"Policy / Standard deviation ({action_name})", stddev.item())
 
         if self._learning_rate_scheduler:
-            self.track_data("Learning / Learning rate", self.scheduler.get_last_lr()[0])
+            group_lrs = self.scheduler.get_last_lr()
+            self.track_data("Learning / Learning rate", group_lrs[0])
+            for index, (parameter_group, group_lr) in enumerate(zip(self.optimizer.param_groups, group_lrs)):
+                group_name = parameter_group.get("name", f"group_{index}")
+                self.track_data(f"Learning / Learning rate ({group_name})", group_lr)
