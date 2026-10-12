@@ -199,7 +199,9 @@ class SensorsCfg:
             mesh_prim_paths=[
                 MultiMeshRayCasterCameraCfg.RaycastTargetCfg(
                     target_prim_expr=target.prim_path,
-                    track_mesh_transforms=True
+                    is_shared=target.primitive is None,
+                    max_num_faces=target.inspection_mesh_max_faces,
+                    track_mesh_transforms=True,
                 ) for target in env_parameters.inspection_targets.values()
             ],
             update_mesh_ids=True,
@@ -227,7 +229,9 @@ class SensorsCfg:
         mesh_prim_paths=[
             MultiMeshRayCasterCameraCfg.RaycastTargetCfg(
                 target_prim_expr=target.prim_path,
-                track_mesh_transforms=True
+                is_shared=target.primitive is None,
+                max_num_faces=target.inspection_mesh_max_faces,
+                track_mesh_transforms=True,
             ) for target in env_parameters.inspection_targets.values()
         ],
         update_mesh_ids=True,

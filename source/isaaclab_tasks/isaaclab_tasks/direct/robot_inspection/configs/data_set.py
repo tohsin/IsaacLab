@@ -34,13 +34,29 @@ def _select_data_set() -> dict:
     )
     if target_name is None:
         return selected_data_set
-    if target_name not in selected_data_set:
-        valid_targets = ", ".join(sorted(selected_data_set))
-        raise ValueError(
-            f"Inspection target {target_name!r} is not in the {data_set_name!r} dataset. "
-            f"Valid targets: {valid_targets}"
-        )
-    return {target_name: selected_data_set[target_name]}
+    
+    if isinstance(target_name, list):
+        targets_to_return = {}
+        for t in target_name:
+            if t not in selected_data_set:
+                valid_targets = ", ".join(sorted(selected_data_set))
+                raise ValueError(
+                    f"Inspection target {t!r} is not in the {data_set_name!r} dataset. "
+                    f"Valid targets: {valid_targets}"
+                )
+            targets_to_return[t] = selected_data_set[t]
+        return targets_to_return
+
+    if isinstance(target_name, str):
+        if target_name not in selected_data_set:
+            valid_targets = ", ".join(sorted(selected_data_set))
+            raise ValueError(
+                f"Inspection target {target_name!r} is not in the {data_set_name!r} dataset. "
+                f"Valid targets: {valid_targets}"
+            )
+        return {target_name: selected_data_set[target_name]}
+    
+    raise ValueError(f"Unsupported type for inspection_target: {type(target_name)}")
 
 
 usd_data_set = _select_data_set()

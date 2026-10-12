@@ -1,24 +1,30 @@
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 
+# ``inspection_mesh_max_faces`` caps all triangles in the merged Warp mesh.
+# ``num_faces`` is separate: it is the empirically inspectable subset used as
+# the coverage denominator and should be updated from calibration ``max_faces``.
 evaluation_data_set = {
     # ConveyorBelt_A08 is intentionally excluded: it contains independent
     # root and Rollers rigid bodies, while inspection targets are represented
     # and reset as one RigidObject.
     'extinguisher': {
-        'num_faces': 50_000,
+        'num_faces': 980,
+        "mesh_num_faces": 1_460,
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Office/Props/SM_Extinguisher.usd",
         "prim_path": "/World/envs/env_.*/extinguisher",
         "scale": 1.5,
     },
     'barrel':{
-        'num_faces': 50_000,
+        'num_faces': 1111,
+        "mesh_num_faces": 1_452,
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/Props/SM_BarelPlastic_B_02.usd",
         "prim_path": "/World/envs/env_.*/barrel",
         "scale": (2.0, 2.0, 2.0),
     },
     'dolly':{
-        'num_faces': 50_000,
+        'num_faces': 8137,
+        "inspection_mesh_max_faces": 10_000,
         # Use the composed/visual prop rather than its multi-body physics
         # layer. Inspection targets are intentionally wrapped as one rigid
         # object by inspection_env.py.
@@ -27,7 +33,8 @@ evaluation_data_set = {
         "scale": 1.0,
     },
     "small_corner_bracket_physics": {
-        "num_faces": 2442,
+        "num_faces": 3222,#2442,
+        "mesh_num_faces": 3_418,
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/small_corner_bracket_physics.usd",
         "prim_path": "/World/envs/env_.*/small_corner_bracket_physics",
         "scale": 50.0,
@@ -35,7 +42,8 @@ evaluation_data_set = {
     },
 
     "ur10_mount": {
-            "num_faces": 50_000,#12000, #12494
+            "num_faces": 8040,#12000, #12494
+            "inspection_mesh_max_faces": 10_000,
             "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ur10_mount.usd",
             "prim_path": "/World/envs/env_.*/ur10_mount",
             "scale": (3.0, 3.0, 2.2),
@@ -45,7 +53,8 @@ evaluation_data_set = {
             "root_height": 0.405,
         },
     "pallet": {
-        "num_faces": 50_000, #10054,
+        "num_faces": 2510, #10054,
+        "inspection_mesh_max_faces": 10_000,
         "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Pallet/o3dyn_pallet.usd",
         "prim_path": "/World/envs/env_.*/pallet",
         "scale": 1.0,
@@ -54,7 +63,8 @@ evaluation_data_set = {
         "root_height": 0.0,
     },
     "caster": {
-            "num_faces": 11397,
+            "num_faces": 6604,#11397,
+            "inspection_mesh_max_faces": 10_000,
             "usd_path": f"{ISAAC_NUCLEUS_DIR}/Props/Flip_Stack/caster.usd",
             "prim_path": "/World/envs/env_.*/caster",
             "scale": (20.0, 20.0, 20.0),

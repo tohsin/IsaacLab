@@ -35,6 +35,55 @@ if TYPE_CHECKING:
     from .multi_mesh_ray_caster_cfg import MultiMeshRayCasterCfg
 
 
+def _simplify_trimesh(mesh: trimesh.Trimesh, max_num_faces: int, prim_path: str) -> trimesh.Trimesh:
+    """Return a quadric-decimated copy of ``mesh`` capped at ``max_num_faces`` triangles."""
+    if max_num_faces <= 0:
+        raise ValueError(f"max_num_faces must be positive, got {max_num_faces} for '{prim_path}'.")
+
+    original_num_faces = len(mesh.faces)
+    if original_num_faces <= max_num_faces:
+        return mesh
+
+    try:
+        import open3d as o3d
+    except ImportError as exc:
+        raise ImportError(
+            "Ray-cast mesh simplification requires Open3D when max_num_faces is configured."
+        ) from exc
+
+    open3d_mesh = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(mesh.vertices, dtype=np.float64)),
+        o3d.utility.Vector3iVector(np.asarray(mesh.faces, dtype=np.int32)),
+    )
+    simplified = open3d_mesh.simplify_quadric_decimation(
+        target_number_of_triangles=max_num_faces,
+    )
+    simplified.remove_degenerate_triangles()
+    simplified.remove_duplicated_triangles()
+    simplified.remove_duplicated_vertices()
+    simplified.remove_unreferenced_vertices()
+
+    vertices = np.asarray(simplified.vertices)
+    faces = np.asarray(simplified.triangles)
+    if len(vertices) == 0 or len(faces) == 0:
+        raise RuntimeError(
+            f"Mesh simplification produced an empty mesh for '{prim_path}' "
+            f"({original_num_faces} input faces, cap {max_num_faces})."
+        )
+    if len(faces) > max_num_faces:
+        raise RuntimeError(
+            f"Mesh simplification exceeded the configured cap for '{prim_path}': "
+            f"{len(faces)} > {max_num_faces}."
+        )
+
+    simplification_message = (
+        f"Simplified ray-cast mesh '{prim_path}' from {original_num_faces} to {len(faces)} faces."
+    )
+    omni.log.info(simplification_message)
+    print(f"[INFO] {simplification_message}")
+    return trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+
 class MultiMeshRayCaster(RayCaster):
     """A multi-mesh ray-casting sensor.
 
@@ -306,6 +355,13 @@ class MultiMeshRayCaster(RayCaster):
                         " enable `merge_prim_meshes` in the configuration or specify each mesh separately."
                     )
 
+                if target_cfg.max_num_faces is not None:
+                    trimesh_mesh = _simplify_trimesh(
+                        trimesh_mesh,
+                        max_num_faces=target_cfg.max_num_faces,
+                        prim_path=str(target_prim.GetPath()),
+                    )
+
                 # check if the mesh is already registered, if so only reference the mesh
                 registered_idx = _registered_points_idx(trimesh_mesh.vertices, loaded_vertices)
                 if registered_idx != -1 and self.cfg.reference_meshes:
@@ -440,6 +496,7 @@ class MultiMeshRayCaster(RayCaster):
             self._ray_starts_w[env_ids],
             self._ray_directions_w[env_ids],
             mesh_ids_wp=self._mesh_ids_wp,  # list with shape num_envs x num_meshes_per_env
+            # [Tosin's Change] Explicitly passes the environment subset IDs to ensure rays lookup the correct meshes
             mesh_env_ids=env_ids,
             max_dist=self.cfg.max_distance,
             mesh_positions_w=self._mesh_positions_w[env_ids],

@@ -78,6 +78,9 @@ Models = {
         'Attention': True,
         'Fusion': 'attention',
     },
+    # Evaluate the same trained baseline checkpoint with a stricter 95%
+    # coverage-success threshold while keeping its results separate.
+
     # 'MLP_Fusion':{
     #     'path': "Alblation_MLP_FUS_2026-09-24_11-45-07",
     #     'Attention': False,
@@ -131,7 +134,8 @@ class Albation:
         self.pt_actuation = Models[model_name].get('PTActuation', True)
         # Compatibility attribute for older configuration code.
         self.attention = self.fusion_mode == 'attention'
-CURR_EXPeriment = Albation('Paper-Baseline')
+# CURR_EXPeriment = Albation('')
+CURR_EXPeriment = Albation('Fixed_Camera')
 path_pretrained = get_checkpoint_path(
     project_name="Alblation-Baseline",
     run_name= CURR_EXPeriment.path,

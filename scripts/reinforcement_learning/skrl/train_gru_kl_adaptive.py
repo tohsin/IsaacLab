@@ -1418,6 +1418,8 @@ if is_eval:
                     # The agent.record_transition method usually does this, but we are skipping it in eval
                     # so we must do it manually
                     finished_episodes = (terminated | truncated).nonzero(as_tuple=False)
+                    # if finished_episodes.numel() > 0:
+                    #     print(f"[DEBUG] Resetting GRU hidden state for {finished_episodes.numel()} environments!")
                     if finished_episodes.numel():
                         for rnn_state in agent._rnn_initial_states["policy"]:
                             rnn_state[:, finished_episodes[:, 0]] = 0
@@ -1605,14 +1607,19 @@ if is_eval:
 
         if len(target_index_array) == len(faces_array) and target_index_to_name:
             per_target = {}
+            _crashes_arr = np.asarray(crashes_list) if crashes_list else None
+            _crash_src_arr = np.asarray(crash_source_counts_list, dtype=np.int64) if crash_source_counts_list else None
+            
             for target_index, target_name in enumerate(target_index_to_name):
                 target_mask = target_index_array == target_index
                 if not np.any(target_mask):
                     continue
                 target_faces = faces_array[target_mask]
                 target_summary = {
+                    "seed": WORKER_SEED,
                     "episodes": int(np.sum(target_mask)),
                     "mean_faces": float(np.mean(target_faces)),
+                    "max_faces": int(np.max(target_faces)) if len(target_faces) > 0 else 0,
                 }
                 if len(coverage_array) == len(faces_array):
                     target_summary["mean_coverage_percent"] = float(
@@ -1622,6 +1629,44 @@ if is_eval:
                     target_summary["mean_inspection_quality"] = float(
                         np.mean(inspection_quality_array[target_mask])
                     )
+                if len(episode_success_array) == len(faces_array):
+                    target_summary["success_rate_percent"] = float(
+                        np.mean(episode_success_array[target_mask]) * 100.0
+                    )
+                if len(episode_timed_out_array) == len(faces_array):
+                    target_summary["timeout_rate_percent"] = float(
+                        np.mean(episode_timed_out_array[target_mask]) * 100.0
+                    )
+                if _crashes_arr is not None and len(_crashes_arr) == len(faces_array):
+                    target_summary["crash_rate_percent"] = float(
+                        np.mean(_crashes_arr[target_mask] > 0) * 100.0
+                    )
+                if len(episode_steps_array) == len(faces_array):
+                    target_summary["mean_episode_steps"] = float(
+                        np.mean(episode_steps_array[target_mask])
+                    )
+                
+                # Extract crash sources
+                if _crash_src_arr is not None and _crash_src_arr.shape == (len(faces_array), len(crash_source_names)):
+                    target_crashes = _crash_src_arr[target_mask].sum(axis=0)
+                    grouped = {"target": 0, "obstacle": 0, "wall": 0, "floor": 0, "tip_over": 0}
+                    for src_name, src_count in zip(crash_source_names, target_crashes):
+                        if src_name.startswith("inspection_target"):
+                            grouped["target"] += src_count
+                        elif src_name.startswith("obstacle"):
+                            grouped["obstacle"] += src_count
+                        elif src_name == "warehouse_wall":
+                            grouped["wall"] += src_count
+                        elif src_name == "floor_scrape":
+                            grouped["floor"] += src_count
+                        elif src_name == "tip_over":
+                            grouped["tip_over"] += src_count
+                    target_summary["crash_target_percent"] = float(100.0 * grouped["target"] / len(target_faces))
+                    target_summary["crash_obstacle_percent"] = float(100.0 * grouped["obstacle"] / len(target_faces))
+                    target_summary["crash_wall_percent"] = float(100.0 * grouped["wall"] / len(target_faces))
+                    target_summary["crash_floor_percent"] = float(100.0 * grouped["floor"] / len(target_faces))
+                    target_summary["crash_tipover_percent"] = float(100.0 * grouped["tip_over"] / len(target_faces))
+
                 per_target[target_name] = target_summary
             summary["per_target"] = per_target
         print("\n" + "="*50)
@@ -1878,6 +1923,45 @@ if is_eval:
 
         with open(summary_path, "w", encoding="utf-8") as summary_file:
             json.dump(summary, summary_file, indent=2)
+
+        from run_config import CURR_EXPeriment
+        custom_name = getattr(CONFIG, "experiment_name", None)
+        csv_filename = custom_name if custom_name else CURR_EXPeriment.model_name
+        
+        ablation_csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../../data/ablation/{csv_filename}.csv"))
+        os.makedirs(os.path.dirname(ablation_csv_path), exist_ok=True)
+        csv_exists = os.path.exists(ablation_csv_path)
+        with open(ablation_csv_path, "a", encoding="utf-8") as f:
+            if not csv_exists:
+                f.write("timestamp,checkpoint,target_name,seed,episodes,mean_faces,max_faces,mean_coverage_percent,mean_inspection_quality,success_rate_percent,timeout_rate_percent,crash_rate_percent,mean_episode_steps,crash_target_percent,crash_obstacle_percent,crash_wall_percent,crash_floor_percent,crash_tipover_percent\n")
+            if "per_target" in summary:
+                for target_name, stats in summary["per_target"].items():
+                    f.write(f"{result_timestamp},{path},{target_name},{stats.get('seed', WORKER_SEED)},{stats['episodes']},{stats.get('mean_faces', 0):.2f},{stats.get('max_faces', 0)},{stats.get('mean_coverage_percent', 0):.2f},{stats.get('mean_inspection_quality', 0):.4f},{stats.get('success_rate_percent', 0):.2f},{stats.get('timeout_rate_percent', 0):.2f},{stats.get('crash_rate_percent', 0):.2f},{stats.get('mean_episode_steps', 0):.2f},{stats.get('crash_target_percent', 0):.2f},{stats.get('crash_obstacle_percent', 0):.2f},{stats.get('crash_wall_percent', 0):.2f},{stats.get('crash_floor_percent', 0):.2f},{stats.get('crash_tipover_percent', 0):.2f}\n")
+            else:
+                _succ = float(np.mean(episode_success_array)*100) if len(episode_success_array) == len(faces_array) else 0.0
+                _timeo = float(np.mean(episode_timed_out_array)*100) if len(episode_timed_out_array) == len(faces_array) else 0.0
+                _crash = float(np.mean(np.asarray(crashes_list)>0)*100) if crashes_list and len(crashes_list) == len(faces_array) else 0.0
+                _steps = float(np.mean(episode_steps_array)) if len(episode_steps_array) == len(faces_array) else 0.0
+                
+                # Global crash sources
+                _tgt = _obs = _wal = _flr = _tip = 0.0
+                if crash_source_counts_list and len(crash_source_counts_list) == len(faces_array) and crash_source_names:
+                    _src_arr = np.asarray(crash_source_counts_list, dtype=np.int64).sum(axis=0)
+                    for src_name, src_count in zip(crash_source_names, _src_arr):
+                        if src_name.startswith("inspection_target"):
+                            _tgt += src_count
+                        elif src_name.startswith("obstacle"):
+                            _obs += src_count
+                        elif src_name == "warehouse_wall":
+                            _wal += src_count
+                        elif src_name == "floor_scrape":
+                            _flr += src_count
+                        elif src_name == "tip_over":
+                            _tip += src_count
+                    n_eps = len(faces_array)
+                    _tgt, _obs, _wal, _flr, _tip = _tgt*100/n_eps, _obs*100/n_eps, _wal*100/n_eps, _flr*100/n_eps, _tip*100/n_eps
+                
+                f.write(f"{result_timestamp},{path},ALL,{WORKER_SEED},{int(len(faces_array))},{np.mean(faces_array):.2f},{int(np.max(faces_array))},{np.mean(coverage_array) if len(coverage_array) == len(faces_array) else 0:.2f},{np.mean(inspection_quality_array) if len(inspection_quality_array) == len(faces_array) else 0:.4f},{_succ:.2f},{_timeo:.2f},{_crash:.2f},{_steps:.2f},{_tgt:.2f},{_obs:.2f},{_wal:.2f},{_flr:.2f},{_tip:.2f}\n")
 
         raw_results = {"faces_discovered": faces_array}
         if len(coverage_array) == len(faces_array):

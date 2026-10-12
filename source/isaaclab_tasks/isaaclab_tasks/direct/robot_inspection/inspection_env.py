@@ -447,15 +447,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
         
-        # Warp returns contiguous triangle indices for the procedural meshes, so
-        # they only require the exact largest topology. Keep the historical
-        # safety capacity for imported USD assets whose authored counts have not
-        # yet been audited against their merged Warp meshes.
+        # Warp returns contiguous triangle indices. Procedural meshes, capped
+        # imported meshes, and audited native meshes all have known bounds and
+        # can use their configured exact capacity. Keep the historical safety
+        # capacity only for unaudited, uncapped imported USD assets.
         max_faces = int(self.total_mesh_faces.max().item())
         targets = self.cfg.inspection_goal_cfg.inspection_targets.values()
-        procedural_only = all(target.primitive is not None for target in targets)
-        self.q_capacity = max_faces if procedural_only else max(1_700_000, max_faces + 1000)
-        self.best_q_per_face = torch.zeros((self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32)
+        bounded_face_ids = all(target.mesh_num_faces_is_bounded for target in targets)
+        self.q_capacity = max_faces if bounded_face_ids else max(1_700_000, max_faces + 1000)
+        print(f"[INFO] Inspection face-ID capacity: {self.q_capacity}")
+        self.best_q_per_face = torch.zeros(
+            (self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32
+        )
 
         # Evaluation-only visibility-filter diagnostics. These are accumulated
         # per episode so vectorized runs can reveal whether a rendered target
@@ -2484,7 +2487,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         mean_quality = torch.zeros_like(total_quality)
         mask = num_faces_inspected > 0
         mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
-        coverage_achieved = (num_faces_inspected / self.coverage_num_faces) >= self.curriculum.get_current_coverage_goal()
+        coverage_achieved = (
+            num_faces_inspected / self.coverage_num_faces
+        ) >= self.curriculum.get_current_coverage_goal()
+        if getattr(run_cfg, "calibrate_inspection_face_counts", False):
+            # The inspectable denominator is the value being measured, so it
+            # cannot also be used to end calibration episodes early.
+            coverage_achieved = torch.zeros_like(coverage_achieved)
         current_max_crashes = self.curriculum.get_current_max_crashes()
         collision_failure = (self.episode_crashes >= current_max_crashes) & bool(
             getattr(run_cfg, "reset_on_crash", False)

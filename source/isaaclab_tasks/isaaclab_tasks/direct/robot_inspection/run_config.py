@@ -193,8 +193,10 @@ class train_Cfg_base: # For pretriaing as a base
     safety_shield_z_min: float = 0.10
     safety_shield_z_max: float = 0.80
     safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
+
 class eval_Cfg:
     debug = False
+    policy_map_channels = policy_map_channel_sets.ALL
     # Dedicated target semantics avoid collisions with authored ``class``
     # labels on the target's child meshes and elsewhere in the warehouse. Set
     # this temporarily to ``"class"`` only for old-evaluation compatibility.
@@ -208,7 +210,7 @@ class eval_Cfg:
     face_depth_rel_tolerance: float = 0.01
     # Must match the checkpoint architecture. Set False for the fixed-camera
     # ablation checkpoint and True for the active-PT models.
-    enable_pt_actuation: bool = True
+    enable_pt_actuation: bool = False
     # This must match the checkpoint architecture: False for four-action
     # baseline checkpoints, True for five-action zoom checkpoints.
     enable_camera_zoom: bool = False
@@ -219,7 +221,14 @@ class eval_Cfg:
     # Evaluate the August 31 policy on an out-of-distribution target using the
     # current physics, spawning, sensor noise, and collision detector.
     inspection_dataset = "evaluation"
-    inspection_target = eval_dataset['ur10']
+    _env_target = os.environ.get("ISAACLAB_INSPECTION_TARGET")
+    if _env_target:
+        inspection_target = [_env_target]
+    else:
+        inspection_target = [
+            "ur10_mount", "extinguisher",
+            "small_corner_bracket_physics", "pallet", "barrel"
+        ]
     # inspection_dataset = "primitive"
     # inspection_target = 'tessellated_thin_legged_body'
     kinematic_inspection_target = True
@@ -245,7 +254,11 @@ class eval_Cfg:
     max_episode_length: int = 1200
     min_episode_length: int = 1200
     logging_interval: int = 1500
-    inspection_goal =  1.0
+    inspection_goal =  0.9#1.0
+    # Run every non-crashed episode to its full horizon while calibrating the
+    # inspectable-face denominator of the simplified evaluation meshes. After
+    # copying each target's reported max_faces into eval_dataset.py, set False.
+    calibrate_inspection_face_counts: bool = False
     visualisation_mode = None
     visualise_point_cloud = False # Only for debuggin the point cloud its incredinly memory intensive
     visualise_face_ids = False
@@ -267,7 +280,7 @@ class eval_Cfg:
     collision_consecutive_steps: int = 2
     tipover_max_tilt_degrees: float = 45.0
     tipover_consecutive_steps: int = 2
-    max_obstacles: int = 15
+    max_obstacles: int = 12 # 15
     reset_on_crash = True
     enable_voxel_visualization = False
 
@@ -338,10 +351,12 @@ class record_depth_Cfg(eval_Cfg):
     use_wandb =  False 
     headless = True
     num_envs = 1
+    _target_for_path = inspection_target if inspection_target else inspection_dataset
+    _target_str = "_".join(_target_for_path) if isinstance(_target_for_path, (list, tuple)) else str(_target_for_path)
     data_recording_path = os.path.join(
         ISAACLAB_ROOT,
         "data/recorded_depth_data_eval",
-        inspection_target or inspection_dataset,
+        _target_str,
     )
     # RGB image sequences are only needed for GS/NeRF-style reconstruction.
     save_images = False

@@ -29,10 +29,28 @@ ROBOT_CONFIGS = {
 }
 class Inpsection_Target:
     def __init__(self, custom_name, num_faces, prim_path, usd_path=None, primitive=None,
-                mesh_num_faces=None, scale=10.0, root_height=None,
+                mesh_num_faces=None, inspection_mesh_max_faces=None, scale=10.0, root_height=None,
                 semantics_type="inspection_target", semantics_name="inspection_goal",
                 orientation=(1.0, 0.0, 0.0, 0.0)):
         self.custom_name = custom_name
+        self.mesh_num_faces_is_bounded = (
+            primitive is not None
+            or mesh_num_faces is not None
+            or inspection_mesh_max_faces is not None
+        )
+        self.inspection_mesh_max_faces = inspection_mesh_max_faces
+        if inspection_mesh_max_faces is not None:
+            if inspection_mesh_max_faces <= 0:
+                raise ValueError(
+                    f"inspection_mesh_max_faces must be positive for {custom_name!r}, "
+                    f"got {inspection_mesh_max_faces}."
+                )
+            # ``num_faces`` in imported datasets is a calibrated reachable-face
+            # denominator, not necessarily the source USD's actual triangle
+            # count. Cap that denominator, but reserve enough face-ID storage
+            # for every triangle produced by the simplifier.
+            num_faces = min(num_faces, inspection_mesh_max_faces)
+            mesh_num_faces = inspection_mesh_max_faces
         # Expected reachable faces, used as the coverage/curriculum denominator.
         self.num_faces = num_faces
         # Actual mesh triangles, used for face-ID storage. Existing datasets
@@ -88,6 +106,7 @@ for key, value in usd_data_set.items():
         prim_path = value["prim_path"],
         primitive = value.get("primitive"),
         mesh_num_faces = value.get("mesh_num_faces"),
+        inspection_mesh_max_faces = value.get("inspection_mesh_max_faces"),
         scale = value.get("scale", 10.0),
         root_height = value.get("root_height"),
         semantics_type = inspection_semantics_type,

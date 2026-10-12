@@ -193,6 +193,7 @@ def raycast_dynamic_meshes(
     return_normal: bool = False,
     return_face_id: bool = False,
     return_mesh_id: bool = False,
+    # [Tosin's Change] Added `mesh_env_ids` to support batched raycasting over a subset of environments
     mesh_env_ids: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     """Performs ray-casting against multiple, dynamic meshes.
@@ -245,6 +246,8 @@ def raycast_dynamic_meshes(
     n_envs = ray_starts.shape[0]
     n_rays_per_env = ray_starts.shape[1]
 
+    # [Tosin's Change] Handles the `mesh_env_ids` tensor conversion for the Warp kernel.
+    # It ensures the number of requested environments in the ray batch matches the indices provided.
     if mesh_env_ids is None:
         if mesh_ids_wp.shape[0] != n_envs:
             raise ValueError(

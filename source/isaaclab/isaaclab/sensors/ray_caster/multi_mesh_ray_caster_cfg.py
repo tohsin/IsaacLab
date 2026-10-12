@@ -49,6 +49,13 @@ class MultiMeshRayCasterCfg(RayCasterCfg):
         merged mesh.
         """
 
+        max_num_faces: int | None = None
+        """Optional triangle cap applied to the merged Warp ray-cast mesh. Defaults to None.
+
+        When set, meshes above this limit are simplified before being uploaded to Warp. This does not modify the
+        source USD or its rendered geometry.
+        """
+
         track_mesh_transforms: bool = True
         """Whether the mesh transformations should be tracked. Defaults to True.
 
