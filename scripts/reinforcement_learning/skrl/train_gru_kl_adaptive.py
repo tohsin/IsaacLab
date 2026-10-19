@@ -759,15 +759,20 @@ rollout_length = TOTAL_BATCH_SIZE // (env.num_envs * world_size)
 
 from skrl.memories.torch import RandomMemory
 memory = RandomMemory(memory_size=rollout_length, num_envs=env.num_envs, device=device)
+resolved_res_blocks_per_stage = int(
+    getattr(
+        CONFIG,
+        "encoder_res_blocks_per_stage",
+        1 if getattr(CONFIG, "use_reduced_resnet", False) else 2,
+    )
+)
 model_config = {
         "nonlinearity": getattr(CONFIG, "activation_fn", "elu").lower(),
         "encoder_conv_architecture": "resnet_impala",
         "encoder_conv_mlp_layers": [256],
         "encoder_conv_map_occupancy_architecture": "resnet",
         "encoder_conv_map_occupancy_mlp_layers": [128, 128],
-        "encoder_res_blocks_per_stage": int(
-            getattr(CONFIG, "encoder_res_blocks_per_stage", 1)
-        ),
+        "encoder_res_blocks_per_stage": resolved_res_blocks_per_stage,
     }
 models = {}
 models['policy'] = Shared(env.observation_space,
@@ -881,26 +886,35 @@ cfg["learning_rate_scheduler"] = CONFIG.scheduler_class
 cfg["learning_rate_scheduler_kwargs"] = CONFIG.scheduler_kwargs.copy()
 
 if "total_iters" in cfg["learning_rate_scheduler_kwargs"]:
-        cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps # Delayed decay # 50 mil steps we do 3/10
+    cfg["learning_rate_scheduler_kwargs"]["total_iters"] = scheduler_max_steps # Delayed decay # 50 mil steps we do 3/10
 elif "T_max" in cfg["learning_rate_scheduler_kwargs"]:
-        scheduler_decay_fraction = float(
-            getattr(CONFIG, "scheduler_decay_fraction", 1.0)
+    scheduler_decay_fraction = float(
+        getattr(CONFIG, "scheduler_decay_fraction", 1.0)
+    )
+    if not 0.0 < scheduler_decay_fraction <= 1.0:
+        raise ValueError(
+            "scheduler_decay_fraction must be in the interval (0, 1], "
+            f"got {scheduler_decay_fraction}"
         )
-        if not 0.0 < scheduler_decay_fraction <= 1.0:
-            raise ValueError(
-                "scheduler_decay_fraction must be in the interval (0, 1], "
-                f"got {scheduler_decay_fraction}"
-            )
-        scheduler_decay_steps = max(
-            1, int(round(scheduler_max_steps * scheduler_decay_fraction))
-        )
-        cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_decay_steps
-        print(
-            "[INFO] LR schedule: cosine decay for "
-            f"{scheduler_decay_fraction:.0%} of training "
-            f"({scheduler_decay_steps:,}/{scheduler_max_steps:,} scheduler steps), "
-            "then hold eta_min"
-        )
+    scheduler_decay_steps = max(
+        1, int(round(scheduler_max_steps * scheduler_decay_fraction))
+    )
+    cfg["learning_rate_scheduler_kwargs"]["T_max"] = scheduler_decay_steps
+    print(
+        "[INFO] LR schedule: cosine decay for "
+        f"{scheduler_decay_fraction:.0%} of training "
+        f"({scheduler_decay_steps:,}/{scheduler_max_steps:,} scheduler steps), "
+        "then hold eta_min"
+    )
+elif "kl_threshold" in cfg["learning_rate_scheduler_kwargs"]:
+    scheduler_kwargs = cfg["learning_rate_scheduler_kwargs"]
+    print(
+        "[INFO] LR schedule: KL-adaptive per PPO epoch with "
+        f"target={scheduler_kwargs['kl_threshold']:.4f}, "
+        f"groupwise scale bounds="
+        f"[{scheduler_kwargs.get('min_lr_scale', 0.025):.3f}, "
+        f"{scheduler_kwargs.get('max_lr_scale', 1.0):.3f}]"
+    )
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = getattr(CONFIG, "grad_clip_norm", 0.7)

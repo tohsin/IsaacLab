@@ -39,7 +39,7 @@ class NormalizeReward:
             print("NaN detected in normalized_reward!")
             print(f"Original reward: {reward}")
             print(f"Reward variance: {self.return_rms.var}")
-        normalized_reward = torch.clamp(normalized_reward, -self.m_value, self.m_value)
+        normalized_reward = torch.clamp(normalized_reward, -3.0 *self.m_value, self.m_value)
         return normalized_reward
     
 

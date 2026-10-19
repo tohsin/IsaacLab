@@ -2303,8 +2303,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                      
         # Emergency Brake Penalty: Active punishment for driving forward in the danger zone
         forward_velocity = self.actions[:, 0]
-        emergency_brake_penalty = torch.where(proxy_active & (forward_velocity > 0.0), -0.05 * forward_velocity, torch.zeros_like(forward_velocity))
-                     
+        # emergency_brake_penalty = torch.where(
+        #     proxy_active & (forward_velocity > 0.0), 
+        #     -0.05 * forward_velocity,
+        #     torch.zeros_like(forward_velocity)
+        # )
+
+
+          # Emergency Brake Penalty: Active punishment for driving (forward or reverse) in the danger zone
+        emergency_brake_penalty = torch.where(
+            proxy_active,
+            -0.05 * torch.abs(forward_velocity),
+            torch.zeros_like(forward_velocity),
+        )             
         base_reward = positive_rewards + penalties + emergency_brake_penalty
         scaled_occupancy_penalty = occupancy_penalty_scale * occupancy_penalty
         shaped_reward = base_reward + scaled_occupancy_penalty

@@ -86,7 +86,7 @@ def summarize_csv(csv_path):
                 
     print(f"\n[INFO] A copy of this summary has been saved to: {output_path}")
 base_dir = "/home/tosin/Documents/GitHub/IsaacLab/data/ablation/"
-albaltion_file = "No_GRU"
+albaltion_file = "Algorithm_Baseline_Last_144k"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate a summary of the ablation evaluation CSV.")

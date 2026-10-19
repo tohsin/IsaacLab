@@ -17,7 +17,7 @@ class RewardsCfg:
     # with an exclusive terminal reward.
     occupancy_penalty_scale: float = 0.2
     collision_threshold: float = 1.0
-    terminal_collision_penalty: float = 2.0
+    terminal_collision_penalty: float = 5.0#2.0
 
 
     # action_penalty_scale: float = 0.01 # original: 1e-5

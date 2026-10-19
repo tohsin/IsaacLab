@@ -19,6 +19,8 @@ class policy_map_channel_sets:
 
     OCCUPANCY_ONLY = (map_channels.OCCUPANCY,)
     OCCUPANCY_VISIBILITY = (map_channels.OCCUPANCY, map_channels.VISIBILITY)
+    OCCUPANCY__VISITATION = (map_channels.OCCUPANCY,  map_channels.VISITATION)
+
     ALL = (
         map_channels.OCCUPANCY, map_channels.VISIBILITY, map_channels.VISITATION
     )
@@ -107,7 +109,7 @@ class train_Cfg_base: # For pretriaing as a base
     debug = False
     # Fixed-camera ablation: remove pan/tilt from the policy action space and
     # hold both joints at their neutral reset pose.
-    enable_pt_actuation: bool = False
+    enable_pt_actuation: bool = True
     # False restores the stable, fixed-35-mm, four-action baseline. Set True
     # only when training/evaluating a checkpoint that includes the zoom action.
     enable_camera_zoom: bool = False
@@ -210,7 +212,7 @@ class eval_Cfg:
     face_depth_rel_tolerance: float = 0.01
     # Must match the checkpoint architecture. Set False for the fixed-camera
     # ablation checkpoint and True for the active-PT models.
-    enable_pt_actuation: bool = False
+    enable_pt_actuation: bool = True
     # This must match the checkpoint architecture: False for four-action
     # baseline checkpoints, True for five-action zoom checkpoints.
     enable_camera_zoom: bool = False
@@ -315,7 +317,6 @@ class eval_Cfg:
     safety_shield_z_min: float = 0.10
     safety_shield_z_max: float = 0.80
     safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
-
 
 
 class record_depth_Cfg(eval_Cfg):
