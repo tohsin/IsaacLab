@@ -105,6 +105,18 @@ class debug_Cfg:
     safety_shield_z_max: float = 0.80
     safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
 
+    # Collision proxy & emergency brake flags (0.6m personal space & |v| brake when True;
+    # 0.4m & forward-only brake when False).
+    use_expanded_collision_proxy: bool = False
+    collision_proxy_radius_m: float = 0.6
+    use_direction_agnostic_emergency_brake: bool = False
+
+    # UGV-adapted Semantic-RL baseline (Malczyk et al., IEEE RA-L 2025)
+    use_semantic_rl_baseline: bool = False
+    semantic_rl_inspection_distance_shift: float = 0.0
+    semantic_rl_focus_crop: bool = True
+    semantic_rl_mask_ptz_depth: bool = False
+
 class train_Cfg_base: # For pretriaing as a base
     debug = False
     # Fixed-camera ablation: remove pan/tilt from the policy action space and
@@ -119,8 +131,8 @@ class train_Cfg_base: # For pretriaing as a base
     enable_map_ray_chunking: bool = True
     map_ray_chunk_percent: float = 25.0
     egocentric_map = True
-    # Keep the complete baseline map observation for the camera ablation.
-    policy_map_channels = policy_map_channel_sets.ALL
+    # UGV-adapted Semantic-RL baseline uses 2-channel local map (occupancy + visitation).
+    policy_map_channels = policy_map_channel_sets.OCCUPANCY__VISITATION
     min_episode_length: int = 500
     max_episode_length: int = 1200
     logging_interval: int = 1000
@@ -195,6 +207,18 @@ class train_Cfg_base: # For pretriaing as a base
     safety_shield_z_min: float = 0.10
     safety_shield_z_max: float = 0.80
     safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
+
+    # Collision proxy & emergency brake flags (0.6m personal space & |v| brake when True;
+    # 0.4m & forward-only brake when False).
+    use_expanded_collision_proxy: bool = False
+    collision_proxy_radius_m: float = 0.6
+    use_direction_agnostic_emergency_brake: bool = False
+
+    # UGV-adapted Semantic-RL baseline (Malczyk et al., IEEE RA-L 2025)
+    use_semantic_rl_baseline: bool = True
+    semantic_rl_inspection_distance_shift: float = 0.0
+    semantic_rl_focus_crop: bool = True
+    semantic_rl_mask_ptz_depth: bool = False
 
 class eval_Cfg:
     debug = False
@@ -318,6 +342,18 @@ class eval_Cfg:
     safety_shield_z_max: float = 0.80
     safety_shield_linear_scales: tuple = (1.0, 0.75, 0.50, 0.25, 0.0)
 
+    # Collision proxy & emergency brake flags (0.6m personal space & |v| brake when True;
+    # 0.4m & forward-only brake when False).
+    use_expanded_collision_proxy: bool = False
+    collision_proxy_radius_m: float = 0.6
+    use_direction_agnostic_emergency_brake: bool = False
+
+    # UGV-adapted Semantic-RL baseline (Malczyk et al., IEEE RA-L 2025)
+    use_semantic_rl_baseline: bool = False
+    semantic_rl_inspection_distance_shift: float = 0.0
+    semantic_rl_focus_crop: bool = True
+    semantic_rl_mask_ptz_depth: bool = False
+
 
 class record_depth_Cfg(eval_Cfg):
     debug = False
@@ -391,7 +427,7 @@ mode_by_name = {
     "eval": modes[2],
     "record": modes[3],
 }
-mode = 'eval'
+mode = 'train'
 requested_mode = os.environ.get("ISAACLAB_INSPECTION_RUN_MODE", mode).lower()
 if requested_mode not in mode_by_name:
     raise ValueError(

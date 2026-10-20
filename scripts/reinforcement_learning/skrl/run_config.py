@@ -249,6 +249,18 @@ Models = {
             'ReducedResNet': True,
             'Checkpoint': 153000,
     },
+     'Semantic_RL':{
+            'path': '',
+            'Attention': False,
+            'Fusion': 'concat_mlp',
+            'ReducedResNet': True,
+            'NarrowResNet': False,
+            'PoseFourier': False,
+            'ConcatMLPLayerNorm': True,
+            'SemanticRL': True,
+            'ExpandedCollisionProxy': False,
+            'DirectionAgnosticBrake': False,
+    },
 }
 class Albation:
     def __init__(self, model_name):
@@ -261,21 +273,29 @@ class Albation:
         self.temporal_mode = Models[model_name].get('Temporal', 'gru')
         self.pt_actuation = Models[model_name].get('PTActuation', True)
         self.use_reduced_resnet = Models[model_name].get('ReducedResNet', True)
+        self.use_narrow_resnet = Models[model_name].get('NarrowResNet', False)
+        self.use_pose_fourier_encoding = Models[model_name].get('PoseFourier', True)
+        self.use_concat_mlp_layernorm = Models[model_name].get('ConcatMLPLayerNorm', False)
+        self.use_semantic_rl_baseline = Models[model_name].get('SemanticRL', False)
+        self.use_expanded_collision_proxy = Models[model_name].get('ExpandedCollisionProxy', False)
+        self.use_direction_agnostic_emergency_brake = Models[model_name].get('DirectionAgnosticBrake', False)
         self.custom_checkpoint = Models[model_name].get('Checkpoint', None)
         # Compatibility attribute for older configuration code.
         self.attention = self.fusion_mode == 'attention'
 # CURR_EXPeriment = Albation('Algorithm_Baseline_Last_129k')
 #153,144, 132
 CURR_EXPeriment = Albation('Algorithm_Baseline_Last_144k')
+# CURR_EXPeriment = Albation('Semantic_RL')
 # CURR_EXPeriment = Albation('Algorithm_Baseline_Last_132k')
 # CURR_EXPeriment = Albation('Algorithm_Baseline_Last_153k')
 # CURR_EXPeriment = Albation('Algorithm_Baseline_Last')
 # CURR_EXPeriment = Albation('Algorithm_Baseline_55M')
 # CURR_EXPeriment = Albation('Paper-Baseline')
+_default_ckpt_type = 3 if CURR_EXPeriment.custom_checkpoint is not None else 0
 path_pretrained = get_checkpoint_path(
     project_name="Alblation-Baseline",
     run_name= CURR_EXPeriment.path,
-    checkpoint_type=3, # 0: best_agent.pt, 1: latest agent_*.pt, 2: safest_agent.pt, 3: custom Checkpoint
+    checkpoint_type=_default_ckpt_type, # 0: best_agent.pt, 1: latest agent_*.pt, 2: safest_agent.pt, 3: custom Checkpoint
     custom_checkpoint=CURR_EXPeriment.custom_checkpoint,
 )
 
@@ -293,11 +313,18 @@ class TrainingConfig_PreTrain:
     num_envs = 128
     reset_std = True
     batch_size = 8192 # 8192
-    fusion_mode = "attention"  # "attention", "concat_mlp", or "token_ffn"
+    # UGV-adapted Semantic-RL baseline (Malczyk et al., IEEE RA-L 2025):
+    # uses concatenation MLP [2048, 1024, 512] + GRU(512), raw robot pose,
+    # 2-channel local map (occupancy + visitation), and focus-cropped fixed-distance reward.
+    use_semantic_rl_baseline = True
+    # Toggle True to enable 0.6m collision proxy personal space and direction-agnostic (-0.05 * |v|) brake:
+    use_expanded_collision_proxy = False
+    collision_proxy_radius_m = 0.6
+    use_direction_agnostic_emergency_brake = False
+    fusion_mode = "concat_mlp"  # "attention", "concat_mlp", or "token_ffn"
+    use_concat_mlp_layernorm = True
     use_attention_fusion = fusion_mode == "attention"
     use_transformer_encoder = True
-    # Keep the complete recurrent attention baseline; only PT actuation is
-    # ablated in this run.
     temporal_mode = "gru"  # "gru" or "feedforward"
     gru_hidden_size = 512
     gru_num_layers = 1
@@ -309,8 +336,11 @@ class TrainingConfig_PreTrain:
     # Set True to revert to the reduced 9-layer ResNet (1 block/stage);
     # False restores the full 15-layer IMPALA ResNet (2 blocks/stage).
     use_reduced_resnet = True
+    # Set True to use the narrow [2,4,4] / [8,16,16] channel widths from Malczyk et al.;
+    # False keeps the standard [16,32,32] channel widths to match SEEIR encoder capacity.
+    use_narrow_resnet = False
     encoder_res_blocks_per_stage = 1 if use_reduced_resnet else 2
-    use_pose_fourier_encoding = True
+    use_pose_fourier_encoding = False
     num_pose_frequencies = 4
     activation_fn = "elu"  # "elu" or "silu"
     entropy_coef =  0.00004
@@ -335,7 +365,7 @@ class TrainingConfig_PreTrain:
     std_decay_fraction = 0.90
     use_gsde = True
     use_wandb = True
-    global_timesteps = 55_000_000
+    global_timesteps = 45_000_000
     # Select "cosine" for time-based decay or "kl_adaptive" to react to policy
     # drift once per PPO learning epoch. The 0.016 KL target matches the
     # semantic-RL-inspection setup.
@@ -361,7 +391,7 @@ class TrainingConfig_PreTrain:
         }
     else:
         raise ValueError(f"Unknown lr_scheduler: {lr_scheduler}")
-    experiment_name = "Algorithm_Baseline_Last"
+    experiment_name = "Semantic_RL_Baseline"
 
 
 
@@ -376,7 +406,12 @@ class EvaluationConfig:
     num_envs = 1
     use_wandb = False
     reset_std = False
+    use_semantic_rl_baseline = CURR_EXPeriment.use_semantic_rl_baseline
+    use_expanded_collision_proxy = CURR_EXPeriment.use_expanded_collision_proxy
+    collision_proxy_radius_m = 0.6
+    use_direction_agnostic_emergency_brake = CURR_EXPeriment.use_direction_agnostic_emergency_brake
     fusion_mode = CURR_EXPeriment.fusion_mode
+    use_concat_mlp_layernorm = CURR_EXPeriment.use_concat_mlp_layernorm
     use_attention_fusion = fusion_mode == "attention"
     temporal_mode = CURR_EXPeriment.temporal_mode
     use_transformer_encoder = True
@@ -389,9 +424,10 @@ class EvaluationConfig:
         if CURR_EXPeriment.use_reduced_resnet is not None
         else False
     )
+    use_narrow_resnet = CURR_EXPeriment.use_narrow_resnet
     encoder_res_blocks_per_stage = 1 if use_reduced_resnet else 2
     use_separate_attention_lr = True
-    use_pose_fourier_encoding = True
+    use_pose_fourier_encoding = CURR_EXPeriment.use_pose_fourier_encoding
     num_pose_frequencies = 4
     activation_fn = "elu"
     batch_size =  8192
@@ -431,7 +467,7 @@ configs_ = [TrainingConfig_PreTrain(),
             # TrainingConfig_FineTune(),
               EvaluationConfig(),
               LegacyAugust31EvaluationConfig()]
-CONFIG = configs_[1]  # Train the full-map, full-MHA, GRU fixed-camera ablation.
+CONFIG = configs_[0]  # Train the UGV-adapted Semantic-RL baseline.
 #~/evaluate_agent.sh --seed 42 --max_episodes 128 --eval-max-episode-steps 1200
 # ~/evaluate_agent.sh --seed 43 --max_episodes 128 --eval-max-episode-steps 1200
 # ~/evaluate_agent.sh --seed 44 --max_episodes 128 --eval-max-episode-steps 1200

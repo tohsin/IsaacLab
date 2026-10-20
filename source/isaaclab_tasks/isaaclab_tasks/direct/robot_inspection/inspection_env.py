@@ -44,7 +44,7 @@ from collections import defaultdict
 # opencv-python-headless-4.11.0.86
 from pxr import Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema, Gf
 from isaaclab.sim.utils import get_current_stage
-from .run_config import cfg_mode, map_channels
+from .run_config import cfg_mode, map_channels, policy_map_channel_sets
 from .utils.data_collector import DataCollector
 from .utils.reconstruction_data_collector import ReconstructionDataCollector
 
@@ -59,6 +59,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.camera_zoom_enabled = bool(getattr(run_cfg, "enable_camera_zoom", False))
         self.pt_actuation_enabled = bool(getattr(run_cfg, "enable_pt_actuation", True))
+        self.use_semantic_rl_baseline = bool(getattr(run_cfg, "use_semantic_rl_baseline", False))
         self.strict_face_visibility_filter_enabled = bool(
             getattr(run_cfg, "use_strict_face_visibility_filter", False)
         )
@@ -70,13 +71,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # fully maintained internally for rewards, collision proxies, logging,
         # curriculum state, and debugging.
         default_map_channels = (
-            map_channels.OCCUPANCY,
-            map_channels.VISIBILITY,
-            map_channels.VISITATION,
+            policy_map_channel_sets.OCCUPANCY__VISITATION
+            if self.use_semantic_rl_baseline
+            else (
+                map_channels.OCCUPANCY,
+                map_channels.VISIBILITY,
+                map_channels.VISITATION,
+            )
         )
-        configured_map_channels = getattr(
-            run_cfg, "policy_map_channels", default_map_channels
-        )
+        if self.use_semantic_rl_baseline:
+            configured_map_channels = policy_map_channel_sets.OCCUPANCY__VISITATION
+            print("[INFO] UGV-adapted Semantic-RL Baseline enabled (2-channel map: occupancy + visitation, focus-cropped fixed-distance inspection reward, visitation-only exploration)")
+        else:
+            configured_map_channels = getattr(
+                run_cfg, "policy_map_channels", default_map_channels
+            )
         if isinstance(configured_map_channels, str):
             configured_map_channels = (configured_map_channels,)
         configured_map_channels = tuple(dict.fromkeys(configured_map_channels))
@@ -457,6 +466,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.q_capacity = max_faces if bounded_face_ids else max(1_700_000, max_faces + 1000)
         print(f"[INFO] Inspection face-ID capacity: {self.q_capacity}")
         self.best_q_per_face = torch.zeros(
+            (self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32
+        )
+        self.semantic_rl_best_q_per_face = torch.zeros(
             (self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32
         )
 
@@ -1527,6 +1539,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
                 if torch.isnan(semantic_channel).any():
                     print("[ENV DEBUG] NaN detected in Semantic Channel (Target Mask)!")
+
+        if self.use_semantic_rl_baseline and bool(getattr(run_cfg, "semantic_rl_mask_ptz_depth", False)):
+            ptz_camera_data = torch.where(
+                semantic_channel > 0.5,
+                ptz_camera_data,
+                torch.full_like(ptz_camera_data, -1.0),
+            )
             
         combined_camera_data = torch.cat([
             front_camera_data, ptz_camera_data, semantic_channel], dim=-1)
@@ -1685,7 +1704,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # print(f"New global max ray count: {batch_max.item()} rays (face {unique_ids[max_idx].item()})")
 
 
-    def _compute_face_discovery_reward_fast(self):
+    def _compute_face_discovery_reward_fast(self, proxy_active: torch.Tensor | None = None):
         """
         Compute the reward for discovering new faces.
         """
@@ -1869,6 +1888,27 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
             weights = weights * depth_mask
 
+        # Precompute Semantic-RL (Malczyk et al., IEEE RA-L 2025) focus-cropped
+        # face IDs and depths if enabled.
+        if self.use_semantic_rl_baseline:
+            sem_depth_full = raycaster.data.output["distance_to_image_plane"].squeeze(-1)
+            sem_faces_full = (
+                occlusion_filtered_face_ids.squeeze(-1)
+                if occlusion_filtered_face_ids.dim() == 4
+                else occlusion_filtered_face_ids
+            )
+            if bool(getattr(run_cfg, "semantic_rl_focus_crop", True)):
+                H_img, W_img = sem_faces_full.shape[1], sem_faces_full.shape[2]
+                # Original Semantic-RL crops 8/54 vertically and 14/96 horizontally
+                margin_h = max(1, int(round(H_img * 8.0 / 54.0)))
+                margin_w = max(1, int(round(W_img * 14.0 / 96.0)))
+                sem_faces_cropped = sem_faces_full[:, margin_h:-margin_h, margin_w:-margin_w]
+                sem_depth_cropped = sem_depth_full[:, margin_h:-margin_h, margin_w:-margin_w]
+            else:
+                sem_faces_cropped = sem_faces_full
+                sem_depth_cropped = sem_depth_full
+            dist_shift = float(getattr(run_cfg, "semantic_rl_inspection_distance_shift", 0.0))
+
         visible_faces_counts = []
 
         for env_idx in range(self.num_envs):
@@ -1905,20 +1945,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             if run_cfg.debug and run_cfg.display_ray_counts:
                 self._update_max_ray_counts(valid_faces)
 
-            # We need sum of weights per unique face ID
-            # Since IDs are integers, we can use scatter_add or bincount if memory allows, 
-            # or loop through unique IDs if sparse.
-            # Given q_capacity can be large but valid_faces in a frame is small (1024),
-            # let's find unique IDs and sum weights for them.
-            
-            # Method:
             # 1. Find unique faces and their inverse indices to map pixels to unique faces
             unique_ids, inverse_indices = torch.unique(valid_faces, return_inverse=True)
             
             # 2. Sum weights for each unique face
-            # Initialize with zeros
             weighted_counts = torch.zeros_like(unique_ids, dtype=torch.float32)
-            # Add weights: index=inverse_indices adds valid_weights to weighted_counts
             weighted_counts.scatter_add_(0, inverse_indices, valid_weights)
 
             # Capacity ensures we don't go out of bounds. The max_id is safely accommodated.
@@ -1928,20 +1959,88 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 unique_ids = unique_ids[valid_bound]
                 weighted_counts = weighted_counts[valid_bound]
 
-            # Calculate Quality: Q = 1 - exp(-WeightedCount / k)
+            # Calculate ground-truth SEEIR Quality: Q = 1 - exp(-WeightedCount / k)
+            # Always update self.best_q_per_face so curriculum & evaluation metrics
+            # (coverage %, inspection quality, success rate) use the exact same yardstick.
             q_now = 1.0 - torch.exp(-weighted_counts / k)
-
             q_best = self.best_q_per_face[env_idx, unique_ids]
-
             dq = torch.relu(q_now - q_best)
-            face_rewards[env_idx] = dq.sum()
 
-            # Update best q values
             self.best_q_per_face[env_idx, unique_ids] = torch.maximum(q_best, q_now)
             num_faces_inspected[env_idx] = (self.best_q_per_face[env_idx] > 0).sum()
-            
-            # Normalize face reward by the total number of mesh faces
-            face_rewards[env_idx] /= self.coverage_num_faces[env_idx].float()
+
+            if self.use_semantic_rl_baseline:
+                # Compute Malczyk et al. (IEEE RA-L 2025) focus-cropped fixed-distance
+                # double-exponential inspection reward:
+                #   q_sem = clamp(1.545 * (1.25 * exp(-50 * d^2) - 2.25 * exp(-300 * d^2)), 0, 1)
+                # where d = clamp(depth, 0, 10) / 10.0 - shift.
+                env_sem_faces = sem_faces_cropped[env_idx].flatten()
+                env_sem_depths = sem_depth_cropped[env_idx].flatten()
+                sem_valid = (
+                    (env_sem_faces >= 0)
+                    & torch.isfinite(env_sem_depths)
+                    & (env_sem_depths > 0.0)
+                )
+                sem_valid_faces = env_sem_faces[sem_valid]
+                sem_valid_depths = env_sem_depths[sem_valid].float()
+
+                if sem_valid_faces.numel() > 0:
+                    sem_unique_ids, sem_inverse = torch.unique(
+                        sem_valid_faces, return_inverse=True
+                    )
+                    if sem_unique_ids.max() >= self.q_capacity:
+                        sem_bound = sem_unique_ids < self.q_capacity
+                        sem_unique_ids = sem_unique_ids[sem_bound]
+                        # Re-filter valid pixels to bounded IDs
+                        in_bound_mask = sem_valid_faces < self.q_capacity
+                        sem_valid_faces = sem_valid_faces[in_bound_mask]
+                        sem_valid_depths = sem_valid_depths[in_bound_mask]
+                        sem_unique_ids, sem_inverse = torch.unique(
+                            sem_valid_faces, return_inverse=True
+                        )
+
+                    if sem_unique_ids.numel() > 0:
+                        depth_sums = torch.zeros_like(sem_unique_ids, dtype=torch.float32)
+                        depth_counts = torch.zeros_like(sem_unique_ids, dtype=torch.float32)
+                        depth_sums.scatter_add_(0, sem_inverse, sem_valid_depths)
+                        depth_counts.scatter_add_(
+                            0,
+                            sem_inverse,
+                            torch.ones_like(sem_valid_depths, dtype=torch.float32),
+                        )
+                        face_mean_depth = depth_sums / torch.clamp(depth_counts, min=1.0)
+                        norm_dist = (
+                            torch.clamp(face_mean_depth, min=0.0, max=10.0) / 10.0
+                            - dist_shift
+                        )
+                        dist_sq = torch.square(norm_dist)
+                        q_sem_raw = 1.545 * (
+                            1.25 * torch.exp(-50.0 * dist_sq)
+                            - 2.25 * torch.exp(-300.0 * dist_sq)
+                        )
+                        q_sem_now = torch.clamp(q_sem_raw, min=0.0, max=1.0)
+                        q_sem_best = self.semantic_rl_best_q_per_face[env_idx, sem_unique_ids]
+                        dq_sem = torch.relu(q_sem_now - q_sem_best)
+
+                        # In Semantic-RL (inspection_task.py lines 414-418), surface
+                        # inspection memory and reward are only updated when collision
+                        # penalty is inactive.
+                        is_proxy_active = (
+                            bool(proxy_active[env_idx].item())
+                            if proxy_active is not None
+                            else False
+                        )
+                        if not is_proxy_active:
+                            self.semantic_rl_best_q_per_face[env_idx, sem_unique_ids] = (
+                                torch.maximum(q_sem_best, q_sem_now)
+                            )
+                            face_rewards[env_idx] = (
+                                dq_sem.sum() / self.coverage_num_faces[env_idx].float()
+                            )
+                        else:
+                            face_rewards[env_idx] = 0.0
+            else:
+                face_rewards[env_idx] = dq.sum() / self.coverage_num_faces[env_idx].float()
         
         self.logger.log_visible_faces(np.mean(visible_faces_counts))
         if len(optical_flow_means) > 0:
@@ -2241,11 +2340,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             Visibility Rewards
         """
         # return torch.zeros(self.num_envs, device=self.device)
-        face_discovery_raw, total_num_faces_inspected = self._compute_face_discovery_reward_fast()
-        information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
-        visitation_reward = self._compute_visitation_reward()
         occupancy_penalty = self._compute_occupancy_penalty()
-        self.episode_collision_proxy_steps += (occupancy_penalty < 0.0).long()
+        proxy_active = occupancy_penalty < 0.0
+        self.episode_collision_proxy_steps += proxy_active.long()
+
+        face_discovery_raw, total_num_faces_inspected = self._compute_face_discovery_reward_fast(
+            proxy_active=proxy_active
+        )
+        if self.use_semantic_rl_baseline:
+            # Semantic-RL (Malczyk et al., IEEE RA-L 2025) uses only voxel visitation
+            # for exploration (no global occupancy entropy or surface visibility saturation).
+            information_gain_reward = torch.zeros(self.num_envs, device=self.device)
+            visibility_increase_reward = torch.zeros(self.num_envs, device=self.device)
+        else:
+            information_gain_reward, visibility_increase_reward = self._compute_exploration_rewards()
+        visitation_reward = self._compute_visitation_reward()
         action_delta = torch.sum(torch.square(self.actions - self.previous_action_for_rewards), dim=1)
         
         # Base Action Penalty (Linear & Angular velocity which are indices 0, 1)
@@ -2293,7 +2402,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                         )
                         
         # If proxy penalty is active (robot is too close to obstacle), mask positive rewards
-        proxy_active = occupancy_penalty < 0.0
         positive_rewards = torch.where(proxy_active, torch.zeros_like(positive_rewards), positive_rewards)
         
         penalties = (- action_penalty_scale * base_action_delta
@@ -2301,21 +2409,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                      - time_penalty
                      )
                      
-        # Emergency Brake Penalty: Active punishment for driving forward in the danger zone
+        # Emergency Brake Penalty: configurable direction-agnostic (|v|) vs forward-only (v > 0)
         forward_velocity = self.actions[:, 0]
-        # emergency_brake_penalty = torch.where(
-        #     proxy_active & (forward_velocity > 0.0), 
-        #     -0.05 * forward_velocity,
-        #     torch.zeros_like(forward_velocity)
-        # )
-
-
-          # Emergency Brake Penalty: Active punishment for driving (forward or reverse) in the danger zone
-        emergency_brake_penalty = torch.where(
-            proxy_active,
-            -0.05 * torch.abs(forward_velocity),
-            torch.zeros_like(forward_velocity),
-        )             
+        use_dir_agnostic_brake = bool(
+            getattr(run_cfg, "use_direction_agnostic_emergency_brake", False)
+            or getattr(run_cfg, "use_expanded_collision_proxy", False)
+        )
+        if use_dir_agnostic_brake:
+            emergency_brake_penalty = torch.where(
+                proxy_active,
+                -0.05 * torch.abs(forward_velocity),
+                torch.zeros_like(forward_velocity),
+            )
+        else:
+            emergency_brake_penalty = torch.where(
+                proxy_active & (forward_velocity > 0.0),
+                -0.05 * forward_velocity,
+                torch.zeros_like(forward_velocity),
+            )
         base_reward = positive_rewards + penalties + emergency_brake_penalty
         scaled_occupancy_penalty = occupancy_penalty_scale * occupancy_penalty
         shaped_reward = base_reward + scaled_occupancy_penalty
@@ -2709,6 +2820,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Clear Buffers (Vectorized)
             self.prev_coverage_ratio[env_ids] = 0.0
             self.best_q_per_face[env_ids] = 0.0
+            self.semantic_rl_best_q_per_face[env_ids] = 0.0
             self.episode_collision_proxy_steps[env_ids] = 0
             self.episode_collision_contact_steps[env_ids] = 0
             self.episode_tipover_steps[env_ids] = 0

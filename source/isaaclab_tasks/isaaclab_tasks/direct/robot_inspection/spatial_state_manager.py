@@ -14,6 +14,7 @@ from .kernels.warp_occupancy_fast import (
     extract_local_maps_kernel,
     clamp_map_values, 
 )
+from . import run_config as _run_cfg_module
 from .run_config import map_channels, map_view_mode, visualisation_mode
 
 
@@ -466,7 +467,11 @@ class SpatialStateManager:
         center_y = local_dims[1] // 2
         center_z = 0 # Robot is at the floor level in the local map
         
-        target_radius_m = 0.6 #0.4 Increased to 0.6m (3 voxels) to enforce a larger personal space
+        active_cfg = _run_cfg_module.cfg_mode
+        if bool(getattr(active_cfg, "use_expanded_collision_proxy", False)):
+            target_radius_m = float(getattr(active_cfg, "collision_proxy_radius_m", 0.6))
+        else:
+            target_radius_m = 0.4
         calculated_shift = max(1, int(np.ceil(target_radius_m / self.resolution)))
         
         sx = shift_x if shift_x is not None else calculated_shift

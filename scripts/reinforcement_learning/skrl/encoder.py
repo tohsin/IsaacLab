@@ -75,7 +75,11 @@ class ResnetEncoder(Encoder):
         # resnet_conf = [[16, 2], [32, 2], [32, 2]] # Original (15 layers, Wide)
         # resnet_conf = [[2, 2], [4, 2], [4, 2]]      # Narrow (Semantic RL Inspection)
         blocks_per_stage = int(cfg.get("encoder_res_blocks_per_stage", 2))
-        resnet_conf = [[16, blocks_per_stage], [32, blocks_per_stage], [32, blocks_per_stage]]
+        use_narrow_resnet = bool(cfg.get("use_narrow_resnet", False))
+        if use_narrow_resnet:
+            resnet_conf = [[2, blocks_per_stage], [4, blocks_per_stage], [4, blocks_per_stage]]
+        else:
+            resnet_conf = [[16, blocks_per_stage], [32, blocks_per_stage], [32, blocks_per_stage]]
         print(f"2D ResNet Encoder configuration: {resnet_conf}")
 
         curr_input_channels = input_ch
@@ -128,7 +132,11 @@ class Resnet3DEncoder(Encoder):
         # resnet_conf = [[16, 2], [32, 2], [32, 2]] # Original (15 layers, Wide)
         # resnet_conf = [[8, 2], [16, 2], [16, 2]]    # Narrow (Semantic RL Inspection)
         blocks_per_stage = int(cfg.get("encoder_res_blocks_per_stage", 2))
-        resnet_conf = [[16, blocks_per_stage], [32, blocks_per_stage], [32, blocks_per_stage]]
+        use_narrow_resnet = bool(cfg.get("use_narrow_resnet", False))
+        if use_narrow_resnet:
+            resnet_conf = [[8, blocks_per_stage], [16, blocks_per_stage], [16, blocks_per_stage]]
+        else:
+            resnet_conf = [[16, blocks_per_stage], [32, blocks_per_stage], [32, blocks_per_stage]]
         print(f"3D ResNet Encoder configuration: {resnet_conf}")
        
         curr_input_channels = input_ch

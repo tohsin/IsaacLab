@@ -1,0 +1,4 @@
+ ./isaaclab.sh -p scripts/environments/inspection_swap.py \
+  --steps 1200 \
+  --coverage_goal 0.9 \
+  --inspection_target ur10

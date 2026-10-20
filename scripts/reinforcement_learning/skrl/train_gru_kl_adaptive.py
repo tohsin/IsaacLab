@@ -430,16 +430,23 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
             def get_activation():
                 return nn.SiLU() if act_str == "silu" else nn.ELU()
 
-            # --- MLP-BASED FUSION (Original) ---
-            self.feature_mlp = nn.Sequential(
+            # --- MLP-BASED FUSION (Original / Semantic-RL) ---
+            use_concat_mlp_ln = bool(getattr(CONFIG, "use_concat_mlp_layernorm", False))
+            mlp_layers = [
                 nn.Linear(self.combined_features_size, 2048),
                 get_activation(),
                 nn.Linear(2048, 1024),
                 get_activation(),
                 nn.Linear(1024, 512),
-                get_activation()
+                get_activation(),
+            ]
+            if use_concat_mlp_ln:
+                mlp_layers.append(nn.LayerNorm(512))
+            self.feature_mlp = nn.Sequential(*mlp_layers)
+            print(
+                f"[INFO] Fusion configuration: mode={self.fusion_mode}, "
+                f"in_dim={self.combined_features_size}, layernorm={use_concat_mlp_ln}"
             )
-            
             self.gru_input_size = 512 # Output of the feature MLP
         self.gru_hidden_size = int(getattr(CONFIG, "gru_hidden_size", 512))
         self.gru_num_layers = int(getattr(CONFIG, "gru_num_layers", 1))
@@ -726,6 +733,26 @@ if args_cli.distributed:
     # Since we use CUDA_VISIBLE_DEVICES, each process only sees one GPU, which is cuda:0
     args_cli.device = "cuda:0"
 
+# Synchronize Semantic-RL baseline and collision proxy / emergency brake flags
+# between scripts/reinforcement_learning/skrl/run_config.py and
+# isaaclab_tasks/direct/robot_inspection/run_config.py so setting them in either
+# config works seamlessly in both training and evaluation.
+from isaaclab_tasks.direct.robot_inspection import run_config as _env_run_cfg
+_active_env_cfg = _env_run_cfg.cfg_mode
+for _flag_name in (
+    "use_semantic_rl_baseline",
+    "use_expanded_collision_proxy",
+    "collision_proxy_radius_m",
+    "use_direction_agnostic_emergency_brake",
+):
+    if hasattr(CONFIG, _flag_name):
+        _cfg_val = getattr(CONFIG, _flag_name)
+        _env_val = getattr(_active_env_cfg, _flag_name, None)
+        if isinstance(_cfg_val, bool):
+            setattr(_active_env_cfg, _flag_name, bool(_cfg_val or _env_val))
+        elif _cfg_val is not None:
+            setattr(_active_env_cfg, _flag_name, _cfg_val)
+
 env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
 )
@@ -773,6 +800,7 @@ model_config = {
         "encoder_conv_map_occupancy_architecture": "resnet",
         "encoder_conv_map_occupancy_mlp_layers": [128, 128],
         "encoder_res_blocks_per_stage": resolved_res_blocks_per_stage,
+        "use_narrow_resnet": bool(getattr(CONFIG, "use_narrow_resnet", False)),
     }
 models = {}
 models['policy'] = Shared(env.observation_space,
