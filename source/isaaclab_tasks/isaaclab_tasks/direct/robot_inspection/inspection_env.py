@@ -486,6 +486,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.episode_collision_proxy_steps = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.long
         )
+        # Track proxy-zone transitions so debug mode reports an entry once
+        # instead of printing on every timestep spent near an occupied voxel.
+        self._previous_collision_proxy_active = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
         self.episode_collision_contact_steps = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.long
         )
@@ -2226,11 +2231,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             0.0
         )
         
-        # Debug printing
-        if getattr(run_cfg, 'debug', False) and (occupancy_penalty < 0.0).any():
-            env_ids = (occupancy_penalty < 0.0).nonzero(as_tuple=True)[0].tolist()
-            vals = occupancy_penalty[occupancy_penalty < 0.0].tolist()
-            print(f"[DEBUG] Collision Proxy Triggered in envs: {env_ids} | Penalties: {[round(v, 3) for v in vals]}")
+        proxy_active = occupancy_penalty < 0.0
+        newly_active = proxy_active & ~self._previous_collision_proxy_active
+        if getattr(run_cfg, 'debug', False) and newly_active.any():
+            env_ids = newly_active.nonzero(as_tuple=True)[0].tolist()
+            vals = occupancy_penalty[newly_active].tolist()
+            print(
+                f"[DEBUG] Collision Proxy Entered in envs: {env_ids} | "
+                f"Penalties: {[round(v, 3) for v in vals]}"
+            )
+        self._previous_collision_proxy_active.copy_(proxy_active)
             
         return occupancy_penalty
 
@@ -2710,6 +2720,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.prev_coverage_ratio[env_ids] = 0.0
             self.best_q_per_face[env_ids] = 0.0
             self.episode_collision_proxy_steps[env_ids] = 0
+            self._previous_collision_proxy_active[env_ids] = False
             self.episode_collision_contact_steps[env_ids] = 0
             self.episode_tipover_steps[env_ids] = 0
             self.episode_tipovers[env_ids] = 0

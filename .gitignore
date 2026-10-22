@@ -87,3 +87,5 @@ scripts/reinforcement_learning/skrl/plots/
 
 /data/ablation
 /data/collision_mesh_diagnostics
+
+data/debug/frontier_nbv

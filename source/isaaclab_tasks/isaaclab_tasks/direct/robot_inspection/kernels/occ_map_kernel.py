@@ -93,9 +93,10 @@ def update_occupancy_fast(
                 Y * map_dims[2] +\
                 Z
             
-            # Latch: Skip free update if the cell is already considered occupied
-            if occupancy_map[linear_index] <= 0.0:
-                wp.atomic_add(occupancy_map, linear_index, log_odds_free)
+            # Standard log-odds fusion: later free-space observations must be
+            # able to clear stale/noisy endpoints. The endpoint compensation
+            # below preserves the configured occupied increment for hit cells.
+            wp.atomic_add(occupancy_map, linear_index, log_odds_free)
 
         # Advance to the next voxel
         if tMaxX < tMaxY:
