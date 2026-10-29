@@ -77,8 +77,8 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep_procedural_obstacles", action="store_true")
     parser.add_argument("--inspection_dataset", choices=("primitive", "evaluation"), default=None)
     parser.add_argument("--inspection_target", type=str, default=None)
-    parser.add_argument("--fixed_spawns", action="store_true", help="Use deterministic task spawning.")
-    parser.add_argument("--bootstrap_steps", type=int, default=160, help="Initial in-place mapping scan.")
+    parser.add_argument("--fixed_spawns", action="store_true", help="Use deterministic task spawning.", default=False)
+    parser.add_argument("--bootstrap_steps", type=int, default=60, help="Initial in-place mapping scan.")
     parser.add_argument(
         "--bootstrap_turn_action",
         type=float,
@@ -89,7 +89,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--exploration_budget",
         type=int,
-        default=400,
+        default=250,
         help="Minimum frontier-exploration steps before switching to semantic NBV.",
     )
     parser.add_argument(
@@ -102,7 +102,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic_voxel_size", type=float, default=0.05)
     parser.add_argument("--viewpoints", type=int, default=12)
     parser.add_argument("--view_standoff", type=float, default=1.0)
-    parser.add_argument("--view_dwell_steps", type=int, default=18)
+    parser.add_argument("--view_dwell_steps", type=int, default=25)
     parser.add_argument("--goal_tolerance", type=float, default=0.30)
     parser.add_argument("--lookahead", type=float, default=0.25)
     parser.add_argument("--robot_radius", type=float, default=0.35)
@@ -624,7 +624,7 @@ class FrontierNBVController:
         position = self._robot_position()
         desired_heading = math.atan2(centroid[1] - position[1], centroid[0] - position[0])
         error = wrap_angle(desired_heading - self._robot_yaw())
-        return float(np.clip(0.45 * error, -0.45, 0.45)), abs(error) < 0.16
+        return float(np.clip(0.45 * error, -0.45, 0.45)), abs(error) < 0.5
 
     def _camera_action(self, mask_error: tuple[float, float] | None) -> tuple[float, float]:
         if mask_error is not None:
@@ -632,7 +632,7 @@ class FrontierNBVController:
             pan = float(np.clip(-0.75 * mask_error[0], -0.8, 0.8))
             tilt = float(np.clip(0.75 * mask_error[1], -0.8, 0.8))
             if self.phase == "dwell":
-                pan += 0.08 * math.sin(0.35 * self.step_count)
+                pan += 0.8 * math.sin(0.35 * self.step_count)
                 tilt += 0.06 * math.sin(0.23 * self.step_count)
             return float(np.clip(pan, -1.0, 1.0)), float(np.clip(tilt, -1.0, 1.0))
 

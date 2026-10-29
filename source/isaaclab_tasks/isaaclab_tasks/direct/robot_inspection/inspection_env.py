@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 from collections import deque
+import os
 import gymnasium as gym
 import torch
 from collections.abc import Sequence
 import numpy as np
-import torchvision.transforms as transforms
 
 from datetime import datetime
 import isaaclab.sim as sim_utils
@@ -30,8 +30,6 @@ from isaaclab.utils.math import quat_mul, quat_apply, quat_conjugate, quat_apply
 # from semanc_manager import SemanticManager, add_semantic_tags_from_config
 from .inspection_cfg import Isaac3dinspectionEnvCfg
 from .spatial_state_manager import SpatialStateManager
-from .utils.primitive_domain_randomization import apply_primitive_domain_randomization
-from .utils.tessellated_primitives import build_tessellated_primitive_cfg
 # import wandb
 from .curriculum_manager import Curriculum
 from .utils import  NormalizeReward, visualise_faces, _show_face_ids_
@@ -44,7 +42,7 @@ from collections import defaultdict
 # opencv-python-headless-4.11.0.86
 from pxr import Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema, Gf
 from isaaclab.sim.utils import get_current_stage
-from .run_config import cfg_mode, map_channels
+from .run_config import cfg_mode
 from .utils.data_collector import DataCollector
 from .utils.reconstruction_data_collector import ReconstructionDataCollector
 
@@ -56,76 +54,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
     def __init__(self, cfg: Isaac3dinspectionEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-
-        self.camera_zoom_enabled = bool(getattr(run_cfg, "enable_camera_zoom", False))
-        self.pt_actuation_enabled = bool(getattr(run_cfg, "enable_pt_actuation", True))
-        self.strict_face_visibility_filter_enabled = bool(
-            getattr(run_cfg, "use_strict_face_visibility_filter", False)
-        )
-        if self.camera_zoom_enabled and not self.pt_actuation_enabled:
-            raise ValueError(
-                "Camera zoom must be disabled when PT actuation is disabled"
-            )
-        # Map ablations mask only the policy observation. Spatial maps remain
-        # fully maintained internally for rewards, collision proxies, logging,
-        # curriculum state, and debugging.
-        default_map_channels = (
-            map_channels.OCCUPANCY,
-            map_channels.VISIBILITY,
-            map_channels.VISITATION,
-        )
-        configured_map_channels = getattr(
-            run_cfg, "policy_map_channels", default_map_channels
-        )
-        if isinstance(configured_map_channels, str):
-            configured_map_channels = (configured_map_channels,)
-        configured_map_channels = tuple(dict.fromkeys(configured_map_channels))
-        channel_to_index = {
-            map_channels.OCCUPANCY: 0,
-            map_channels.VISIBILITY: 1,
-            map_channels.VISITATION: 2,
-        }
-        invalid_channels = set(configured_map_channels) - set(channel_to_index)
-        if invalid_channels or not configured_map_channels:
-            raise ValueError(
-                "policy_map_channels must be a non-empty subset of "
-                f"{tuple(channel_to_index)}, got {configured_map_channels}"
-            )
-        self.policy_map_channels = configured_map_channels
-        map_channel_mask = torch.zeros(3, device=self.device)
-        map_channel_mask[[channel_to_index[name] for name in configured_map_channels]] = 1.0
-        self._policy_map_channel_mask = map_channel_mask.view(1, 1, 1, 1, 3)
-        print(f"[INFO] Policy local-map channels: {self.policy_map_channels}")
     
         self._wheel_joint_indices, self._wheel_joint_names = self.robot.find_joints(".*wheel.*")
         self._ptz_joint_indices, _ = self.robot.find_joints(".*ptz.*")
-        if self.pt_actuation_enabled:
-            print("[INFO] Camera control: active pan/tilt")
-        else:
-            print("[INFO] Camera control: fixed pan/tilt (2D chassis action space)")
 
         self.wheel_velocity_scale = self.cfg.wheel_velocity_scale
 
-        # Assign targets once at startup. Cycling before shuffling guarantees
-        # that every configured target is represented as evenly as possible.
+        # Assign targets
         target_keys = list(self.cfg.inspection_goal_cfg.inspection_targets.keys())
-        if not target_keys:
-            raise ValueError("At least one inspection target must be configured")
-        target_indices = np.arange(self.num_envs, dtype=np.int64) % len(target_keys)
-        assignment_rng = np.random.default_rng(int(getattr(self.cfg, "seed", 42) or 42))
-        assignment_rng.shuffle(target_indices)
-        self.target_index_to_name = tuple(target_keys)
-        self.env_target_names = np.asarray(target_keys, dtype=object)[target_indices]
-        self.env_target_indices = torch.tensor(target_indices, device=self.device, dtype=torch.long)
-
-        # Keep the reachable coverage denominator separate from the actual
-        # triangle count needed for raycast face-ID storage.
-        self.coverage_num_faces = torch.zeros(self.num_envs, device=self.device)
+        self.env_target_names = np.random.choice(target_keys, self.num_envs)
+        
+        # Setup specific faces for environments
         self.total_mesh_faces = torch.zeros(self.num_envs, device=self.device)
         for i, target_name in enumerate(self.env_target_names):
-            target_cfg = self.cfg.inspection_goal_cfg.inspection_targets[target_name]
-            self.coverage_num_faces[i] = target_cfg.num_faces
-            self.total_mesh_faces[i] = target_cfg.mesh_num_faces
+            faces = self.cfg.inspection_goal_cfg.inspection_targets[target_name].num_faces
+            self.total_mesh_faces[i] = faces
 
         self.robot_pos = self.robot.data.root_pos_w
         self.robot_vel = self.robot.data.root_lin_vel_w
@@ -143,38 +86,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 log_odds_occupied=getattr(self.cfg.mapping_cfg, "log_odds_occupied", 0.8),
                 clamp_min=getattr(self.cfg.mapping_cfg, "clamp_min", -5.0),
                 clamp_max=getattr(self.cfg.mapping_cfg, "clamp_max", 5.0),
-                ray_chunking_enabled=bool(
-                    getattr(run_cfg, "enable_map_ray_chunking", False)
-                ),
-                ray_chunk_percent=float(
-                    getattr(run_cfg, "map_ray_chunk_percent", 12.5)
-                ),
                 visualization_mode = run_cfg.visualisation_mode,
                 env_origins= self.scene.env_origins.cpu().numpy(),
                 device=self.device,
                 visualize_env_id=getattr(run_cfg, 'visualize_env_id', 0) if (run_cfg.debug and getattr(run_cfg, 'enable_voxel_visualization', False)) else None
             )
-            # These values are constant for the lifetime of the environment.
-            # Keeping their Torch representation avoids a host-to-device copy
-            # in every visitation-reward call.
-            self._map_origins_torch = torch.as_tensor(
-                self.map_manager.world_map_origins,
-                device=self.device,
-            )
-
-        # The full pixel grids are shared by both camera unprojection paths
-        # and remain constant while zoom only changes camera intrinsics.
-        self._unprojection_grid_cache = {}
-        self._map_updated_this_step = False
         self.curriculum = Curriculum(
             num_envs=self.num_envs,
             device=self.device,
     
         )
-
-        self._task_area_draw_interface = None
-        if run_cfg.debug and getattr(run_cfg, "visualise_task_area", False):
-            self._draw_task_area_bounds()
 
         # Scale spatial rewards dynamically based on map resolution (computed once at init)
         res_ratio = self.cfg.mapping_cfg.resolution / 0.25
@@ -183,8 +104,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.cfg.reward_cfg.visitation_reward_scale *= res_ratio
 
         self._setup_tensor_buffers()
-        if self.camera_zoom_enabled:
-            self._setup_camera_zoom()
+        self._setup_camera_zoom()
         
         # Initialize point cloud markers if needed
         self.pc_markers = None
@@ -203,16 +123,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         self.spawn_markers = None
 
-        # RGB Augmentation Jitter initialization
-        if getattr(run_cfg, "enable_rgb_sensor_noise", False):
-            self.color_jitter = transforms.ColorJitter(
-                brightness=getattr(run_cfg, "rgb_color_jitter_brightness", 0.2), 
-                contrast=getattr(run_cfg, "rgb_color_jitter_contrast", 0.2), 
-                saturation=getattr(run_cfg, "rgb_color_jitter_saturation", 0.2), 
-                hue=getattr(run_cfg, "rgb_color_jitter_hue", 0.1)
-            )
-        else:
-            self.color_jitter = None
+
 
         # Initialize Data Collector if needed (saves RGB/images)
         self.data_collector = None
@@ -225,58 +136,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if hasattr(run_cfg, "data_recording_path") and getattr(run_cfg, "save_depth", False):
              self.pc_collector = ReconstructionDataCollector(run_cfg, device=self.device)
 
-    def _draw_task_area_bounds(self):
-        """Draw the maximum curriculum spawn area in the debug viewport."""
-        import isaacsim.util.debug_draw._debug_draw as omni_debug_draw
-
-        env_id = int(getattr(run_cfg, "visualize_env_id", 0))
-        env_id = max(0, min(env_id, self.num_envs - 1))
-        origin = self.scene.env_origins[env_id].detach().cpu().numpy()
-
-        min_x = float(self.curriculum.spawn_min_x + origin[0])
-        max_x = float(self.curriculum.spawn_max_x + origin[0])
-        min_y = float(self.curriculum.spawn_min_y + origin[1])
-        max_y = float(self.curriculum.spawn_max_y_final + origin[1])
-        z = float(origin[2] + 0.05)
-
-        # A red perimeter plus a one-meter grid makes both the extent and area
-        # legible without adding physical geometry to the scene or observations.
-        starts = [
-            (min_x, min_y, z),
-            (max_x, min_y, z),
-            (max_x, max_y, z),
-            (min_x, max_y, z),
-        ]
-        ends = [
-            (max_x, min_y, z),
-            (max_x, max_y, z),
-            (min_x, max_y, z),
-            (min_x, min_y, z),
-        ]
-        colors = [(1.0, 0.0, 0.0, 1.0)] * 4
-        thicknesses = [5.0] * 4
-
-        for x in np.arange(min_x + 1.0, max_x, 1.0):
-            starts.append((float(x), min_y, z))
-            ends.append((float(x), max_y, z))
-            colors.append((1.0, 0.0, 0.0, 0.25))
-            thicknesses.append(1.0)
-        for y in np.arange(min_y + 1.0, max_y, 1.0):
-            starts.append((min_x, float(y), z))
-            ends.append((max_x, float(y), z))
-            colors.append((1.0, 0.0, 0.0, 0.25))
-            thicknesses.append(1.0)
-
-        self._task_area_draw_interface = omni_debug_draw.acquire_debug_draw_interface()
-        self._task_area_draw_interface.draw_lines(starts, ends, colors, thicknesses)
-
-        width = max_x - min_x
-        height = max_y - min_y
-        print(
-            f"[DEBUG] Maximum task area (env {env_id}): "
-            f"{width:.1f} m x {height:.1f} m = {width * height:.1f} m^2"
-        )
-
 
     def close(self):
         """Cleanup for the environment."""
@@ -285,12 +144,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         if hasattr(self, 'pc_collector') and self.pc_collector:
             try:
+                # Try to safely get the latest max distance / faces for Env 0
+                max_dist = self.max_distance_reached[0].item() if hasattr(self, 'max_distance_reached') else 0.0
+                
                 # Best attempt at getting the max faces discovered so far in this current episode
                 faces = 0
                 if hasattr(self, 'best_q_per_face'):
                     faces = (self.best_q_per_face[0] > 0.0).sum().item()
-
-                self.pc_collector.flush_if_best(faces)
+                    
+                self.pc_collector.flush_if_best(faces, max_dist)
             except Exception as e:
                 print(f"[ERROR] Could not save summary during close: {e}")
 
@@ -298,198 +160,46 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.data_collector.save() # Just prints final stats now
             
         super().close()
-
+        
     def _setup_camera_zoom(self):
-        """Initialize bounded, discrete optical zoom control.
-
-        Focal-length changes invalidate rendered camera state. The old zoom
-        implementation changed every requested camera in the same control
-        step, which could overwhelm Hydra/Vulkan for large vectorized runs.
-        Desired and applied levels are therefore tracked separately and only a
-        configured number of cameras are committed per step.
-        """
-        focal_lengths = tuple(float(value) for value in self.cfg.robot_phys_cfg.zoom_focal_lengths)
-        if len(focal_lengths) < 2:
-            raise ValueError("zoom_focal_lengths must contain at least two values")
-        if any(right <= left for left, right in zip(focal_lengths, focal_lengths[1:])):
-            raise ValueError("zoom_focal_lengths must be strictly increasing")
-
-        self.zoom_focal_lengths = torch.tensor(focal_lengths, device=self.device, dtype=torch.float32)
-        zoom_half_bin = 1.0 / len(focal_lengths)
-        self.zoom_action_centers = torch.linspace(
-            -1.0 + zoom_half_bin,
-            1.0 - zoom_half_bin,
-            len(focal_lengths),
-            device=self.device,
-            dtype=torch.float32,
-        )
-        default_focal_length = float(self.cfg.robot_phys_cfg.default_focal_length)
-        self.default_zoom_level = int(
-            torch.argmin(torch.abs(self.zoom_focal_lengths - default_focal_length)).item()
-        )
-        if not np.isclose(focal_lengths[self.default_zoom_level], default_focal_length):
-            raise ValueError("default_focal_length must be one of zoom_focal_lengths")
-
-        self.desired_zoom_levels = torch.full(
-            (self.num_envs,), self.default_zoom_level, device=self.device, dtype=torch.long
-        )
-        self.applied_zoom_levels = self.desired_zoom_levels.clone()
-        self.current_focal_lengths = torch.full(
-            (self.num_envs,), default_focal_length, device=self.device, dtype=torch.float32
-        )
-        self._zoom_update_cursor = 0
-
         stage = get_current_stage()
         self.camera_prims = []
-        self.high_res_camera_prims = [None] * self.num_envs
-        for env_id in range(self.num_envs):
-            camera_path = self.cfg.sensor_cfg.ptz_camera.prim_path.replace("env_.*", f"env_{env_id}")
-            camera_prim = stage.GetPrimAtPath(camera_path)
-            if not camera_prim.IsValid():
-                raise RuntimeError(f"Camera prim not found at path: {camera_path}")
-            self.camera_prims.append(UsdGeom.Camera(camera_prim))
-
-            if hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
-                high_res_path = self.cfg.sensor_cfg.high_res_ptz_camera.prim_path.replace(
-                    "env_.*", f"env_{env_id}"
-                )
-                high_res_prim = stage.GetPrimAtPath(high_res_path)
-                if high_res_prim.IsValid():
-                    self.high_res_camera_prims[env_id] = UsdGeom.Camera(high_res_prim)
-
-    def _update_zoom(self, zoom_actions: torch.Tensor):
-        """Select discrete zoom levels and commit a bounded subset of changes."""
-        num_levels = self.zoom_focal_lengths.numel()
-        half_bin = 1.0 / num_levels
-        proposed_levels = torch.floor((zoom_actions + 1.0) * 0.5 * num_levels).long()
-        proposed_levels.clamp_(0, num_levels - 1)
-
-        # Keep the current desired level slightly beyond its nominal bin. This
-        # prevents a noisy continuous policy from repeatedly crossing a zoom
-        # boundary and filling the render-update queue.
-        current_centers = self.zoom_action_centers[self.desired_zoom_levels]
-        hysteresis = float(self.cfg.robot_phys_cfg.zoom_action_hysteresis)
-        keep_current = torch.abs(zoom_actions - current_centers) <= half_bin + hysteresis
-        self.desired_zoom_levels.copy_(
-            torch.where(keep_current, self.desired_zoom_levels, proposed_levels)
+        self.current_focal_lengths = torch.full(
+            (self.num_envs,), 
+            self.cfg.robot_phys_cfg.default_focal_length,
+            device=self.device,
+            dtype=torch.float32
         )
+        self.committed_focal_lengths = self.current_focal_lengths.clone()
 
-        pending = (self.desired_zoom_levels != self.applied_zoom_levels).nonzero(
-            as_tuple=False
-        ).squeeze(-1)
-        if pending.numel() == 0:
-            return
+        self.high_res_camera_prims = []
+        for i in range(self.num_envs):
+            cam_prim_path = self.cfg.sensor_cfg.ptz_camera.prim_path.replace("env_.*", f"env_{i}")
+            prim = stage.GetPrimAtPath(cam_prim_path)
+            if not prim:
+                raise RuntimeError(f"Camera prim not found at path: {cam_prim_path}")
+            self.camera_prims.append(UsdGeom.Camera(prim))
+            
+            if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
+                hr_cam_prim_path = self.cfg.sensor_cfg.high_res_ptz_camera.prim_path.replace("env_.*", f"env_{i}")
+                hr_prim = stage.GetPrimAtPath(hr_cam_prim_path)
+                if hr_prim:
+                    self.high_res_camera_prims.append(UsdGeom.Camera(hr_prim))
 
-        # Circular ordering prevents low-numbered environments from starving
-        # later ones if their policies keep changing zoom levels.
-        circular_distance = (pending - self._zoom_update_cursor) % self.num_envs
-        pending = pending[torch.argsort(circular_distance)]
-        max_updates = max(1, int(self.cfg.robot_phys_cfg.max_zoom_updates_per_step))
-        env_ids = pending[:max_updates]
-        self._commit_zoom_updates(env_ids)
-        self._zoom_update_cursor = (int(env_ids[-1].item()) + 1) % self.num_envs
-
-    def _commit_zoom_updates(self, env_ids: torch.Tensor):
-        """Apply selected focal lengths consistently to rendered and ray cameras."""
-        new_levels = self.desired_zoom_levels[env_ids]
-        focal_lengths = self.zoom_focal_lengths[new_levels]
-        env_ids_list = env_ids.detach().cpu().tolist()
-        focal_lengths_list = focal_lengths.detach().cpu().tolist()
-
-        for env_id, focal_length in zip(env_ids_list, focal_lengths_list):
-            self.camera_prims[env_id].GetFocalLengthAttr().Set(float(focal_length))
-            high_res_prim = self.high_res_camera_prims[env_id]
-            if high_res_prim is not None:
-                high_res_prim.GetFocalLengthAttr().Set(float(focal_length))
-
-        # Refresh only the cameras whose USD attributes changed. In contrast
-        # to the old implementation, this list is bounded even when all
-        # environments request zoom on the same policy step.
-        self._ptz_camera._update_intrinsic_matrices(env_ids_list)
-        if hasattr(self, "_high_res_ptz_camera"):
-            self._high_res_ptz_camera._update_intrinsic_matrices(env_ids_list)
-
-        self._update_raycaster_zoom(self._raycaster_camera, env_ids, focal_lengths)
-        if hasattr(self, "_high_res_raycaster_camera"):
-            self._update_raycaster_zoom(self._high_res_raycaster_camera, env_ids, focal_lengths)
-
-        self.applied_zoom_levels[env_ids] = new_levels
-        self.current_focal_lengths[env_ids] = focal_lengths
-
-    def _update_raycaster_zoom(
-        self,
-        raycaster: MultiMeshRayCasterCamera,
-        env_ids: torch.Tensor,
-        focal_lengths: torch.Tensor,
-    ):
-        """Match a ray-caster's intrinsics to the rendered camera zoom."""
-        pattern_cfg = raycaster.cfg.pattern_cfg
-        width, height = pattern_cfg.width, pattern_cfg.height
-        horizontal_aperture = pattern_cfg.horizontal_aperture
-        vertical_aperture = pattern_cfg.vertical_aperture
-        if vertical_aperture is None:
-            vertical_aperture = horizontal_aperture * (height / width)
-
-        fx = width * focal_lengths / horizontal_aperture
-        fy = height * focal_lengths / vertical_aperture
-        intrinsics = torch.zeros(
-            (env_ids.numel(), 3, 3), device=self.device, dtype=torch.float32
-        )
-        intrinsics[:, 0, 0] = fx
-        intrinsics[:, 1, 1] = fy
-        intrinsics[:, 0, 2] = pattern_cfg.horizontal_aperture_offset * fx + width / 2.0
-        intrinsics[:, 1, 2] = pattern_cfg.vertical_aperture_offset * fy + height / 2.0
-        intrinsics[:, 2, 2] = 1.0
-        raycaster.set_intrinsic_matrices(intrinsics, env_ids=env_ids)
-        
     def _setup_tensor_buffers(self):
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
         self.init_position = torch.zeros((self.num_envs, 3), device=self.device)
         self.init_quats = torch.zeros((self.num_envs, 4), device=self.device)
         
-        # Warp returns contiguous triangle indices. Procedural meshes, capped
-        # imported meshes, and audited native meshes all have known bounds and
-        # can use their configured exact capacity. Keep the historical safety
-        # capacity only for unaudited, uncapped imported USD assets.
+        # Allocate enough capacity to avoid re-allocating dynamically on the CPU
+        # USD mesh Face IDs can be sparse/non-contiguous, requiring large array bounds
         max_faces = int(self.total_mesh_faces.max().item())
-        targets = self.cfg.inspection_goal_cfg.inspection_targets.values()
-        bounded_face_ids = all(target.mesh_num_faces_is_bounded for target in targets)
-        self.q_capacity = max_faces if bounded_face_ids else max(1_700_000, max_faces + 1000)
-        print(f"[INFO] Inspection face-ID capacity: {self.q_capacity}")
-        self.best_q_per_face = torch.zeros(
-            (self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32
-        )
-
-        # Evaluation-only visibility-filter diagnostics. These are accumulated
-        # per episode so vectorized runs can reveal whether a rendered target
-        # pixel had no corresponding ray hit, hit an inactive target slot, or
-        # disagreed with the rendered depth. Training keeps the legacy
-        # semantic-mask behavior unless the run config explicitly enables the
-        # strict filter.
-        self.episode_face_filter_semantic_pixels = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.episode_face_filter_missing_ray_pixels = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.episode_face_filter_wrong_mesh_pixels = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.episode_face_filter_depth_rejected_pixels = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.episode_face_filter_accepted_pixels = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
+        self.q_capacity = max(1_700_000, max_faces + 1000)
+        self.best_q_per_face = torch.zeros((self.num_envs, self.q_capacity), device=self.device, dtype=torch.float32)
 
         self.episode_goal_achieved = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self.episode_collision_proxy_steps = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.long
-        )
-        # Track proxy-zone transitions so debug mode reports an entry once
-        # instead of printing on every timestep spent near an occupied voxel.
-        self._previous_collision_proxy_active = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.bool
         )
         self.episode_collision_contact_steps = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.long
@@ -506,45 +216,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.current_collision_force = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float32
         )
-        self.current_wheel_collision_contact = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.bool
-        )
-        self.current_wheel_collision_force = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.float32
-        )
-        self.current_tipover = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.bool
-        )
-        self.current_tipovers = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.bool
-        )
-        self.current_robot_up_z = torch.ones(
-            self.num_envs, device=self.device, dtype=torch.float32
-        )
-        self.episode_tipover_steps = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.episode_tipovers = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.consecutive_tipover_steps = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.crash_source_names = tuple(
-            getattr(self.cfg.sensor_cfg, "base_contact_filter_names", ())
-        ) + ("warehouse_wall", "floor_scrape", "tip_over")
-        self.current_collision_source_forces = torch.zeros(
-            (self.num_envs, len(getattr(self.cfg.sensor_cfg, "base_contact_filter_names", ()))),
-            device=self.device,
-            dtype=torch.float32,
-        )
-        self.episode_crash_source_counts = torch.zeros(
-            (self.num_envs, len(self.crash_source_names)),
-            device=self.device,
-            dtype=torch.long,
-        )
-        self.episode_forward_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
-        self.episode_reverse_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.current_crashes = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
         if isinstance(self.cfg.action_space, gym.spaces.Discrete):
@@ -554,58 +225,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         self.last_action = torch.zeros(action_shape, device=self.device)
         self.previous_action_for_rewards = torch.zeros(action_shape, device=self.device)
-        self.policy_actions = torch.zeros(action_shape, device=self.device)
-
-        # Safety-shield bookkeeping. A circular swept footprint is checked
-        # against occupied local-map voxels at several points along the
-        # commanded unicycle arc. These tensors are shared by all environments
-        # and avoid rebuilding the local coordinate grid every control step.
-        self.current_safety_shield_intervention = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.bool
-        )
-        self.current_safety_shield_scale = torch.ones(
-            self.num_envs, device=self.device, dtype=torch.float32
-        )
-        self.episode_safety_shield_interventions = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.episode_safety_shield_forward_interventions = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-        self.episode_safety_shield_reverse_interventions = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.long
-        )
-
-        local_dims = self.cfg.mapping_cfg.local_map_dims
-        map_resolution = float(self.cfg.mapping_cfg.resolution)
-        local_x = (
-            torch.arange(local_dims[0], device=self.device, dtype=torch.float32)
-            - local_dims[0] // 2
-        ) * map_resolution
-        local_y = (
-            torch.arange(local_dims[1], device=self.device, dtype=torch.float32)
-            - local_dims[1] // 2
-        ) * map_resolution
-        local_grid_x, local_grid_y = torch.meshgrid(local_x, local_y, indexing="ij")
-        self.safety_shield_local_x = local_grid_x.flatten().view(1, 1, 1, -1)
-        self.safety_shield_local_y = local_grid_y.flatten().view(1, 1, 1, -1)
-        self.safety_shield_current_dist_sq = (
-            self.safety_shield_local_x.square() + self.safety_shield_local_y.square()
-        )
-        self.safety_shield_linear_scales = torch.tensor(
-            getattr(run_cfg, "safety_shield_linear_scales", (1.0, 0.75, 0.50, 0.25, 0.0)),
-            device=self.device,
-            dtype=torch.float32,
-        )
-        prediction_steps = max(1, int(getattr(run_cfg, "safety_shield_prediction_steps", 6)))
-        shield_horizon = max(0.0, float(getattr(run_cfg, "safety_shield_horizon_s", 0.50)))
-        self.safety_shield_prediction_times = torch.linspace(
-            shield_horizon / prediction_steps,
-            shield_horizon,
-            prediction_steps,
-            device=self.device,
-            dtype=torch.float32,
-        )
         
         # Buffers are managed by the logger
         self.logger = InspectionLogger(self.cfg, use_wandb=run_cfg.use_wandb, debug=run_cfg.debug, window_size=self.curriculum.success_buffer.maxlen)
@@ -628,6 +247,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if hasattr(self.cfg.mapping_cfg, 'compute_global_map_entropy') and self.cfg.mapping_cfg.compute_global_map_entropy:
             self.prev_global_map_entropy = torch.zeros(self.num_envs, device=self.device)
+        if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+            self.max_distance_reached = torch.zeros(self.num_envs, device=self.device)
 
     def _setup_scene(self):
         #Add robot, camera and terain to the scene
@@ -640,37 +261,21 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self._ptz_camera = TiledCamera(self.cfg.sensor_cfg.ptz_camera)
         self.scene.sensors["ptz_camera"] = self._ptz_camera
 
-        if getattr(run_cfg, "add_high_res_inspection_camera", False):
-            if hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
-                self._high_res_ptz_camera = TiledCamera(self.cfg.sensor_cfg.high_res_ptz_camera)
-                self.scene.sensors["high_res_ptz_camera"] = self._high_res_ptz_camera
-            if hasattr(self.cfg.sensor_cfg, "high_res_face_raycaster"):
-                self._high_res_raycaster_camera = MultiMeshRayCasterCamera(self.cfg.sensor_cfg.high_res_face_raycaster)
-                self.scene.sensors["high_res_raycaster_camera"] = self._high_res_raycaster_camera
+        if getattr(run_cfg, "add_high_res_inspection_camera", False) and hasattr(self.cfg.sensor_cfg, "high_res_ptz_camera"):
+            self._high_res_ptz_camera = TiledCamera(self.cfg.sensor_cfg.high_res_ptz_camera)
+            self.scene.sensors["high_res_ptz_camera"] = self._high_res_ptz_camera
         if hasattr(self.cfg.sensor_cfg, "base_contact_sensor"):
             self._base_contact_sensor = ContactSensor(self.cfg.sensor_cfg.base_contact_sensor)
             self.scene.sensors["base_contact_sensor"] = self._base_contact_sensor
-        self._wheel_contact_sensors = {}
-        for sensor_name in getattr(self.cfg.sensor_cfg, "wheel_contact_sensor_names", ()):
-            if hasattr(self.cfg.sensor_cfg, sensor_name):
-                wheel_contact_sensor = ContactSensor(getattr(self.cfg.sensor_cfg, sensor_name))
-                self._wheel_contact_sensors[sensor_name] = wheel_contact_sensor
-                self.scene.sensors[sensor_name] = wheel_contact_sensor
 
         # --- RESTORED MANUAL SPAWN LOGIC ---
         stage = get_current_stage()
-        if getattr(self.cfg.env_parameters, "add_mesh_colliders", False):
-            self._add_static_environment_mesh_colliders(stage)
         import re
         
         # Clone heavily populated structures immediately to build parallel env branches
         
         self.inspection_goals = {}
         self.goal_prims_dict = {}
-        self.primitive_sizes = {}
-        self.primitive_footprint_radii = {}
-        self.primitive_colors = {}
-        self.primitive_root_heights = {}
 
         for target_name, target_cfg in self.cfg.inspection_goal_cfg.inspection_targets.items():
             usd_path = target_cfg.usd_path
@@ -678,62 +283,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             scale = target_cfg.scale
             orientation = target_cfg.orientation
 
-            primitive_cfg = getattr(target_cfg, "primitive", None)
-            common_spawn_kwargs = {
-                "rigid_props": sim_utils.RigidBodyPropertiesCfg(
-                    # Procedural training targets keep their sampled pose and
-                    # cannot roll or tip after contact. Evaluation can request
-                    # the same immovable behavior for imported USD targets.
-                    rigid_body_enabled=True,
-                    kinematic_enabled=bool(
-                        getattr(
-                            run_cfg,
-                            "kinematic_inspection_target",
-                            primitive_cfg is not None,
-                        )
-                    ),
-                ),
-                "mass_props": sim_utils.MassPropertiesCfg(
-                    density=5.0,
-                    mass=float(getattr(run_cfg, "inspection_target_mass", 1000.0)),
-                ),
-                "collision_props": sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-                "semantic_tags": [(self.cfg.inspection_goal_cfg.semantics_type, target_name)],
-            }
-            if primitive_cfg is None:
-                obj_cfg = sim_utils.UsdFileCfg(
-                    usd_path=usd_path,
-                    scale=scale,
-                    **common_spawn_kwargs,
-                )
-            else:
-                obj_cfg = build_tessellated_primitive_cfg(primitive_cfg, **common_spawn_kwargs)
+            obj_cfg = sim_utils.UsdFileCfg(
+                usd_path=usd_path,
+                scale=scale,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(rigid_body_enabled=True, kinematic_enabled=False),
+                mass_props=sim_utils.MassPropertiesCfg(density=5.0, mass=1.0),
+                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+                semantic_tags=[(self.cfg.inspection_goal_cfg.semantics_type, target_name)]
+            )
             obj_cfg.func(
                 prim_path_template,
                 obj_cfg,
-                translation=(2.0, 0.0, 0.4 if primitive_cfg is None else 0.0),
+                translation=(2.0, 0.0, 0.4),
                 orientation=orientation,
             )
-
-            if primitive_cfg is not None:
-                randomization = apply_primitive_domain_randomization(
-                    stage=stage,
-                    target_name=target_name,
-                    prim_path_template=prim_path_template,
-                    primitive_cfg=primitive_cfg,
-                    num_envs=self.num_envs,
-                    seed=getattr(self.cfg, "seed", 42),
-                )
-                self.primitive_sizes[target_name] = torch.tensor(
-                    randomization.sizes, device=self.device, dtype=torch.float32
-                )
-                self.primitive_root_heights[target_name] = torch.tensor(
-                    randomization.root_heights, device=self.device, dtype=torch.float32
-                )
-                self.primitive_footprint_radii[target_name] = torch.tensor(
-                    randomization.footprint_radii, device=self.device, dtype=torch.float32
-                )
-                self.primitive_colors[target_name] = randomization.colors
 
             # Force collision
             self.goal_prims_dict[target_name] = []
@@ -764,17 +327,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     self.goal_prims_dict[target_name].append(None)
                     
             # Create RigidObject wrapper
-            default_root_z = 0.4
-            if primitive_cfg is not None:
-                primitive_type = primitive_cfg.get("type")
-                primitive_axis = str(primitive_cfg.get("axis", "Z")).upper()
-                if primitive_type == "tessellated_cone" and primitive_axis == "Z":
-                    default_root_z = 0.0
             self.inspection_goals[target_name] = RigidObject(
                 RigidObjectCfg(
                     prim_path=prim_path_template,
                     spawn=None,
-                    init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, default_root_z))
+                    init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.4))
                 )
             )
             self.scene.rigid_objects[f"inspection_goal_{target_name}"] = self.inspection_goals[target_name]
@@ -786,12 +343,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         handler = ObstacleDatasetHandler(max_obstacles=max_obstacles)
         obstacle_cfgs = handler.get_obstacle_configs()
-        self.obstacle_footprint_radii = torch.tensor(
-            handler.get_horizontal_radii(), device=self.device, dtype=torch.float32
-        )
-        self.obstacle_root_heights = torch.tensor(
-            handler.get_root_heights(), device=self.device, dtype=torch.float32
-        )
         
         self.obstacles = []
         for i, obs_cfg in enumerate(obstacle_cfgs):
@@ -812,46 +363,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-    def _add_static_environment_mesh_colliders(self, stage: Usd.Stage) -> None:
-        """Add static triangle-mesh collision to a visual-only external USD scene.
-
-        CAD and visualization sample stages frequently contain no physics
-        schemas. Only meshes without an authored collider are changed; existing
-        SimReady collision remains untouched. Instance proxies cannot be
-        overridden safely and are reported instead of being modified.
-        """
-        environment_prim_path = self.cfg.env_parameters.prim_path.replace("env_.*", "env_0")
-        environment_prim = stage.GetPrimAtPath(environment_prim_path)
-        if not environment_prim.IsValid():
-            raise RuntimeError(f"Environment prim not found at path: {environment_prim_path}")
-
-        added_count = 0
-        skipped_instance_count = 0
-        for prim in Usd.PrimRange(environment_prim):
-            if not prim.IsA(UsdGeom.Mesh) or prim.HasAPI(UsdPhysics.CollisionAPI):
-                continue
-            if prim.IsInstanceProxy():
-                skipped_instance_count += 1
-                continue
-
-            imageable = UsdGeom.Imageable(prim)
-            if imageable and imageable.ComputeVisibility() == UsdGeom.Tokens.invisible:
-                continue
-
-            UsdPhysics.CollisionAPI.Apply(prim)
-            mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(prim)
-            # The environment has no rigid-body API, so exact triangle meshes
-            # are valid static colliders and retain narrow CAD geometry.
-            mesh_collision.GetApproximationAttr().Set("none")
-            if not prim.HasAPI(PhysxSchema.PhysxCollisionAPI):
-                PhysxSchema.PhysxCollisionAPI.Apply(prim)
-            added_count += 1
-
-        print(
-            f"[INFO] External environment collision: added {added_count} static mesh colliders"
-            f"; skipped {skipped_instance_count} instance proxies."
-        )
-
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.previous_action_for_rewards.copy_(self.last_action)
         
@@ -860,143 +371,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print(f"[ENV WARNING] NaN/Inf detected in actions! Policy weights have likely collapsed. Zeroing actions to prevent PhysX crash.")
             actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
         actions = torch.clamp(actions, -1.0, 1.0)
-        self.policy_actions.copy_(actions)
-        actions = self._apply_directional_safety_shield(actions)
         self.last_action.copy_(actions)
         self.actions = actions.clone()
-
-    def _apply_directional_safety_shield(self, actions: torch.Tensor) -> torch.Tensor:
-        """Reduce only the linear component of a locally unsafe command.
-
-        Each candidate follows the commanded unicycle arc for a short horizon.
-        The largest collision-free linear scale is selected, while angular and
-        PTZ commands are left untouched. A voxel already inside the footprint
-        blocks only motion that moves closer to it, which preserves the safe
-        escape direction instead of trapping the robot near an object.
-        """
-        self.current_safety_shield_intervention.zero_()
-        self.current_safety_shield_scale.fill_(1.0)
-
-        if (
-            not bool(getattr(run_cfg, "use_directional_safety_shield", False))
-            or not isinstance(self.single_action_space, gym.spaces.Box)
-            or getattr(self, "current_local_occ_map", None) is None
-        ):
-            return actions
-
-        map_resolution = float(self.cfg.mapping_cfg.resolution)
-        map_height = self.current_local_occ_map.shape[3]
-        z_min = float(getattr(run_cfg, "safety_shield_z_min", 0.10))
-        z_max = float(getattr(run_cfg, "safety_shield_z_max", 0.80))
-        min_z_index = max(1, int(np.floor(z_min / map_resolution)))
-        max_z_index = min(map_height, int(np.ceil(z_max / map_resolution)) + 1)
-        if min_z_index >= max_z_index:
-            return actions
-
-        occupancy_threshold = float(
-            getattr(run_cfg, "safety_shield_occupancy_threshold", 1.1)
-        )
-        occupied_xy = (
-            self.current_local_occ_map[..., min_z_index:max_z_index]
-            > occupancy_threshold
-        ).any(dim=3).flatten(start_dim=1)
-
-        candidate_scales = self.safety_shield_linear_scales
-        candidate_linear_action = actions[:, 0, None] * candidate_scales[None, :]
-        candidate_nominal_linear_velocity = (
-            candidate_linear_action * self.cfg.robot_phys_cfg.max_linear_velocity
-        )
-        candidate_nominal_angular_velocity = (
-            actions[:, 1, None] * self.cfg.robot_phys_cfg.max_angular_velocity
-        )
-
-        # Mirror _apply_action's per-wheel saturation before reconstructing the
-        # actual commanded chassis twist. With simultaneous fast translation
-        # and turning, clipping only one wheel can substantially change the arc.
-        half_track = self.cfg.robot_phys_cfg.wheel_separation / 2.0
-        wheel_radius = self.cfg.robot_phys_cfg.wheel_radius
-        left_wheel_velocity = (
-            candidate_nominal_linear_velocity
-            - candidate_nominal_angular_velocity * half_track
-        ) / wheel_radius
-        right_wheel_velocity = (
-            candidate_nominal_linear_velocity
-            + candidate_nominal_angular_velocity * half_track
-        ) / wheel_radius
-        max_wheel_velocity = self.cfg.robot_phys_cfg.max_wheel_velocity
-        actuation_scale = float(self.cfg.action_scale)
-        left_wheel_velocity = torch.clamp(
-            left_wheel_velocity, -max_wheel_velocity, max_wheel_velocity
-        ) * actuation_scale
-        right_wheel_velocity = torch.clamp(
-            right_wheel_velocity, -max_wheel_velocity, max_wheel_velocity
-        ) * actuation_scale
-        candidate_linear_velocity = (
-            (left_wheel_velocity + right_wheel_velocity) * wheel_radius / 2.0
-        )
-        angular_velocity = (
-            (right_wheel_velocity - left_wheel_velocity)
-            * wheel_radius
-            / self.cfg.robot_phys_cfg.wheel_separation
-        )
-        times = self.safety_shield_prediction_times
-
-        angular_displacement = angular_velocity[..., None] * times[None, None, :]
-        straight_motion = angular_velocity.abs() < 1.0e-4
-        safe_angular_velocity = torch.where(
-            straight_motion, torch.ones_like(angular_velocity), angular_velocity
-        )
-        turning_radius = candidate_linear_velocity / safe_angular_velocity
-
-        path_x = torch.where(
-            straight_motion[..., None],
-            candidate_linear_velocity[..., None] * times[None, None, :],
-            turning_radius[..., None] * torch.sin(angular_displacement),
-        )
-        path_y = torch.where(
-            straight_motion[..., None],
-            torch.zeros_like(angular_displacement),
-            turning_radius[..., None] * (1.0 - torch.cos(angular_displacement)),
-        )
-
-        dx = self.safety_shield_local_x - path_x[..., None]
-        dy = self.safety_shield_local_y - path_y[..., None]
-        future_dist_sq = dx.square() + dy.square()
-        shield_radius = float(getattr(run_cfg, "safety_shield_robot_radius", 0.35)) + float(
-            getattr(run_cfg, "safety_shield_margin", 0.10)
-        )
-        inside_future_footprint = future_dist_sq <= shield_radius * shield_radius
-
-        # Comparing against each voxel's current distance makes the shield
-        # directional: an obstacle behind does not suppress forward escape, and
-        # vice versa. The zero-linear-speed candidate is consequently always
-        # safe even when the current footprint overlaps an occupied voxel.
-        moving_closer = future_dist_sq < (self.safety_shield_current_dist_sq - 1.0e-5)
-        collision_risk = (
-            inside_future_footprint
-            & moving_closer
-            & occupied_xy[:, None, None, :]
-        )
-        safe_candidates = ~collision_risk.any(dim=(2, 3))
-        first_safe_candidate = safe_candidates.to(torch.int64).argmax(dim=1)
-        selected_scale = candidate_scales[first_safe_candidate]
-
-        moving = actions[:, 0].abs() > 1.0e-4
-        intervened = moving & (selected_scale < 1.0 - 1.0e-6)
-        selected_scale = torch.where(moving, selected_scale, torch.ones_like(selected_scale))
-
-        shielded_actions = actions.clone()
-        shielded_actions[:, 0] *= selected_scale
-        self.current_safety_shield_intervention.copy_(intervened)
-        self.current_safety_shield_scale.copy_(selected_scale)
-        self.episode_safety_shield_interventions += intervened.long()
-        self.episode_safety_shield_forward_interventions += (
-            intervened & (actions[:, 0] > 0.0)
-        ).long()
-        self.episode_safety_shield_reverse_interventions += (
-            intervened & (actions[:, 0] < 0.0)
-        ).long()
-        return shielded_actions
     
     def _apply_action(self) -> None:
         try:
@@ -1005,15 +381,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print(f"[DEBUG FATAL] CUDA Error BEFORE _apply_action (likely from _pre_physics_step): {e}")
             raise
         
-        # The fixed-camera ablation continuously requests zero PT velocity.
-        # Reset initializes both joints at their neutral pose, and the PT
-        # actuator damping holds that pose while the chassis moves.
-        ptz_targets = torch.zeros(
-            (self.num_envs, len(self._ptz_joint_indices)),
-            device=self.device,
-            dtype=self.actions.dtype,
-        )
-
         if isinstance(self.single_action_space, gym.spaces.Box):
             linear_velocity = self.actions[:, 0] * self.cfg.robot_phys_cfg.max_linear_velocity  # Forward/Backward command
             angular_velocity = self.actions[:, 1] * self.cfg.robot_phys_cfg.max_angular_velocity  # Left/Right turn command
@@ -1037,16 +404,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             #tilt_cmd = self.actions[:, 3] * 0.698132
             #ptz_targets = torch.stack([pan_cmd, tilt_cmd], dim=1)
 
-            if self.pt_actuation_enabled:
-                # Velocity Control for PTZ Camera
-                pan_vel_cmd = self.actions[:, 2] * self.cfg.robot_phys_cfg.pan_speed
-                tilt_vel_cmd = self.actions[:, 3] * self.cfg.robot_phys_cfg.tilt_speed
-                ptz_targets = torch.stack([pan_vel_cmd, tilt_vel_cmd], dim=1)
+            # Velocity Control for PTZ Camera
+            pan_vel_cmd = self.actions[:, 2] * self.cfg.robot_phys_cfg.pan_speed
+            tilt_vel_cmd = self.actions[:, 3] * self.cfg.robot_phys_cfg.tilt_speed
+
+            ptz_targets = torch.stack([pan_vel_cmd, tilt_vel_cmd], dim=1)
 
             # Scale the wheel commands
             wheel_targets = self.wheel_commands * self.cfg.action_scale
-            if self.camera_zoom_enabled:
-                self._update_zoom(self.actions[:, 4])
+            # x = target
+            zoom_cmd = self.actions[:, 4]
+            self._update_zoom(zoom_cmd)
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             '''
@@ -1094,13 +462,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # print(f"[INFO] Wheel Commands: {self.wheel_commands.clone()}")
         self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wheel_joint_indices)
-        if not self.pt_actuation_enabled:
-            neutral_ptz_positions = self.robot.data.default_joint_pos[
-                :, self._ptz_joint_indices
-            ]
-            self.robot.set_joint_position_target(
-                neutral_ptz_positions, joint_ids=self._ptz_joint_indices
-            )
         self.robot.set_joint_velocity_target(ptz_targets, joint_ids=self._ptz_joint_indices)
 
         try:
@@ -1108,6 +469,67 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         except Exception as e:
             print(f"[DEBUG FATAL] CUDA Error AFTER _apply_action tensor ops: {e}")
             raise
+
+    def _update_zoom(self, zoom_cmd: torch.Tensor):
+        delta_zoom = zoom_cmd * self.cfg.robot_phys_cfg.zoom_speed
+        self.current_focal_lengths += delta_zoom
+
+        self.current_focal_lengths = torch.clamp(
+            self.current_focal_lengths,
+            self.cfg.robot_phys_cfg.min_focal_length,
+            self.cfg.robot_phys_cfg.max_focal_length
+        )
+        
+        # Only update RayCaster and USD if focal length changed by > 1.0
+        # Updating USD attributes at high frequency for all envs triggers Vulkan TDR crashes
+        diff = torch.abs(self.current_focal_lengths - self.committed_focal_lengths)
+        update_mask = diff > 1.0
+        
+        if not torch.any(update_mask):
+            return
+            
+        update_indices = update_mask.nonzero(as_tuple=False).squeeze(-1)
+        
+        focal_lengths_cpu_to_update = self.current_focal_lengths[update_indices].cpu().numpy()
+        for idx_idx, env_idx in enumerate(update_indices.tolist()):
+            self.camera_prims[env_idx].GetFocalLengthAttr().Set(float(focal_lengths_cpu_to_update[idx_idx]))
+            if hasattr(self, "high_res_camera_prims") and len(self.high_res_camera_prims) > env_idx:
+                self.high_res_camera_prims[env_idx].GetFocalLengthAttr().Set(float(focal_lengths_cpu_to_update[idx_idx]))
+
+        self.committed_focal_lengths[update_mask] = self.current_focal_lengths[update_mask].clone()
+
+        self._zoom_ray_caster(update_indices)
+        
+        if hasattr(self, "_ptz_camera"):
+            self._ptz_camera._update_intrinsic_matrices(update_indices)
+        if hasattr(self, "_high_res_ptz_camera"):
+            self._high_res_ptz_camera._update_intrinsic_matrices(update_indices)
+        
+    def _zoom_ray_caster(self, env_ids=None):
+        if env_ids is None:
+            f = self.committed_focal_lengths.to(self.device)
+            num_updates = self.num_envs
+        else:
+            f = self.committed_focal_lengths[env_ids].to(self.device)
+            num_updates = len(env_ids)
+            
+        pcfg = self._raycaster_camera.cfg.pattern_cfg
+        w, h = pcfg.width, pcfg.height
+        ha = pcfg.horizontal_aperture
+        va = pcfg.vertical_aperture if pcfg.vertical_aperture is not None else ha * (h / w)
+
+        fx = w * f / ha
+        fy = h * f / va
+        cx = pcfg.horizontal_aperture_offset * fx + (w / 2.0)
+        cy = pcfg.vertical_aperture_offset * fy + (h / 2.0)
+        
+        K = torch.zeros((num_updates, 3, 3), device=self.device, dtype=torch.float32)
+        K[:, 0, 0] = fx
+        K[:, 1, 1] = fy
+        K[:, 0, 2] = cx
+        K[:, 1, 2] = cy
+        K[:, 2, 2] = 1.0
+        self._raycaster_camera.set_intrinsic_matrices(K, env_ids=env_ids) 
 
     def _update_maps(self, visualise: bool = False):
         
@@ -1172,7 +594,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             intrinsic_matrices=intrinsic_matrices,
             cam_pos=nav_cam_pos,
             cam_quat=nav_cam_quat,
-            K_candidates=None, # Unproject all pixels without downsampling
+            K_candidates=4096, # Sample a larger candidate pool to ensure enough valid points
             filter_floor=getattr(self.cfg.mapping_cfg, "filter_floor_occupancy", True),
             filter_chassis=True,
             chassis_min_dist_sq=chassis_min_dist_sq
@@ -1230,7 +652,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             intrinsic_matrices=intrinsic_matrices_insp,
             cam_pos=insp_cam_pos,
             cam_quat=insp_cam_quat,
-            K_candidates=None, # Unproject all pixels without downsampling
+            K_candidates=4096,
             filter_floor=False,
             filter_chassis=True,
             chassis_min_dist_sq=chassis_min_dist_sq
@@ -1258,31 +680,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
         device = depth_data.device
         
-        if K_candidates is None or K_candidates >= W * H:
-            K_candidates = W * H
-            cache_key = (str(device), N, H, W)
-            cached_grid = self._unprojection_grid_cache.get(cache_key)
-            if cached_grid is None:
-                # Create a full grid once. The expanded tensors are views, so
-                # the cache stores only one H x W grid plus N batch indices.
-                v_grid, u_grid = torch.meshgrid(
-                    torch.arange(H, device=device),
-                    torch.arange(W, device=device),
-                    indexing='ij',
-                )
-                u = u_grid.flatten().unsqueeze(0).expand(N, -1)
-                v = v_grid.flatten().unsqueeze(0).expand(N, -1)
-                batch_idx = torch.arange(N, device=device).unsqueeze(1)
-                cached_grid = (u, v, batch_idx)
-                self._unprojection_grid_cache[cache_key] = cached_grid
-            u, v, batch_idx = cached_grid
-        else:
-            # Sample random pixels directly
-            u = torch.randint(0, W, (N, K_candidates), device=device)
-            v = torch.randint(0, H, (N, K_candidates), device=device)
-            batch_idx = torch.arange(N, device=device).unsqueeze(1)
+        # Sample random pixels directly
+        u = torch.randint(0, W, (N, K_candidates), device=device)
+        v = torch.randint(0, H, (N, K_candidates), device=device)
         
         # Gather depth
+        batch_idx = torch.arange(N, device=device).unsqueeze(1)
         if depth_data.dim() == 4:
             z = depth_data[batch_idx, v, u, 0] # (N, K)
         else:
@@ -1306,9 +709,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         cam_quat_expanded = cam_quat.unsqueeze(1).expand(-1, K_candidates, -1)
         points_world = quat_apply(cam_quat_expanded, points_cam) + cam_pos.unsqueeze(1)
         
-        # Invalid intrinsics or transforms can turn finite depth into invalid
-        # world points. Never pass those values to the Warp traversal kernels.
-        combined_mask = valid_mask & torch.isfinite(points_world).all(dim=-1)
+        combined_mask = valid_mask
         
         if filter_floor:
             floor_mask = points_world[..., 2] > 0.05
@@ -1348,12 +749,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             action_dim = self.last_action.shape[1]
             last_action_obs = self.last_action
             
-        ptz_obs_dim = 2 if self.pt_actuation_enabled else 0
-        zoom_obs_dim = 1 if self.camera_zoom_enabled else 0
-        obs_buffer = torch.zeros(
-            (self.num_envs, 13 + action_dim + ptz_obs_dim + zoom_obs_dim),
-            device=self.device,
-        )
+        obs_buffer = torch.zeros((self.num_envs, 13 + action_dim+2), device=self.device)
 
         # pos_noise = (torch.rand_like(position) - 0.5) * 0.2
         # orientation_noise = (torch.rand_like(orientation) - 0.5) * 0.2
@@ -1376,17 +772,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         obs_buffer[..., 13:13 + action_dim] = last_action_obs
 
-        if self.pt_actuation_enabled:
-            ptz_joint_pos = self.robot.data.joint_pos[:, self._ptz_joint_indices]
-            obs_buffer[..., 13 + action_dim : 13 + action_dim + 2] = ptz_joint_pos
-
-        if self.camera_zoom_enabled:
-            # The applied level can lag the desired action by a few steps
-            # because render reconfiguration is rate-limited. Exposing it
-            # keeps the observation Markovian during that queueing period.
-            zoom_denominator = max(1, self.zoom_focal_lengths.numel() - 1)
-            normalized_zoom = 2.0 * self.applied_zoom_levels.float() / zoom_denominator - 1.0
-            obs_buffer[..., 13 + action_dim + ptz_obs_dim] = normalized_zoom
+        ptz_joint_pos = self.robot.data.joint_pos[:, self._ptz_joint_indices]
+        # print(f"PTZ Joint Positions: {ptz_joint_pos}")
+        obs_buffer[..., 13 + action_dim : 13 + action_dim + 2] = ptz_joint_pos
 
         if torch.isnan(obs_buffer).any():
             print("\n[ENV DEBUG] NaN detected in _compute_pose_observation!")
@@ -1420,46 +808,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                 msg = f"Invalid value (NaN or Inf) in Local Map: {name}"
                 print(msg)
                 raise ValueError(msg)
-        map_observation = torch.stack(
-            [local_occ_map, local_vis_map, local_visit], dim=-1
-        ).to(self.device)
-        return map_observation * self._policy_map_channel_mask
-
-    def _apply_rgb_noise(self, rgb: torch.Tensor) -> torch.Tensor:
-        """Applies configured color jitter and gaussian noise to an RGB tensor (..., H, W, C)."""
-        if not getattr(run_cfg, "enable_rgb_sensor_noise", False):
-            return rgb
-            
-        # Color Jitter requires (num_envs, C, H, W)
-        rgb_permuted = rgb.permute(0, 3, 1, 2)
-        if hasattr(self, 'color_jitter') and self.color_jitter is not None:
-            rgb_permuted = self.color_jitter(rgb_permuted)
-            
-        # Convert back
-        rgb_noisy = rgb_permuted.permute(0, 2, 3, 1)
-        
-        # Gaussian Noise
-        noise_std = getattr(run_cfg, "rgb_noise_std", 0.05)
-        if noise_std > 0.0:
-            noise = torch.randn_like(rgb_noisy) * noise_std
-            rgb_noisy = torch.clamp(rgb_noisy + noise, 0.0, 1.0)
-            
-        return rgb_noisy
-
-    def _apply_depth_noise(self, depth: torch.Tensor) -> torch.Tensor:
-        """Applies configured noise, NaN handling, and clamping/normalization to a depth tensor."""
-        depth = depth.clone()
-        depth[~torch.isfinite(depth)] = 35.0
-        if getattr(run_cfg, "enable_depth_sensor_noise", False):
-            std_mult = getattr(run_cfg, "depth_pixel_std_dev_multiplier", 0.01)
-            dropout_prob = getattr(run_cfg, "depth_pixel_dropout_prob", 0.01)
-            depth = torch.normal(mean=depth, std=std_mult * depth)
-            depth[torch.bernoulli(torch.ones_like(depth) * dropout_prob) > 0] = 35.0
-        # Clamp noisy samples to the sensor's valid range, then normalize to [0, 1].
-        depth = torch.clamp(depth, min=0.0, max=35.0) / 35.0
-        if depth.dim() == 3:
-             depth = depth.unsqueeze(-1)
-        return depth
+        return torch.stack([local_occ_map, local_vis_map, local_visit], dim=-1).to(self.device)
 
     def _get_observations(self) -> dict:
         # return  {"policy": None}
@@ -1470,45 +819,37 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         if nav_modality == "rgb":
             if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types:
-                front_camera_data = self._apply_rgb_noise(self._nav_camera.data.output["rgb"] / 255.0)
+                front_camera_data = self._nav_camera.data.output["rgb"] / 255.0
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera Data!")
 
         elif nav_modality == "depth":
              if "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
-                front_camera_data = self._apply_depth_noise(self._nav_camera.data.output["distance_to_image_plane"])
+                front_camera_data = self._nav_camera.data.output["distance_to_image_plane"].clone()
+                # Replace Inf and clamp large distances to keep inputs sane, then normalize to [0, 1]
+                front_camera_data[torch.isinf(front_camera_data)] = 35.0
+                front_camera_data = torch.clamp(front_camera_data, max=35.0) / 35.0
+                front_camera_data = front_camera_data.unsqueeze(-1)
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera Depth Data!")
 
         elif nav_modality == "rgbd":
             if "rgb" in self.cfg.sensor_cfg.navigation_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.navigation_camera.data_types:
-                rgb = self._apply_rgb_noise(self._nav_camera.data.output["rgb"] / 255.0)
-                depth = self._apply_depth_noise(self._nav_camera.data.output["distance_to_image_plane"])
+                rgb = self._nav_camera.data.output["rgb"] / 255.0
+                depth = self._nav_camera.data.output["distance_to_image_plane"].clone()
+                depth[torch.isinf(depth)] = 35.0
+                depth = torch.clamp(depth, max=35.0) / 35.0
+                if depth.dim() == 3:
+                     depth = depth.unsqueeze(-1)
                 
                 front_camera_data = torch.cat([rgb, depth], dim=-1)
                 if torch.isnan(front_camera_data).any():
                     print("[ENV DEBUG] NaN detected in Front Camera RGBD Data!")
 
-        ptz_modality = getattr(run_cfg, "ptz_camera_modality", "rgb")
-
-        if ptz_modality == "rgb":
-            if "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types:
-                ptz_camera_data = self._apply_rgb_noise(self._ptz_camera.data.output["rgb"] / 255.0)
-                if torch.isnan(ptz_camera_data).any():
-                    print("[ENV DEBUG] NaN detected in PTZ Camera Data!")
-        elif ptz_modality == "depth":
-             if "distance_to_image_plane" in self.cfg.sensor_cfg.ptz_camera.data_types:
-                ptz_camera_data = self._apply_depth_noise(self._ptz_camera.data.output["distance_to_image_plane"])
-                if torch.isnan(ptz_camera_data).any():
-                    print("[ENV DEBUG] NaN detected in PTZ Camera Depth Data!")
-        elif ptz_modality == "rgbd":
-            if "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types and "distance_to_image_plane" in self.cfg.sensor_cfg.ptz_camera.data_types:
-                rgb = self._apply_rgb_noise(self._ptz_camera.data.output["rgb"] / 255.0)
-                depth = self._apply_depth_noise(self._ptz_camera.data.output["distance_to_image_plane"])
-                
-                ptz_camera_data = torch.cat([rgb, depth], dim=-1)
-                if torch.isnan(ptz_camera_data).any():
-                    print("[ENV DEBUG] NaN detected in PTZ Camera RGBD Data!")
+        if  "rgb" in self.cfg.sensor_cfg.ptz_camera.data_types:
+            ptz_camera_data = self._ptz_camera.data.output["rgb"] / 255.0
+            if torch.isnan(ptz_camera_data).any():
+                print("[ENV DEBUG] NaN detected in PTZ Camera Data!")
         semantic_channel = torch.zeros(
             (self.num_envs, self.cfg.sensor_cfg.ptz_camera.height, self.cfg.sensor_cfg.ptz_camera.width, 1),
             device=self.device
@@ -1518,17 +859,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             if target_mask is not None:
                 semantic_channel = target_mask.float()
-
-                # Corrupt only the policy observation. Reward computation obtains
-                # a fresh, clean semantic mask directly from the PTZ camera.
-                if getattr(run_cfg, "enable_semantic_mask_noise", False):
-                    false_negative_prob = getattr(run_cfg, "semantic_mask_false_negative_prob", 0.01)
-                    false_positive_prob = getattr(run_cfg, "semantic_mask_false_positive_prob", 0.001)
-                    false_negatives = torch.rand_like(semantic_channel) < false_negative_prob
-                    false_positives = torch.rand_like(semantic_channel) < false_positive_prob
-                    semantic_channel = torch.where(
-                        semantic_channel.bool(), ~false_negatives, false_positives
-                    ).float()
 
                 if torch.isnan(semantic_channel).any():
                     print("[ENV DEBUG] NaN detected in Semantic Channel (Target Mask)!")
@@ -1579,12 +909,10 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             print(f"[DEBUG FATAL] CUDA Error BEFORE environment step: {e}")
             raise
 
-        self._map_updated_this_step = False
         if self.common_step_counter % self.cfg.mapping_cfg.map_update_interval == 0:
             try:
                 self._update_maps(visualise=run_cfg.debug)
                 torch.cuda.synchronize()
-                self._map_updated_this_step = True
             except Exception as e:
                 print(f"[DEBUG FATAL] CUDA Error inside `_update_maps` (Warp Kernels)! This proves the warp kernels are causing the timeout: {e}")
                 raise
@@ -1598,17 +926,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
              inspection_cam = getattr(self, "_high_res_ptz_camera", self._ptz_camera)
              target_mask = self._get_semantic_mask(inspection_cam)
              if target_mask is not None:
-                 target_name = str(self.env_target_names[0])
-                 target = self.inspection_goals[target_name]
-                 self.pc_collector.collect(
-                     inspection_cam,
-                     self.common_step_counter,
-                     semantic_mask=target_mask,
-                     nav_camera=self._nav_camera if hasattr(self, "_nav_camera") else None,
-                     target_position=target.data.root_pos_w[0],
-                     target_orientation=target.data.root_quat_w[0],
-                     episode_step=self.episode_length_buf[0].item(),
-                 )
+                 if hasattr(self, '_nav_camera'):
+                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask, nav_camera=self._nav_camera)
+                 else:
+                     self.pc_collector.collect(inspection_cam, self.common_step_counter, semantic_mask=target_mask)
+
+        # Record max distance from origin taking into account X and Y
+        current_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - self.scene.env_origins[:, :2], dim=-1)
+        if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+            self.max_distance_reached = torch.maximum(self.max_distance_reached, current_dist)
 
         try:
             res = super().step(action)
@@ -1617,6 +943,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         except Exception as e:
             print(f"[DEBUG FATAL] CUDA Error inside `super().step()` (PhysX / Apply Action)! {e}")
             raise
+    
     def _get_semantic_mask(self, camera) -> torch.Tensor | None:
         """
         Utility to extract the binary mask for the target object from a given camera.
@@ -1633,13 +960,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         mask = torch.zeros_like(seg_data, dtype=torch.bool)
         
         # 1. Pre-compute mappings in Python (runs very fast since num unique classes is small)
-        semantic_type = self.cfg.inspection_goal_cfg.semantics_type
-        target_to_ids = {}
+        class_to_ids = {}
         for k, v in id_to_labels.items():
-            target_name = v.get(semantic_type)
-            if target_name not in target_to_ids:
-                target_to_ids[target_name] = []
-            target_to_ids[target_name].append(int(k))
+            cls_name = v.get("class")
+            if cls_name not in class_to_ids:
+                class_to_ids[cls_name] = []
+            class_to_ids[cls_name].append(int(k))
 
         target_to_envs = {}
         for env_idx, target_name in enumerate(self.env_target_names):
@@ -1649,7 +975,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # 2. Vectorized mask application per target class
         for target_name, env_indices in target_to_envs.items():
-            target_ids = target_to_ids.get(target_name, [])
+            target_ids = class_to_ids.get(target_name, [])
             if not target_ids:
                 continue
                 
@@ -1663,7 +989,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     
     def _update_max_ray_counts(self, valid_faces_tensor):
         """
-        Helper: Checks if the current view of any face has more rays (a better view).
+        Helper: Checks if the current view of any face has more rays (better zoom) 
         than previously recorded.
         """
         # Count how many rays are hitting each unique face in this specific frame
@@ -1687,18 +1013,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if batch_max > self.global_max_ray_count[0]:
             self.global_max_ray_count[0] = batch_max
             max_idx = counts.argmax()
-            # print(f"New global max ray count: {batch_max.item()} rays (face {unique_ids[max_idx].item()})")
+            # print(f"!!! New Global Max Zoom Record: {batch_max.item()} rays (Face {unique_ids[max_idx].item()}) !!!")
 
 
     def _compute_face_discovery_reward_fast(self):
         """
         Compute the reward for discovering new faces.
         """
-        raycaster = getattr(self, "_high_res_raycaster_camera", self._raycaster_camera)
-        ptz_camera = getattr(self, "_high_res_ptz_camera", self._ptz_camera)
-
-        face_ids = raycaster.data.output.get("face_ids")
-        target_mask = self._get_semantic_mask(ptz_camera)
+        face_ids = self._raycaster_camera.data.output.get("face_ids")
+        target_mask = self._get_semantic_mask(self._ptz_camera)
         if run_cfg.debug and run_cfg.visualise_face_ids:
             self._show_face_ids_(
                 face_ids=face_ids,
@@ -1715,108 +1038,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                     torch.zeros(self.num_envs, dtype=torch.long, device=self.device))
     
 
-        face_visibility_mask = target_mask & (face_ids >= 0)
-        if self.strict_face_visibility_filter_enabled:
-            mesh_ids = getattr(raycaster.data, "image_mesh_ids", None)
-            ray_depth = raycaster.data.output.get("distance_to_image_plane")
-            rendered_depth = ptz_camera.data.output.get("distance_to_image_plane")
-            if mesh_ids is None or ray_depth is None or rendered_depth is None:
-                raise RuntimeError(
-                    "Strict face visibility filtering requires image_mesh_ids "
-                    "and distance_to_image_plane from both inspection cameras."
-                )
-            if not (
-                face_ids.shape == target_mask.shape == mesh_ids.shape
-                == ray_depth.shape == rendered_depth.shape
-            ):
-                raise RuntimeError(
-                    "Strict face visibility filtering requires matching rendered "
-                    "and ray-caster image shapes, but received "
-                    f"face_ids={tuple(face_ids.shape)}, "
-                    f"target_mask={tuple(target_mask.shape)}, "
-                    f"mesh_ids={tuple(mesh_ids.shape)}, "
-                    f"ray_depth={tuple(ray_depth.shape)}, and "
-                    f"rendered_depth={tuple(rendered_depth.shape)}."
-                )
-
-            # ``image_mesh_ids`` identifies a local slot in the ray caster's
-            # per-environment mesh row. Convert the active target index into
-            # that slot range; this remains correct if a target later contains
-            # more than one unmerged ray-cast mesh.
-            if not hasattr(self, "_face_filter_slot_starts"):
-                slot_starts = []
-                slot_ends = []
-                slot_cursor = 0
-                for target_cfg in raycaster._raycast_targets_cfg:
-                    meshes_per_env = int(
-                        raycaster._num_meshes_per_env[target_cfg.target_prim_expr]
-                    )
-                    slot_starts.append(slot_cursor)
-                    slot_cursor += meshes_per_env
-                    slot_ends.append(slot_cursor)
-                if len(slot_starts) != len(self.target_index_to_name):
-                    raise RuntimeError(
-                        "The face ray caster target-slot count does not match the "
-                        "inspection target count: "
-                        f"{len(slot_starts)} ray targets versus "
-                        f"{len(self.target_index_to_name)} inspection targets."
-                    )
-                self._face_filter_slot_starts = torch.tensor(
-                    slot_starts, device=self.device, dtype=mesh_ids.dtype
-                )
-                self._face_filter_slot_ends = torch.tensor(
-                    slot_ends, device=self.device, dtype=mesh_ids.dtype
-                )
-
-            slot_starts_t = self._face_filter_slot_starts[
-                self.env_target_indices
-            ].view(self.num_envs, 1, 1, 1)
-            slot_ends_t = self._face_filter_slot_ends[
-                self.env_target_indices
-            ].view(self.num_envs, 1, 1, 1)
-            active_mesh_hit = (mesh_ids >= slot_starts_t) & (mesh_ids < slot_ends_t)
-
-            abs_tolerance = max(
-                0.0, float(getattr(run_cfg, "face_depth_abs_tolerance_m", 0.05))
-            )
-            rel_tolerance = max(
-                0.0, float(getattr(run_cfg, "face_depth_rel_tolerance", 0.01))
-            )
-            finite_depth = (
-                torch.isfinite(ray_depth)
-                & torch.isfinite(rendered_depth)
-                & (ray_depth > 0.0)
-                & (rendered_depth > 0.0)
-            )
-            depth_tolerance = abs_tolerance + rel_tolerance * rendered_depth.abs()
-            depth_agrees = finite_depth & (
-                torch.abs(ray_depth - rendered_depth) <= depth_tolerance
-            )
-
-            semantic_pixels = target_mask
-            ray_hit = face_ids >= 0
-            valid_target_hit = semantic_pixels & ray_hit & active_mesh_hit
-            face_visibility_mask = valid_target_hit & depth_agrees
-
-            reduce_dims = tuple(range(1, face_ids.ndim))
-            self.episode_face_filter_semantic_pixels += semantic_pixels.sum(
-                dim=reduce_dims
-            ).long()
-            self.episode_face_filter_missing_ray_pixels += (
-                semantic_pixels & ~ray_hit
-            ).sum(dim=reduce_dims).long()
-            self.episode_face_filter_wrong_mesh_pixels += (
-                semantic_pixels & ray_hit & ~active_mesh_hit
-            ).sum(dim=reduce_dims).long()
-            self.episode_face_filter_depth_rejected_pixels += (
-                valid_target_hit & ~depth_agrees
-            ).sum(dim=reduce_dims).long()
-            self.episode_face_filter_accepted_pixels += face_visibility_mask.sum(
-                dim=reduce_dims
-            ).long()
-
         occlusion_filtered_face_ids = torch.full_like(face_ids, -1)
-        occlusion_filtered_face_ids[face_visibility_mask] = face_ids[face_visibility_mask]
+        occlusion_filtered_face_ids[target_mask] = face_ids[target_mask]
 
         # per environments operation
         face_rewards = torch.zeros(self.num_envs, device=self.device)
@@ -1826,13 +1049,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         if self.cfg.reward_cfg.use_angle_weighted_reward:
             # Get normals: (Num_Envs, H, W, 3)
-            normals = raycaster.data.output["normals"]
+            normals = self._raycaster_camera.data.output["normals"]
             
             # Get ray directions in world frame: (Num_Envs, Num_Rays, 3)
             # We need to reshape to (Num_Envs, H, W, 3) to match normals
             # Note: Checking MultiMeshRayCasterCamera, num_rays = width * height
             H, W = normals.shape[1], normals.shape[2]
-            ray_dirs = raycaster._ray_directions_w.view(self.num_envs, H, W, 3)
+            ray_dirs = self._raycaster_camera._ray_directions_w.view(self.num_envs, H, W, 3)
 
             # View direction is roughly -ray_direction (vector from surface to camera)
             # Dot product: (N . V) = (N . -R) = -(N . R)
@@ -1847,8 +1070,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         optical_flow_excess_means = []
         optical_flow_multiplier_means = []
         
-        if "motion_vectors" in ptz_camera.data.output:
-            motion_vecs = ptz_camera.data.output["motion_vectors"]
+        if "motion_vectors" in self._ptz_camera.data.output:
+            motion_vecs = self._ptz_camera.data.output["motion_vectors"]
             flow_magnitude = torch.norm(motion_vecs.float(), dim=-1)
             
             safe_zone = self.cfg.robot_phys_cfg.flow_safe_zone
@@ -1862,14 +1085,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         # Apply Distance Mask to Weights
         if getattr(run_cfg, "use_depth_mask", False):
-            depth = raycaster.data.output["distance_to_image_plane"].squeeze(-1)
-            min_dist = getattr(self.cfg.reward_cfg, "min_inspection_distance", 1.5)
+            depth = self._raycaster_camera.data.output["distance_to_image_plane"].squeeze(-1)
+            max_dist = self.cfg.reward_cfg.max_inspection_distance
+            sigma = self.cfg.reward_cfg.depth_sigma
             
-            # Hard 0.0 or 1.0 mask. If closer than min_dist, weight becomes exactly 0.0
             depth_mask = torch.where(
-                depth >= min_dist,
+                depth <= max_dist,
                 torch.ones_like(depth),
-                torch.zeros_like(depth)
+                torch.exp(-0.5 * torch.square((depth - max_dist) / sigma))
             )
 
             weights = weights * depth_mask
@@ -1886,7 +1109,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             valid_faces = env_faces[valid_mask]
             valid_weights = env_weights[valid_mask]
 
-            if "motion_vectors" in ptz_camera.data.output:
+            if "motion_vectors" in self._ptz_camera.data.output:
                 env_flow = flow_magnitude[env_idx].flatten()
                 env_excess = active_penalty[env_idx].flatten()
                 env_flow_mult = flow_multiplier[env_idx].flatten()
@@ -1946,7 +1169,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             num_faces_inspected[env_idx] = (self.best_q_per_face[env_idx] > 0).sum()
             
             # Normalize face reward by the total number of mesh faces
-            face_rewards[env_idx] /= self.coverage_num_faces[env_idx].float()
+            face_rewards[env_idx] /= self.total_mesh_faces[env_idx].float()
         
         self.logger.log_visible_faces(np.mean(visible_faces_counts))
         if len(optical_flow_means) > 0:
@@ -1962,106 +1185,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # H = -(p*log(p) + (1-p)*log(1-p))
         entropy = F.binary_cross_entropy(p, p, reduction='none')
         return entropy
-
-    def _get_global_map_chunk_size(self, num_cells: int) -> int:
-        """Return a positive, bounded chunk size for global-map reductions."""
-        configured_size = int(
-            getattr(self.cfg.mapping_cfg, "global_map_reward_chunk_size", 65536)
-        )
-        return max(1, min(num_cells, max(1, configured_size)))
-
-    def _chunked_entropy_sum(
-        self,
-        flat_maps: torch.Tensor,
-        env_ids: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Compute per-environment map entropy without full-map temporaries."""
-        num_rows = self.num_envs if env_ids is None else env_ids.numel()
-        entropy_sum = torch.zeros(num_rows, device=flat_maps.device, dtype=flat_maps.dtype)
-        num_cells = flat_maps.shape[1]
-        chunk_size = self._get_global_map_chunk_size(num_cells)
-
-        for start in range(0, num_cells, chunk_size):
-            chunk = flat_maps[:, start:start + chunk_size]
-            if env_ids is not None:
-                chunk = torch.index_select(chunk, 0, env_ids)
-            entropy_sum.add_(self._calculate_entropy(chunk).sum(dim=1))
-
-        return entropy_sum
-
-    def _chunked_visibility_score(self, flat_maps: torch.Tensor, k: float) -> torch.Tensor:
-        """Compute the per-environment visibility score with bounded VRAM."""
-        score = torch.zeros(self.num_envs, device=flat_maps.device, dtype=flat_maps.dtype)
-        num_cells = flat_maps.shape[1]
-        chunk_size = self._get_global_map_chunk_size(num_cells)
-
-        for start in range(0, num_cells, chunk_size):
-            chunk = flat_maps[:, start:start + chunk_size]
-            score.sub_(torch.exp(-k * chunk).sum(dim=1))
-
-        return score
-
-    def _compute_reset_map_summaries(
-        self,
-        env_ids: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Reduce only maps belonging to environments that are resetting."""
-        all_occ_maps = wp.to_torch(self.map_manager.occupancy_map).view(self.num_envs, -1)
-        all_vis_maps = wp.to_torch(self.map_manager.visibility_map).view(self.num_envs, -1)
-        all_visit_maps = wp.to_torch(self.map_manager.visitation_map).view(self.num_envs, -1)
-
-        final_entropies = self._chunked_entropy_sum(all_occ_maps, env_ids)
-        num_reset_envs = env_ids.numel()
-        final_robot_path_cells = torch.zeros(
-            num_reset_envs, device=self.device, dtype=torch.long
-        )
-        final_unique_visible_cells = torch.zeros_like(final_robot_path_cells)
-        num_cells = all_occ_maps.shape[1]
-        chunk_size = self._get_global_map_chunk_size(num_cells)
-
-        for start in range(0, num_cells, chunk_size):
-            visit_chunk = torch.index_select(
-                all_visit_maps[:, start:start + chunk_size], 0, env_ids
-            )
-            final_robot_path_cells.add_((visit_chunk > 0).sum(dim=1))
-            del visit_chunk
-
-            visibility_chunk = torch.index_select(
-                all_vis_maps[:, start:start + chunk_size], 0, env_ids
-            )
-            final_unique_visible_cells.add_((visibility_chunk > 0).sum(dim=1))
-            del visibility_chunk
-
-        return final_entropies, final_robot_path_cells, final_unique_visible_cells
     
     _show_face_ids_ = _show_face_ids_
     
     def _compute_exploration_rewards(self):
-        # _update_maps() is called before DirectRLEnv.step(), while the parent
-        # increments common_step_counter before requesting rewards. An explicit
-        # flag therefore avoids an off-by-one modulo test here. On skipped map
-        # steps both maps are unchanged, so both deltas are exactly zero.
-        if not self._map_updated_this_step:
-            zeros = torch.zeros(self.num_envs, device=self.device)
-            return zeros, zeros.clone()
-
         # --- Entropy / Information Gain ---
-        if getattr(self.cfg.mapping_cfg, 'compute_global_map_entropy', True):
-            all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
-            all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
-            current_entropy = self._chunked_entropy_sum(all_maps_log_odds)
-            information_gain = torch.relu(self.prev_global_map_entropy - current_entropy)
-            self.prev_global_map_entropy.copy_(current_entropy)
-        else:
-            information_gain = torch.zeros(self.num_envs, device=self.device)
+        all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
+        all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
+        current_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
+        information_gain = torch.relu(self.prev_global_map_entropy - current_entropy)
+        self.prev_global_map_entropy = current_entropy.clone()
 
         # ---Surface Visibility Increase ---
         k = self.cfg.reward_cfg.visibility_decay_factor
         all_vis_maps = wp.to_torch(self.map_manager.visibility_map)
         all_vis_maps = all_vis_maps.view(self.num_envs, -1)
-        current_visibility_score = self._chunked_visibility_score(all_vis_maps, k)
+        current_visibility_score = -torch.exp(-k * all_vis_maps).sum(dim=1)
         visibility_increase_reward = torch.relu(current_visibility_score - self.prev_visibility_score)
-        self.prev_visibility_score.copy_(current_visibility_score)
+        self.prev_visibility_score = current_visibility_score.clone()
 
         return information_gain, visibility_increase_reward
 
@@ -2071,7 +1212,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         The reward diminishes exponentially as a voxel is revisited.
         """
         robot_pos_w = self.robot.data.root_pos_w    # (num_envs, 2)
-        map_origins = self._map_origins_torch
+        map_origins = torch.from_numpy(self.map_manager.world_map_origins).to(self.device)
         voxel_size = self.map_manager.resolution
         map_dims = self.map_manager.map_dims
 
@@ -2109,96 +1250,20 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         reward[valid_mask] = torch.exp(-self.cfg.reward_cfg.visitation_decay_factor * (current_counts - 1.0))
         
         return reward
+    
     def _compute_collision_contact(self) -> torch.Tensor:
-        """Return raw chassis or filtered wheel contact before debouncing."""
+        """Return the raw chassis-contact signal before temporal debouncing."""
         self.current_collision_force.zero_()
-        self.current_wheel_collision_force.zero_()
-        self.current_wheel_collision_contact.zero_()
-        self.current_collision_source_forces.zero_()
-        threshold = self.cfg.reward_cfg.collision_threshold
-        base_collision = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-
         if hasattr(self, '_base_contact_sensor'):
-            contact_data = self._base_contact_sensor.data
-            net_forces_w = contact_data.net_forces_w
+            net_forces_w = self._base_contact_sensor.data.net_forces_w
 
-            if net_forces_w.dim() == 3:
+            if net_forces_w.dim()==3:
                 xy_forces = torch.norm(net_forces_w[:, :, 0:2], dim=-1).max(dim=1)[0]
             else:
                 xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
             self.current_collision_force.copy_(xy_forces)
-            base_collision = xy_forces > threshold
-
-            force_matrix_w = contact_data.force_matrix_w
-            if force_matrix_w is not None and force_matrix_w.numel() > 0:
-                # force_matrix_w: (environments, sensor bodies, filters, xyz)
-                filtered_xy_forces = torch.norm(force_matrix_w[..., 0:2], dim=-1)
-                filtered_xy_forces = filtered_xy_forces.amax(dim=1)
-                if filtered_xy_forces.shape == self.current_collision_source_forces.shape:
-                    self.current_collision_source_forces.copy_(filtered_xy_forces)
-                else:
-                    raise RuntimeError(
-                        "Contact attribution shape mismatch: expected "
-                        f"{tuple(self.current_collision_source_forces.shape)}, got "
-                        f"{tuple(filtered_xy_forces.shape)}"
-                    )
-
-        # Wheel net forces always include normal wheel-ground traction. Only
-        # inspect the filtered target/obstacle matrices, and use the full 3-D
-        # magnitude so a wheel climbing onto an object is still detected.
-        for wheel_contact_sensor in getattr(self, '_wheel_contact_sensors', {}).values():
-            force_matrix_w = wheel_contact_sensor.data.force_matrix_w
-            if force_matrix_w is None or force_matrix_w.numel() == 0:
-                continue
-            filtered_forces = torch.linalg.vector_norm(force_matrix_w, dim=-1).amax(dim=1)
-            if filtered_forces.shape != self.current_collision_source_forces.shape:
-                raise RuntimeError(
-                    "Wheel contact attribution shape mismatch: expected "
-                    f"{tuple(self.current_collision_source_forces.shape)}, got "
-                    f"{tuple(filtered_forces.shape)}"
-                )
-            self.current_collision_source_forces.copy_(
-                torch.maximum(self.current_collision_source_forces, filtered_forces)
-            )
-            wheel_force = filtered_forces.max(dim=1)[0]
-            self.current_wheel_collision_force.copy_(
-                torch.maximum(self.current_wheel_collision_force, wheel_force)
-            )
-
-        self.current_wheel_collision_contact.copy_(
-            self.current_wheel_collision_force > threshold
-        )
-        max_attributed_force = self.current_collision_source_forces.max(dim=1)[0]
-
-        if getattr(run_cfg, "freeze_on_unattributed", False):
-            unattributed_mask = base_collision & (max_attributed_force <= threshold)
-            if unattributed_mask.any():
-                print("\n" + "="*50)
-                print("UNATTRIBUTED CRASH DETECTED!")
-                print("Simulation frozen for inspection. UI is responsive.")
-                print("Press Ctrl+C in terminal to exit.")
-                print("="*50 + "\n")
-                import omni.kit.app
-                app = omni.kit.app.get_app()
-                while True:
-                    app.update()
-
-        if getattr(run_cfg, "ignore_unattributed", False):
-            # This diagnostic mode accepts only explicitly filtered contacts.
-            return max_attributed_force > threshold
-        return base_collision | self.current_wheel_collision_contact
-
-    def _compute_tipover(self) -> torch.Tensor:
-        """Return whether the chassis tilt exceeds the configured safe angle."""
-        root_quat_w = self.robot.data.root_quat_w
-        # For a normalized wxyz quaternion, this is the world-Z component of
-        # the robot's local up axis. It avoids allocating a vector per step.
-        self.current_robot_up_z.copy_(
-            1.0 - 2.0 * (root_quat_w[:, 1].square() + root_quat_w[:, 2].square())
-        )
-        max_tilt_degrees = float(getattr(run_cfg, "tipover_max_tilt_degrees", 45.0))
-        min_up_z = float(np.cos(np.deg2rad(max_tilt_degrees)))
-        return self.current_robot_up_z < min_up_z
+            return xy_forces > self.cfg.reward_cfg.collision_threshold
+        return torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
     def _compute_occupancy_penalty(self) -> torch.Tensor:
         """
@@ -2231,16 +1296,11 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             0.0
         )
         
-        proxy_active = occupancy_penalty < 0.0
-        newly_active = proxy_active & ~self._previous_collision_proxy_active
-        if getattr(run_cfg, 'debug', False) and newly_active.any():
-            env_ids = newly_active.nonzero(as_tuple=True)[0].tolist()
-            vals = occupancy_penalty[newly_active].tolist()
-            print(
-                f"[DEBUG] Collision Proxy Entered in envs: {env_ids} | "
-                f"Penalties: {[round(v, 3) for v in vals]}"
-            )
-        self._previous_collision_proxy_active.copy_(proxy_active)
+        # Debug printing
+        if getattr(run_cfg, 'debug', False) and (occupancy_penalty < 0.0).any():
+            env_ids = (occupancy_penalty < 0.0).nonzero(as_tuple=True)[0].tolist()
+            vals = occupancy_penalty[occupancy_penalty < 0.0].tolist()
+            print(f"[DEBUG] Collision Proxy Triggered in envs: {env_ids} | Penalties: {[round(v, 3) for v in vals]}")
             
         return occupancy_penalty
 
@@ -2263,19 +1323,13 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.actions[:, :2] - self.previous_action_for_rewards[:, :2]
         ), dim=1)
 
-        # Camera action smoothness is identically zero for the fixed-camera
-        # ablation; all task and image-quality rewards remain unchanged.
-        if self.pt_actuation_enabled:
-            ptz_action_delta = torch.sum(torch.square(
-                self.actions[:, 2:] - self.previous_action_for_rewards[:, 2:]
-            ), dim=1)
-        else:
-            ptz_action_delta = torch.zeros(
-                self.num_envs, device=self.device, dtype=self.actions.dtype
-            )
+        # Camera Penalty (Pan, Tilt, Zoom which are indices 2, 3, 4)
+        ptz_action_delta = torch.sum(torch.square(
+            self.actions[:, 2:] - self.previous_action_for_rewards[:, 2:]
+        ), dim=1)
 
         # Inpsection Coverage Ratio and Success Bonus
-        current_coverage_ratio = total_num_faces_inspected / self.coverage_num_faces
+        current_coverage_ratio = total_num_faces_inspected / self.total_mesh_faces
         self.prev_coverage_ratio = current_coverage_ratio.clone()
        
         success_bonus = torch.where(
@@ -2286,7 +1340,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         face_reward_scale = self.cfg.reward_cfg.mesh_coverage_reward_scale
         info_reward_scale = self.cfg.reward_cfg.information_gain_reward_scale
-        visibility_reward_scale = self.cfg.reward_cfg.visibility_increase_reward_scale
         visit_reward_scale = self.cfg.reward_cfg.visitation_reward_scale
         action_penalty_scale = self.cfg.reward_cfg.action_penalty_scale
         ptz_penalty_scale = self.cfg.reward_cfg.ptz_penalty_scale
@@ -2297,7 +1350,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         positive_rewards = (face_reward_scale * face_discovery_raw
                         + info_reward_scale * information_gain_reward
-                        + visibility_reward_scale * visibility_increase_reward
                         + visit_reward_scale * visitation_reward # Added visitation reward
                         + success_bonus
                         )
@@ -2313,19 +1365,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
                      
         # Emergency Brake Penalty: Active punishment for driving forward in the danger zone
         forward_velocity = self.actions[:, 0]
-        # emergency_brake_penalty = torch.where(
-        #     proxy_active & (forward_velocity > 0.0), 
-        #     -0.05 * forward_velocity,
-        #     torch.zeros_like(forward_velocity)
-        # )
-
-
-          # Emergency Brake Penalty: Active punishment for driving (forward or reverse) in the danger zone
-        emergency_brake_penalty = torch.where(
-            proxy_active,
-            -0.05 * torch.abs(forward_velocity),
-            torch.zeros_like(forward_velocity),
-        )             
+        emergency_brake_penalty = torch.where(proxy_active & (forward_velocity > 0.0), -0.05 * forward_velocity, torch.zeros_like(forward_velocity))
+                     
         base_reward = positive_rewards + penalties + emergency_brake_penalty
         scaled_occupancy_penalty = occupancy_penalty_scale * occupancy_penalty
         shaped_reward = base_reward + scaled_occupancy_penalty
@@ -2383,17 +1424,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             "occupancy_penalty": occupancy_penalty,
             "collision_contact": self.current_collision_contact.float(),
             "collision_force_xy": self.current_collision_force,
-            "wheel_collision_contact": self.current_wheel_collision_contact.float(),
-            "wheel_collision_force": self.current_wheel_collision_force,
-            "tipover_active": self.current_tipover.float(),
-            "tipover_events": self.current_tipovers.float(),
-            "robot_up_z": self.current_robot_up_z,
             "crashes": self.current_crashes.float(),
-            "safety_shield_intervention": self.current_safety_shield_intervention.float(),
-            "safety_shield_linear_scale": self.current_safety_shield_scale,
-            "safety_shield_linear_delta": torch.abs(
-                self.policy_actions[:, 0] - self.actions[:, 0]
-            ),
             "total_unscaled": total_unscaled,
             
             # Scaled
@@ -2427,77 +1458,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         )
         # Emit a single event when contact first becomes confirmed. Persistent
         # contact does not create a new crash every subsequent step.
-        confirmed_collision = self.consecutive_collision_steps == required_contact_steps
-
-        self.current_tipover = self._compute_tipover()
-        self.episode_tipover_steps += self.current_tipover.long()
-        self.consecutive_tipover_steps = torch.where(
-            self.current_tipover,
-            self.consecutive_tipover_steps + 1,
-            torch.zeros_like(self.consecutive_tipover_steps),
-        )
-        required_tipover_steps = max(
-            1, int(getattr(run_cfg, "tipover_consecutive_steps", 2))
-        )
-        self.current_tipovers = self.consecutive_tipover_steps == required_tipover_steps
-        self.episode_tipovers += self.current_tipovers.long()
-
-        self.current_crashes = confirmed_collision | self.current_tipovers
+        self.current_crashes = self.consecutive_collision_steps == required_contact_steps
         self.episode_crashes += self.current_crashes.long()
-        if self.current_crashes.any():
-            crash_env_ids = self.current_crashes.nonzero(as_tuple=True)[0]
-            source_forces = self.current_collision_source_forces[crash_env_ids]
-            max_source_force, primary_source = source_forces.max(dim=1)
-            # Prefer an attributed contact when collision and tilt are
-            # confirmed together; otherwise record an independent tip-over.
-            tipover_only = self.current_tipovers[crash_env_ids] & ~confirmed_collision[crash_env_ids]
-            tipover_source = self.crash_source_names.index("tip_over")
-            primary_source = torch.where(
-                tipover_only,
-                torch.full_like(primary_source, tipover_source),
-                primary_source,
-            )
-            # If none of the configured counterparts reports force, retain the
-            # crash but classify it as unattributed instead of guessing.
-            unattributed_mask = (max_source_force == 0.0) & ~tipover_only
-            if unattributed_mask.any():
-                if hasattr(self, '_base_contact_sensor'):
-                    net_forces_w = self._base_contact_sensor.data.net_forces_w[crash_env_ids]
-                    if net_forces_w.dim() == 3:
-                        z_forces = torch.abs(net_forces_w[:, :, 2]).max(dim=1)[0]
-                        xy_forces = torch.norm(net_forces_w[:, :, 0:2], dim=-1).max(dim=1)[0]
-                    else:
-                        z_forces = torch.abs(net_forces_w[:, 2])
-                        xy_forces = torch.norm(net_forces_w[:, 0:2], dim=-1)
-                    
-                    is_floor_scrape = z_forces > xy_forces
-
-                    wall_source = self.crash_source_names.index("warehouse_wall")
-                    floor_source = self.crash_source_names.index("floor_scrape")
-                    fallback_source = torch.where(
-                        is_floor_scrape,
-                        torch.full_like(primary_source, floor_source),
-                        torch.full_like(primary_source, wall_source),
-                    )
-                else:
-                    fallback_source = torch.full_like(
-                        primary_source, self.crash_source_names.index("floor_scrape")
-                    )
-
-                primary_source = torch.where(
-                    unattributed_mask,
-                    fallback_source,
-                    primary_source
-                )
-            self.episode_crash_source_counts[crash_env_ids, primary_source] += 1
-            
-            # Record forward/reverse crashes based on intended velocity
-            intended_lin_vel = self.last_action[crash_env_ids, 0]
-            is_forward = intended_lin_vel >= 0
-            is_reverse = intended_lin_vel < 0
-            
-            self.episode_forward_crashes[crash_env_ids] += is_forward.long()
-            self.episode_reverse_crashes[crash_env_ids] += is_reverse.long()
 
         max_steps = self.curriculum.get_current_episode_length()
         time_out = self.episode_length_buf >= max_steps - 1
@@ -2508,13 +1470,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         mean_quality = torch.zeros_like(total_quality)
         mask = num_faces_inspected > 0
         mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
-        coverage_achieved = (
-            num_faces_inspected / self.coverage_num_faces
-        ) >= self.curriculum.get_current_coverage_goal()
-        if getattr(run_cfg, "calibrate_inspection_face_counts", False):
-            # The inspectable denominator is the value being measured, so it
-            # cannot also be used to end calibration episodes early.
-            coverage_achieved = torch.zeros_like(coverage_achieved)
+        coverage_achieved = (num_faces_inspected / self.total_mesh_faces) >= self.curriculum.get_current_coverage_goal()
         current_max_crashes = self.curriculum.get_current_max_crashes()
         collision_failure = (self.episode_crashes >= current_max_crashes) & bool(
             getattr(run_cfg, "reset_on_crash", False)
@@ -2528,19 +1484,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         if getattr(run_cfg, "debug", False) and self.current_crashes.any():
             for i in self.current_crashes.nonzero(as_tuple=True)[0]:
-                if self.current_tipovers[i]:
-                    source = "tip_over"
-                elif self.current_wheel_collision_contact[i]:
-                    source = "wheel_target_or_obstacle"
-                else:
-                    source = "base_link"
-                print(
-                    f"[DEBUG] CRASH DETECTED in env {i.item()} at step "
-                    f"{self.common_step_counter}: source={source}, "
-                    f"base_xy={self.current_collision_force[i].item():.2f} N, "
-                    f"wheel_filtered={self.current_wheel_collision_force[i].item():.2f} N, "
-                    f"up_z={self.current_robot_up_z[i].item():.3f}"
-                )
+                print(f"[DEBUG] CRASH DETECTED in env {i.item()} at step {self.common_step_counter}")
                 
         return terminated, time_out
     
@@ -2556,12 +1500,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         if len(env_ids)> 0:
             self.last_action[env_ids] = 0.0
             self.previous_action_for_rewards[env_ids] = 0.0
-            self.policy_actions[env_ids] = 0.0
-            if hasattr(self, "desired_zoom_levels"):
-                # Returning to the default is queued and rate-limited just like
-                # a policy request; synchronized episode resets therefore
-                # cannot reconfigure every rendered camera at once.
-                self.desired_zoom_levels[env_ids] = self.default_zoom_level
 
 
             current_q_values = self.best_q_per_face[env_ids]
@@ -2572,48 +1510,17 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.extras["log"]["faces_discovered"] = num_faces_inspected
             self.extras["log"]["collision_proxy_steps"] = self.episode_collision_proxy_steps[env_ids].clone()
             self.extras["log"]["collision_contact_steps"] = self.episode_collision_contact_steps[env_ids].clone()
-            self.extras["log"]["tipover_steps"] = self.episode_tipover_steps[env_ids].clone()
-            self.extras["log"]["tipovers"] = self.episode_tipovers[env_ids].clone()
             self.extras["log"]["crashes"] = self.episode_crashes[env_ids].clone()
-            self.extras["log"]["episode_steps"] = self.episode_length_buf[env_ids].clone()
-            self.extras["log"]["face_filter_semantic_pixels"] = (
-                self.episode_face_filter_semantic_pixels[env_ids].clone()
-            )
-            self.extras["log"]["face_filter_missing_ray_pixels"] = (
-                self.episode_face_filter_missing_ray_pixels[env_ids].clone()
-            )
-            self.extras["log"]["face_filter_wrong_mesh_pixels"] = (
-                self.episode_face_filter_wrong_mesh_pixels[env_ids].clone()
-            )
-            self.extras["log"]["face_filter_depth_rejected_pixels"] = (
-                self.episode_face_filter_depth_rejected_pixels[env_ids].clone()
-            )
-            self.extras["log"]["face_filter_accepted_pixels"] = (
-                self.episode_face_filter_accepted_pixels[env_ids].clone()
-            )
-            self.extras["log"]["crash_source_counts"] = self.episode_crash_source_counts[env_ids].clone()
-            self.extras["log"]["forward_crashes"] = self.episode_forward_crashes[env_ids].clone()
-            self.extras["log"]["reverse_crashes"] = self.episode_reverse_crashes[env_ids].clone()
-            shield_interventions = self.episode_safety_shield_interventions[env_ids].clone()
-            episode_steps = self.episode_length_buf[env_ids].float().clamp_min(1.0)
-            shield_intervention_rate = shield_interventions.float() / episode_steps
-            self.extras["log"]["safety_shield_interventions"] = shield_interventions
-            self.extras["log"]["safety_shield_intervention_rate"] = shield_intervention_rate
-            self.extras["log"]["safety_shield_forward_interventions"] = (
-                self.episode_safety_shield_forward_interventions[env_ids].clone()
-            )
-            self.extras["log"]["safety_shield_reverse_interventions"] = (
-                self.episode_safety_shield_reverse_interventions[env_ids].clone()
-            )
+            if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+                self.extras["log"]["max_distance"] = self.max_distance_reached[env_ids]
+            
             total_quality = current_q_values.sum(dim=1)
 
             mean_quality = torch.zeros_like(total_quality)
             mask = num_faces_inspected > 0
             mean_quality[mask] = total_quality[mask] / num_faces_inspected[mask].float()
 
-            achieved_coverage_ratios = num_faces_inspected / self.coverage_num_faces[env_ids].float()
-            self.extras["log"]["coverage_percent"] = achieved_coverage_ratios * 100.0
-            self.extras["log"]["target_index"] = self.env_target_indices[env_ids].clone()
+            achieved_coverage_ratios = num_faces_inspected / self.total_mesh_faces[env_ids].float()
             current_cov_goal = self.curriculum.get_current_coverage_goal()
             current_max_crashes = self.curriculum.get_current_max_crashes()
             collision_failures = (self.episode_crashes[env_ids] >= current_max_crashes) & bool(
@@ -2622,13 +1529,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             episode_successes = (
                 achieved_coverage_ratios >= current_cov_goal
             ) & ~collision_failures
-            max_episode_steps = int(self.curriculum.get_current_episode_length())
-            episode_timed_out = (
-                self.episode_length_buf[env_ids] >= max_episode_steps - 1
-            ) & ~episode_successes & ~collision_failures
-            self.extras["log"]["mean_inspection_quality"] = mean_quality.clone()
-            self.extras["log"]["episode_success"] = episode_successes.clone()
-            self.extras["log"]["episode_timed_out"] = episode_timed_out.clone()
             self.curriculum.update_curriculum(episode_successes, mean_quality)
 
             # Check if curriculum updated
@@ -2644,74 +1544,32 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             achieved_coverage_ratios_cpu = achieved_coverage_ratios.cpu().tolist()
             num_faces_inspected_cpu = num_faces_inspected.cpu().tolist()
             mean_quality_cpu = mean_quality.cpu().tolist()
-            episode_crashes_cpu = self.episode_crashes[env_ids].cpu().tolist()
-            shield_intervention_rates_cpu = shield_intervention_rate.cpu().tolist()
             
+            if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+                max_distance_reached_cpu = self.max_distance_reached[env_ids].cpu().tolist()
+            else:
+                max_distance_reached_cpu = None
+
             # Logging
             for i, env_id in enumerate(env_ids_cpu):
                 if env_id == 0:
                     final_face_count = num_faces_inspected_cpu[i]
-                    if (
-                        hasattr(self, "pc_collector")
-                        and self.pc_collector is not None
-                        and self.episode_length_buf[env_id].item() > 0
-                    ):
-                        episode_steps = int(self.episode_length_buf[env_id].item())
-                        duration_seconds = (
-                            episode_steps * self.cfg.sim.dt * self.cfg.decimation
-                        )
-                        crashed = bool(collision_failures[i].item())
-                        face_goal_reached = bool(
-                            achieved_coverage_ratios[i].item() >= current_cov_goal
-                        )
-                        max_steps = int(self.curriculum.get_current_episode_length())
-                        timed_out = episode_steps >= max_steps - 1
-                        if crashed:
-                            termination_reason = "crash"
-                        elif face_goal_reached:
-                            termination_reason = "face_goal"
-                        elif timed_out:
-                            termination_reason = "timeout"
-                        else:
-                            termination_reason = "reset"
-                        self.pc_collector.flush_if_best(
-                            final_face_count,
-                            episode_metadata={
-                                "target_name": str(self.env_target_names[env_id]),
-                                "target_index": int(self.env_target_indices[env_id].item()),
-                                "episode_steps": episode_steps,
-                                "duration_seconds": float(duration_seconds),
-                                "crash_count": int(episode_crashes_cpu[i]),
-                                "crashed": crashed,
-                                "timed_out": bool(timed_out),
-                                "face_goal_reached": face_goal_reached,
-                                "face_coverage_percent": float(
-                                    achieved_coverage_ratios_cpu[i] * 100.0
-                                ),
-                                "termination_reason": termination_reason,
-                            },
-                        )
+                    if max_distance_reached_cpu is not None:
+                        max_dist = max_distance_reached_cpu[i]
+                        if hasattr(self, 'pc_collector') and self.pc_collector is not None:
+                            self.pc_collector.flush_if_best(final_face_count, max_dist)
                             
                     if getattr(run_cfg, 'debug', False):
                         print(f"--- Episode Summary Env 0 --- Final Faces Discovered: {final_face_count} ---")
 
                 self.episode_log_buffer["coverage_percent"].append(achieved_coverage_ratios_cpu[i] * 100)
                 self.episode_log_buffer["faces_discovered"].append(num_faces_inspected_cpu[i])
-                self.logger.log_target_episode(
-                    self.env_target_names[env_id],
-                    achieved_coverage_ratios_cpu[i] * 100.0,
-                    num_faces_inspected_cpu[i],
-                )
                 self.logger.update_episode_stats(num_faces_inspected_cpu[i]) # Update global stats
                 self.episode_log_buffer["mean_inspection_quality"].append(mean_quality_cpu[i])
                 self.episode_log_buffer["curriculum/current_threshold"].append(current_cov_goal)
                 self.episode_log_buffer["curriculum/active_obstacles"].append(num_active_obstacles)
                 self.episode_log_buffer["curriculum/task_area"].append(self.curriculum.get_total_task_area())
                 self.episode_log_buffer["curriculum/max_crashes"].append(current_max_crashes)
-                self.episode_log_buffer["episode_summary/crash_rate"].append(1.0 if episode_crashes_cpu[i] > 0 else 0.0)
-                self.episode_log_buffer["episode_summary/safety_shield_intervention_rate"].append(
-                    shield_intervention_rates_cpu[i]
-                )
                 
             # Log and Reset Reward Sums
             self.logger.log_and_reset_episode_rewards(env_ids)
@@ -2720,79 +1578,56 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             self.prev_coverage_ratio[env_ids] = 0.0
             self.best_q_per_face[env_ids] = 0.0
             self.episode_collision_proxy_steps[env_ids] = 0
-            self._previous_collision_proxy_active[env_ids] = False
             self.episode_collision_contact_steps[env_ids] = 0
-            self.episode_tipover_steps[env_ids] = 0
-            self.episode_tipovers[env_ids] = 0
             self.episode_crashes[env_ids] = 0
-            self.episode_face_filter_semantic_pixels[env_ids] = 0
-            self.episode_face_filter_missing_ray_pixels[env_ids] = 0
-            self.episode_face_filter_wrong_mesh_pixels[env_ids] = 0
-            self.episode_face_filter_depth_rejected_pixels[env_ids] = 0
-            self.episode_face_filter_accepted_pixels[env_ids] = 0
             self.consecutive_collision_steps[env_ids] = 0
-            self.consecutive_tipover_steps[env_ids] = 0
             self.current_collision_contact[env_ids] = False
             self.current_collision_force[env_ids] = 0.0
-            self.current_wheel_collision_contact[env_ids] = False
-            self.current_wheel_collision_force[env_ids] = 0.0
-            self.current_tipover[env_ids] = False
-            self.current_tipovers[env_ids] = False
-            self.current_robot_up_z[env_ids] = 1.0
-            self.current_collision_source_forces[env_ids] = 0.0
-            self.episode_crash_source_counts[env_ids] = 0
-            self.episode_forward_crashes[env_ids] = 0
-            self.episode_reverse_crashes[env_ids] = 0
             self.current_crashes[env_ids] = False
-            self.episode_safety_shield_interventions[env_ids] = 0
-            self.episode_safety_shield_forward_interventions[env_ids] = 0
-            self.episode_safety_shield_reverse_interventions[env_ids] = 0
-            self.current_safety_shield_intervention[env_ids] = False
-            self.current_safety_shield_scale[env_ids] = 1.0
                 
             # Map Logging and Reset
             if self.cfg.mapping_cfg.use_occupancy_map:
-                reset_env_ids = env_ids.to(device=self.device, dtype=torch.long)
-                final_entropies, final_robot_path_cells, final_unique_visible_cells = (
-                    self._compute_reset_map_summaries(reset_env_ids)
-                )
-                num_total_cells = self.map_manager.num_voxels_per_map
 
-                for reset_idx, env_id in enumerate(env_ids.cpu().tolist()):
+                all_vis_maps_torch = wp.to_torch(self.map_manager.visibility_map).view(self.num_envs, -1)
+                all_occ_maps_torch = wp.to_torch(self.map_manager.occupancy_map).view(self.num_envs, -1)
+                all_visit_maps_torch = wp.to_torch(self.map_manager.visitation_map).view(self.num_envs, -1) # NEW
+
+                final_vis_sums = all_vis_maps_torch.sum(dim=1)
+                final_entropies = self._calculate_entropy(all_occ_maps_torch).sum(dim=1)
+                final_robot_path_cells = (all_visit_maps_torch > 0).sum(dim=1)
+                final_unique_visible_cells = (all_vis_maps_torch > 0).sum(dim=1)
+
+                for env_id in env_ids.cpu().tolist():
                     # Covergae for Trajectory
-                    self.episode_log_buffer["final_visited_cells_count"].append(
-                        final_robot_path_cells[reset_idx].item()
-                    )
+                    self.episode_log_buffer["final_visited_cells_count"].append(final_robot_path_cells[env_id].item())
                     #Surface Coverage Metric
-                    self.episode_log_buffer["final_unique_visible_cell_count"].append(
-                        final_unique_visible_cells[reset_idx].item()
-                    )
+                    self.episode_log_buffer["final_unique_visible_cell_count"].append(final_unique_visible_cells[env_id].item())
                     # Map Entropy
-                    self.episode_log_buffer["final_map_entropy"].append(
-                        final_entropies[reset_idx].item()
-                    )
+                    self.episode_log_buffer["final_map_entropy"].append(final_entropies[env_id].item())
                     
                     # Entropy % against Max Theoretical Entropy
                     # max entropy per cell = 1.0. Therefore max theoretically possible is just num_cells.
-                    entropy_percent = (final_entropies[reset_idx].item() / num_total_cells) * 100.0
+                    num_total_cells = all_occ_maps_torch.shape[1]
+                    entropy_percent = (final_entropies[env_id].item() / num_total_cells) * 100.0
                     self.episode_log_buffer["episode_summary/final_map_entropy_percent"].append(entropy_percent)
                     if run_cfg.debug and env_id == 0:
-                        print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[reset_idx].item()} ---")
-                        print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[reset_idx].item()} ---")
+                        print(f"--- Episode Summary Env 0 --- Final Unique Visible Cells: {final_unique_visible_cells[env_id].item()} ---")
+                        print(f"--- Episode Summary Env 0 --- Final Map Entropy: {final_entropies[env_id].item()} ---")
 
                 self.map_manager.reset_map(env_ids.cpu().tolist())
-                initial_score = -float(num_total_cells)
+                all_vis_maps = wp.to_torch(self.map_manager.visibility_map)
+                num_cells = all_vis_maps.view(self.num_envs, -1).shape[1]
+                initial_score = -float(num_cells)
                 self.prev_visibility_score[env_ids] = initial_score 
-                if getattr(self.cfg.mapping_cfg, 'compute_global_map_entropy', True):
-                    # A freshly reset log-odds map is all zeros, whose binary
-                    # entropy is ln(2) per cell. Avoid rescanning every map.
-                    initial_entropy = float(np.log(2.0) * num_total_cells)
-                    self.prev_global_map_entropy[env_ids] = initial_entropy
+                all_maps_log_odds = wp.to_torch(self.map_manager.occupancy_map)
+                all_maps_log_odds = all_maps_log_odds.view(self.num_envs, -1)
+                initial_entropy = self._calculate_entropy(all_maps_log_odds).sum(dim=1)
+                self.prev_global_map_entropy[env_ids] = initial_entropy[env_ids]
                 
                 self.prev_local_occ_map[env_ids] = 0.0
                 self.prev_local_vis_map[env_ids] = 0.0
-                if getattr(self, "current_local_occ_map", None) is not None:
-                    self.current_local_occ_map[env_ids] = 0.0
+                if hasattr(run_cfg, 'data_recording_path') and run_cfg.data_recording_path:
+                    self.max_distance_reached[env_ids] = 0.0
 
 
         super()._reset_idx(env_ids)
@@ -2836,50 +1671,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             
             if assigned_mask.any():
                 mixed_state[assigned_mask, :3] = obj_state[assigned_mask, :3]
-                configured_root_height = getattr(target_cfg, "root_height", None)
-                if configured_root_height is not None:
-                    mixed_state[assigned_mask, 2] = (
-                        self.scene.env_origins[env_ids][assigned_mask, 2]
-                        + float(configured_root_height)
-                    )
-                elif target_name in self.primitive_root_heights:
-                    # Each generator reports the correct root height for its
-                    # local origin. Cones use base-origin Z=0; centered meshes
-                    # use half their vertical extent.
-                    assigned_root_heights = self.primitive_root_heights[target_name][env_ids]
-                    mixed_state[assigned_mask, 2] = (
-                        self.scene.env_origins[env_ids][assigned_mask, 2]
-                        + assigned_root_heights[assigned_mask]
-                    )
-                base_ori = torch.tensor(
-                    target_cfg.orientation, device=self.device, dtype=torch.float32
-                ).expand(num_resets, -1)
-                target_ori = base_ori
-
-                primitive_cfg = getattr(target_cfg, "primitive", None)
-                randomization_cfg = (
-                    primitive_cfg.get("domain_randomization", {})
-                    if primitive_cfg is not None
-                    else {}
-                )
-                yaw_range = randomization_cfg.get("yaw_range")
-                fixed_target_pose = (
-                    (
-                        getattr(run_cfg, "data_recording_path", None) is not None
-                        or getattr(run_cfg, "fixed_spawns", False)
-                    )
-                    and not getattr(run_cfg, "randomize_spawns", False)
-                )
-                if yaw_range is not None and not fixed_target_pose:
-                    yaw_min, yaw_max = map(float, yaw_range)
-                    yaw = yaw_min + torch.rand(num_resets, device=self.device) * (yaw_max - yaw_min)
-                    yaw_ori = torch.zeros((num_resets, 4), device=self.device)
-                    yaw_ori[:, 0] = torch.cos(0.5 * yaw)
-                    yaw_ori[:, 3] = torch.sin(0.5 * yaw)
-                    # Apply world-Z yaw on top of any authored target pose.
-                    target_ori = quat_mul(yaw_ori, base_ori)
-
-                mixed_state[assigned_mask, 3:7] = target_ori[assigned_mask]
+                target_ori = torch.tensor(target_cfg.orientation, device=self.device, dtype=torch.float32)
+                mixed_state[assigned_mask, 3:7] = target_ori
                 mixed_state[assigned_mask, 7:] = obj_state[assigned_mask, 7:]
             
             self.inspection_goals[target_name].write_root_pose_to_sim(mixed_state[:, :7], env_ids)
@@ -2918,50 +1711,16 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         existing_positions = [new_pos]
         existing_positions.append(obj_pos)
 
-        robot_radius = getattr(run_cfg, "robot_footprint_radius", 0.45)
-        fallback_target_radius = getattr(run_cfg, "fallback_target_footprint_radius", 0.8)
-        target_radii = torch.full(
-            (num_resets,), fallback_target_radius, device=self.device, dtype=torch.float32
-        )
-        for target_name in self.cfg.inspection_goal_cfg.inspection_targets:
-            assigned_mask_np = self.env_target_names[env_ids_local] == target_name
-            assigned_mask = torch.from_numpy(assigned_mask_np).to(device=self.device, dtype=torch.bool)
-            if assigned_mask.any() and target_name in self.primitive_footprint_radii:
-                # Composite roots need not lie at the footprint center (the
-                # low arm and offset overhang are intentionally asymmetric).
-                radii = self.primitive_footprint_radii[target_name][env_ids]
-                target_radii[assigned_mask] = radii[assigned_mask]
-
-        existing_radii: list[torch.Tensor | float] = [robot_radius, target_radii]
-
         # Spawn obstacles dynamically
         num_active_obstacles = self.curriculum.get_num_active_obstacles(self.cfg.max_obstacles)
         
         for i, obstacle in enumerate(self.obstacles):
             obstacle_state = torch.zeros((num_resets, 13), device=self.device)
             if i < num_active_obstacles:
-                obstacle_radius = self.obstacle_footprint_radii[i]
-                if getattr(run_cfg, "use_radius_aware_obstacle_spawning", True):
-                    obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(
-                        num_resets,
-                        existing_positions,
-                        existing_radii=existing_radii,
-                        obstacle_radius=obstacle_radius,
-                    )
-                else:
-                    # Compatibility path used by policies trained before
-                    # geometry-aware surface clearances were introduced.
-                    obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(
-                        num_resets, existing_positions
-                    )
-                # Procedural shapes are centered on their root. Use the
-                # geometry-specific half-height/radius so their bases touch,
-                # rather than penetrate, the ground plane.
-                obs_pos[:, 2] = self.obstacle_root_heights[i]
+                obs_pos, obs_quat = self.curriculum.get_obstacle_start_pos(num_resets, existing_positions)
                 obstacle_state[:, :3] = obs_pos + self.scene.env_origins[env_ids]
                 obstacle_state[:, 3:7] = obs_quat
                 existing_positions.append(obs_pos)
-                existing_radii.append(obstacle_radius)
             else:
                 # Place inactive obstacles far below the ground plane
                 hidden_pos = torch.zeros((num_resets, 3), device=self.device)
@@ -3056,17 +1815,15 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         
         env_ids = torch.tensor([0], device=self.device)
         
-        raycaster = getattr(self, "_high_res_raycaster_camera", self._raycaster_camera)
-
         for i in range(len(view_positions)):
             pos = view_positions[i].unsqueeze(0) + self.scene.env_origins[0] # Add global offset
             quat = view_quats[i].unsqueeze(0)
             
-            raycaster.set_world_poses(pos, quat, env_ids)
-            raycaster.update(dt=0.0)
+            self._raycaster_camera.set_world_poses(pos, quat, env_ids)
+            self._raycaster_camera.update(dt=0.0)
             
             # Get IDs
-            face_ids = raycaster.data.output["face_ids"][0].cpu().numpy().flatten()
+            face_ids = self._raycaster_camera.data.output["face_ids"][0].cpu().numpy().flatten()
             valid_ids = face_ids[face_ids >= 0]
             unique_faces_seen.update(valid_ids)
             
