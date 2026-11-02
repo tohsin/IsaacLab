@@ -317,13 +317,20 @@ class FrontierNBVDebugVisualizer:
             axis.scatter(centroid[0], centroid[1], marker="*", s=180, c="#39ff14", edgecolors="black")
         for position in controller.target.view_positions:
             if centroid is not None:
-                axis.plot(
-                    [position[0], centroid[0]],
-                    [position[1], centroid[1]],
-                    "--",
-                    color="#00a6fb",
-                    alpha=0.5,
-                )
+                center_angle = math.atan2(centroid[1] - position[1], centroid[0] - position[0])
+                dist = float(np.linalg.norm(centroid[:2] - position[:2]))
+                half_fov = 0.5 * controller.planner_config.viewpoint_sector_fov
+                for offset in (-half_fov, 0.0, half_fov):
+                    ray_end = position[:2] + dist * np.asarray(
+                        [math.cos(center_angle + offset), math.sin(center_angle + offset)]
+                    )
+                    axis.plot(
+                        [position[0], ray_end[0]],
+                        [position[1], ray_end[1]],
+                        "--" if offset != 0.0 else "-",
+                        color="#00a6fb",
+                        alpha=0.45,
+                    )
             axis.scatter(position[0], position[1], marker="D", s=35, c="#00a6fb")
         self._draw_robot(axis, controller)
         axis.set_title("Semantic volume top-down (color = height) + convex hull")

@@ -59,11 +59,19 @@ class PlannerConfig:
     viewpoint_snap_radius: float = 0.65
     min_target_standoff: float = 0.65
     visited_view_separation: float = 0.55
-    viewpoint_novelty_weight: float = 3.0
+    viewpoint_novelty_weight: float = 1.5
+    viewpoint_hull_coverage_weight: float = 2.5
     viewpoint_bin_weight: float = 1.0
     viewpoint_clearance_weight: float = 0.35
     viewpoint_travel_weight: float = 0.12
     viewpoint_known_los_weight: float = 0.45
+    viewpoint_sector_fov: float = math.radians(65.0)
+    viewpoint_sector_rays: int = 15
+    viewpoint_min_visible_fraction: float = 0.25
+    hull_base_weight: float = 0.25
+    hull_height_weight: float = 0.55
+    hull_density_weight: float = 0.45
+    hull_proximity_decay: float = 0.20
 
 
 @dataclass
@@ -135,6 +143,8 @@ class ViewCandidate(PathPlan):
     clearance: float
     known_los_fraction: float
     desired_world: np.ndarray
+    hull_coverage_gain: float = 0.0
+    sector_clear_fraction: float = 1.0
 
 
 class SemanticTargetModel:
@@ -156,6 +166,19 @@ class SemanticTargetModel:
         self._extent_cache: np.ndarray | None = None
         self._convex_volume_cache = 0.0
         self._centroid_method = "empty"
+    @property
+    def hull_vertices_xy(self) -> np.ndarray:
+        """Return 2-D convex-hull vertices in world XY (or unique XY points if degenerate)."""
+        if self.voxel_count == 0:
+            return np.empty((0, 2), dtype=np.float64)
+        pts_xy = np.unique(self.points[:, :2], axis=0)
+        if pts_xy.shape[0] < 3:
+            return pts_xy
+        try:
+            hull = ConvexHull(pts_xy)
+            return pts_xy[hull.vertices]
+        except QhullError:
+            return pts_xy
 
     @property
     def voxel_count(self) -> int:
@@ -457,6 +480,96 @@ def plan_to_world_goal(
     return _make_path_plan(projection, tree, goal, path_grid, score=-float(tree.distances[goal]))
 
 
+# def rank_viewpoints(
+#     projection: GridProjection,
+#     tree: DijkstraTree,
+#     target_centroid: np.ndarray,
+#     target_radius: float,
+#     visited_angles: Iterable[float],
+#     visited_positions: Iterable[np.ndarray],
+#     config: PlannerConfig,
+# ) -> list[ViewCandidate]:
+#     """Generate and score a reachable ring of next-best-view candidates."""
+
+#     target = np.asarray(target_centroid, dtype=np.float64)
+#     target_radius = max(float(target_radius), 0.05)
+#     ring_radius = float(
+#         np.clip(target_radius + config.viewpoint_standoff, config.min_view_radius, config.max_view_radius)
+#     )
+#     previous_angles = list(visited_angles)
+#     previous_positions = [np.asarray(position, dtype=np.float64)[:2] for position in visited_positions]
+#     seen_bins = {_angle_bin(angle, config.viewpoint_count) for angle in previous_angles}
+#     candidates: list[ViewCandidate] = []
+#     used_goals: set[tuple[int, int]] = set()
+
+#     for desired_angle in np.linspace(-math.pi, math.pi, config.viewpoint_count, endpoint=False):
+#         direction = np.asarray([math.cos(desired_angle), math.sin(desired_angle)])
+#         desired_world = target[:2] + ring_radius * direction
+#         goal = _snap_reachable_goal(projection, tree, desired_world, config.viewpoint_snap_radius)
+#         if goal is None or goal in used_goals:
+#             continue
+#         actual_world = projection.grid_to_world(goal)
+#         actual_radius = float(np.linalg.norm(actual_world - target[:2]))
+#         if actual_radius < target_radius + config.min_target_standoff:
+#             continue
+#         if any(
+#             np.linalg.norm(actual_world - previous_position) < config.visited_view_separation
+#             for previous_position in previous_positions
+#         ):
+#             continue
+
+#         actual_angle = math.atan2(actual_world[1] - target[1], actual_world[0] - target[0])
+#         if previous_angles:
+#             nearest_angle = min(circular_distance(actual_angle, angle) for angle in previous_angles)
+#             novelty = min(1.0, nearest_angle / math.pi)
+#         else:
+#             novelty = 1.0
+#         unvisited_bin = float(_angle_bin(actual_angle, config.viewpoint_count) not in seen_bins)
+
+#         line = _grid_line(goal, projection.world_to_grid(target[:2]))
+#         if line.size == 0:
+#             continue
+#         line_world = projection.origin_xy + (line + 0.5) * projection.resolution
+#         distance_to_target = np.linalg.norm(line_world - target[None, :2], axis=1)
+#         approach_line = line[distance_to_target > target_radius + 0.10]
+#         if approach_line.size:
+#             line_occupied = projection.occupied[approach_line[:, 0], approach_line[:, 1]]
+#             if np.any(line_occupied):
+#                 continue
+#             line_known = projection.known[approach_line[:, 0], approach_line[:, 1]]
+#             known_los_fraction = float(np.mean(line_known))
+#         else:
+#             known_los_fraction = 1.0
+
+#         path_grid = tree.path_to(goal)
+#         if path_grid is None:
+#             continue
+#         path_length = float(tree.distances[goal])
+#         clearance = float(projection.clearance[goal])
+#         normalized_clearance = min(1.0, clearance / max(config.robot_radius + config.safety_margin, 1.0e-6))
+#         score = (
+#             config.viewpoint_novelty_weight * novelty
+#             + config.viewpoint_bin_weight * unvisited_bin
+#             + config.viewpoint_clearance_weight * normalized_clearance
+#             + config.viewpoint_known_los_weight * known_los_fraction
+#             - config.viewpoint_travel_weight * path_length
+#         )
+#         base = _make_path_plan(projection, tree, goal, path_grid, score)
+#         candidates.append(
+#             ViewCandidate(
+#                 **base.__dict__,
+#                 angle=actual_angle,
+#                 novelty=novelty,
+#                 clearance=clearance,
+#                 known_los_fraction=known_los_fraction,
+#                 desired_world=desired_world,
+#             )
+#         )
+#         used_goals.add(goal)
+
+#     candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+#     return candidates
+
 def rank_viewpoints(
     projection: GridProjection,
     tree: DijkstraTree,
@@ -465,8 +578,10 @@ def rank_viewpoints(
     visited_angles: Iterable[float],
     visited_positions: Iterable[np.ndarray],
     config: PlannerConfig,
+    hull_vertices_xy: np.ndarray | None = None,
+    semantic_points: np.ndarray | None = None,
 ) -> list[ViewCandidate]:
-    """Generate and score a reachable ring of next-best-view candidates."""
+    """Generate and score a reachable ring of next-best-view candidates using 2-D sectors."""
 
     target = np.asarray(target_centroid, dtype=np.float64)
     target_radius = max(float(target_radius), 0.05)
@@ -476,6 +591,32 @@ def rank_viewpoints(
     previous_angles = list(visited_angles)
     previous_positions = [np.asarray(position, dtype=np.float64)[:2] for position in visited_positions]
     seen_bins = {_angle_bin(angle, config.viewpoint_count) for angle in previous_angles}
+
+    hull_mask, hull_edge_mask, obstacle_ignore_mask, hull_edge_weights = build_hull_grid_masks(
+        projection,
+        target,
+        target_radius,
+        hull_vertices_xy=hull_vertices_xy,
+        semantic_points=semantic_points,
+        config=config,
+    )
+    total_hull_weight = max(1.0e-6, float(np.sum(hull_edge_weights[hull_edge_mask])))
+
+    observed_hull_edges: set[tuple[int, int]] = set()
+    for prev_pos in previous_positions:
+        prev_hits, _, _ = cast_view_sector(
+            projection,
+            prev_pos,
+            target,
+            target_radius,
+            hull_vertices_xy,
+            hull_mask,
+            hull_edge_mask,
+            obstacle_ignore_mask,
+            config,
+        )
+        observed_hull_edges.update(prev_hits)
+
     candidates: list[ViewCandidate] = []
     used_goals: set[tuple[int, int]] = set()
 
@@ -495,6 +636,29 @@ def rank_viewpoints(
         ):
             continue
 
+        hit_edges, sector_clear_fraction, known_los_fraction = cast_view_sector(
+            projection,
+            actual_world,
+            target,
+            target_radius,
+            hull_vertices_xy,
+            hull_mask,
+            hull_edge_mask,
+            obstacle_ignore_mask,
+            config,
+        )
+        if sector_clear_fraction < config.viewpoint_min_visible_fraction or not hit_edges:
+            continue
+
+        unseen_edges = hit_edges - observed_hull_edges
+        if unseen_edges:
+            ux = [cell[0] for cell in unseen_edges]
+            uy = [cell[1] for cell in unseen_edges]
+            unseen_weight = float(np.sum(hull_edge_weights[ux, uy]))
+        else:
+            unseen_weight = 0.0
+        hull_coverage_gain = unseen_weight / total_hull_weight
+
         actual_angle = math.atan2(actual_world[1] - target[1], actual_world[0] - target[0])
         if previous_angles:
             nearest_angle = min(circular_distance(actual_angle, angle) for angle in previous_angles)
@@ -503,21 +667,6 @@ def rank_viewpoints(
             novelty = 1.0
         unvisited_bin = float(_angle_bin(actual_angle, config.viewpoint_count) not in seen_bins)
 
-        line = _grid_line(goal, projection.world_to_grid(target[:2]))
-        if line.size == 0:
-            continue
-        line_world = projection.origin_xy + (line + 0.5) * projection.resolution
-        distance_to_target = np.linalg.norm(line_world - target[None, :2], axis=1)
-        approach_line = line[distance_to_target > target_radius + 0.10]
-        if approach_line.size:
-            line_occupied = projection.occupied[approach_line[:, 0], approach_line[:, 1]]
-            if np.any(line_occupied):
-                continue
-            line_known = projection.known[approach_line[:, 0], approach_line[:, 1]]
-            known_los_fraction = float(np.mean(line_known))
-        else:
-            known_los_fraction = 1.0
-
         path_grid = tree.path_to(goal)
         if path_grid is None:
             continue
@@ -525,10 +674,11 @@ def rank_viewpoints(
         clearance = float(projection.clearance[goal])
         normalized_clearance = min(1.0, clearance / max(config.robot_radius + config.safety_margin, 1.0e-6))
         score = (
-            config.viewpoint_novelty_weight * novelty
+            config.viewpoint_hull_coverage_weight * hull_coverage_gain
+            + config.viewpoint_novelty_weight * novelty
             + config.viewpoint_bin_weight * unvisited_bin
             + config.viewpoint_clearance_weight * normalized_clearance
-            + config.viewpoint_known_los_weight * known_los_fraction
+            + config.viewpoint_known_los_weight * known_los_fraction * sector_clear_fraction
             - config.viewpoint_travel_weight * path_length
         )
         base = _make_path_plan(projection, tree, goal, path_grid, score)
@@ -540,13 +690,14 @@ def rank_viewpoints(
                 clearance=clearance,
                 known_los_fraction=known_los_fraction,
                 desired_world=desired_world,
+                hull_coverage_gain=hull_coverage_gain,
+                sector_clear_fraction=sector_clear_fraction,
             )
         )
         used_goals.add(goal)
 
     candidates.sort(key=lambda candidate: candidate.score, reverse=True)
     return candidates
-
 
 def circular_distance(first: float, second: float) -> float:
     """Return the unsigned shortest distance between two angles."""
@@ -633,15 +784,223 @@ def _snap_reachable_goal(
 
 
 def _grid_line(start: tuple[int, int], end: tuple[int, int]) -> np.ndarray:
-    """Integer supercover-like sampling between two grid cells."""
+    # """Integer supercover-like sampling between two grid cells."""
+
+    # delta = max(abs(end[0] - start[0]), abs(end[1] - start[1]))
+    # if delta == 0:
+    #     return np.asarray([start], dtype=np.int32)
+    # x = np.rint(np.linspace(start[0], end[0], delta + 1)).astype(np.int32)
+    # y = np.rint(np.linspace(start[1], end[1], delta + 1)).astype(np.int32)
+    # return np.unique(np.stack((x, y), axis=1), axis=0)
+
+    """Ordered 8-connected ray sampling from start to end."""
 
     delta = max(abs(end[0] - start[0]), abs(end[1] - start[1]))
     if delta == 0:
         return np.asarray([start], dtype=np.int32)
     x = np.rint(np.linspace(start[0], end[0], delta + 1)).astype(np.int32)
     y = np.rint(np.linspace(start[1], end[1], delta + 1)).astype(np.int32)
-    return np.unique(np.stack((x, y), axis=1), axis=0)
+    cells = np.stack((x, y), axis=1)
+    # Preserve start -> end order while removing consecutive duplicates.
+    keep = np.ones(cells.shape[0], dtype=bool)
+    keep[1:] = np.any(cells[1:] != cells[:-1], axis=1)
+    return cells[keep]
 
+def build_hull_grid_masks(
+    projection: GridProjection,
+    target_centroid: np.ndarray,
+    target_radius: float,
+    hull_vertices_xy: np.ndarray | None = None,
+    semantic_points: np.ndarray | None = None,
+    config: PlannerConfig | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Rasterize the 2-D target convex hull onto the navigation grid.
+
+    Returns:
+        hull_mask: Filled 2-D convex hull boolean mask.
+        hull_edge_mask: 4-connected boundary cells of the convex hull.
+        obstacle_ignore_mask: Slightly dilated hull mask so target self-occupancy
+            does not count as an external obstacle during sector raycasting.
+    """
+
+    shape = projection.traversable.shape
+    hull_mask = np.zeros(shape, dtype=bool)
+
+    if hull_vertices_xy is not None and hull_vertices_xy.shape[0] >= 3:
+        grid_verts = [projection.world_to_grid(v) for v in hull_vertices_xy]
+        for idx in range(len(grid_verts)):
+            p0 = grid_verts[idx]
+            p1 = grid_verts[(idx + 1) % len(grid_verts)]
+            edge = _grid_line(p0, p1)
+            valid = (
+                (edge[:, 0] >= 0)
+                & (edge[:, 0] < shape[0])
+                & (edge[:, 1] >= 0)
+                & (edge[:, 1] < shape[1])
+            )
+            edge = edge[valid]
+            hull_mask[edge[:, 0], edge[:, 1]] = True
+        hull_mask = ndimage.binary_fill_holes(hull_mask)
+
+    if not np.any(hull_mask):
+        center_grid = projection.world_to_grid(target_centroid[:2])
+        radius_cells = max(1, int(math.ceil(max(target_radius, projection.resolution) / projection.resolution)))
+        x0, y0 = center_grid
+        xs = np.arange(max(0, x0 - radius_cells), min(shape[0], x0 + radius_cells + 1))
+        ys = np.arange(max(0, y0 - radius_cells), min(shape[1], y0 + radius_cells + 1))
+        if xs.size and ys.size:
+            xx, yy = np.meshgrid(xs, ys, indexing="ij")
+            hull_mask[xx, yy] = (xx - x0) ** 2 + (yy - y0) ** 2 <= radius_cells**2
+
+    eroded = ndimage.binary_erosion(hull_mask, structure=np.ones((3, 3), dtype=bool))
+    hull_edge_mask = hull_mask & ~eroded
+
+    ignore_cells = max(1, int(math.ceil(0.12 / projection.resolution)))
+    obstacle_ignore_mask = ndimage.binary_dilation(
+        hull_mask,
+        structure=np.ones((2 * ignore_cells + 1, 2 * ignore_cells + 1), dtype=bool),
+    )
+
+    hull_edge_weights = np.zeros(shape, dtype=np.float64)
+    if semantic_points is None or semantic_points.shape[0] == 0 or not np.any(hull_edge_mask):
+        hull_edge_weights[hull_edge_mask] = 1.0
+        return hull_mask, hull_edge_mask, obstacle_ignore_mask, hull_edge_weights
+
+    # Bin 3-D semantic points into 2-D grid columns to measure Z-span and voxel density.
+    gx = np.floor((semantic_points[:, 0] - projection.origin_xy[0]) / projection.resolution).astype(np.int64)
+    gy = np.floor((semantic_points[:, 1] - projection.origin_xy[1]) / projection.resolution).astype(np.int64)
+    in_grid = (gx >= 0) & (gx < shape[0]) & (gy >= 0) & (gy < shape[1])
+    gx, gy, z = gx[in_grid], gy[in_grid], semantic_points[in_grid, 2]
+
+    if gx.size == 0:
+        hull_edge_weights[hull_edge_mask] = 1.0
+        return hull_mask, hull_edge_mask, obstacle_ignore_mask, hull_edge_weights
+
+    density_grid = np.zeros(shape, dtype=np.float64)
+    z_min_grid = np.full(shape, np.inf, dtype=np.float64)
+    z_max_grid = np.full(shape, -np.inf, dtype=np.float64)
+
+    np.add.at(density_grid, (gx, gy), 1.0)
+    np.minimum.at(z_min_grid, (gx, gy), z)
+    np.maximum.at(z_max_grid, (gx, gy), z)
+
+    occupied_cols = density_grid > 0
+    z_span_grid = np.zeros(shape, dtype=np.float64)
+    z_span_grid[occupied_cols] = (
+        z_max_grid[occupied_cols] - z_min_grid[occupied_cols] + projection.resolution
+    )
+
+    # Normalize by 95th percentile so single-column outliers do not compress the scale.
+    max_span = max(float(np.percentile(z_span_grid[occupied_cols], 95.0)), projection.resolution)
+    log_density = np.log1p(density_grid)
+    max_density = max(float(np.percentile(log_density[occupied_cols], 95.0)), 1.0e-6)
+
+    norm_span = np.clip(z_span_grid / max_span, 0.0, 1.0)
+    norm_density = np.clip(log_density / max_density, 0.0, 1.0)
+
+    # Map each hull boundary cell to its nearest occupied 3-D voxel column.
+    dist_cells, nearest_idx = ndimage.distance_transform_edt(
+        ~occupied_cols, return_distances=True, return_indices=True
+    )
+    dist_m = dist_cells * projection.resolution
+    nearest_span = norm_span[nearest_idx[0], nearest_idx[1]]
+    nearest_density = norm_density[nearest_idx[0], nearest_idx[1]]
+
+    base_w = 0.25 if config is None else config.hull_base_weight
+    height_w = 0.55 if config is None else config.hull_height_weight
+    density_w = 0.45 if config is None else config.hull_density_weight
+    decay_m = 0.20 if config is None else max(config.hull_proximity_decay, 1.0e-3)
+
+    proximity = np.exp(-dist_m / decay_m)
+    cell_weights = base_w + proximity * (height_w * nearest_span + density_w * nearest_density)
+    hull_edge_weights[hull_edge_mask] = cell_weights[hull_edge_mask]
+
+    return hull_mask, hull_edge_mask, obstacle_ignore_mask, hull_edge_weights
+
+
+def cast_view_sector(
+    projection: GridProjection,
+    origin_world: np.ndarray,
+    target_centroid: np.ndarray,
+    target_radius: float,
+    hull_vertices_xy: np.ndarray | None,
+    hull_mask: np.ndarray,
+    hull_edge_mask: np.ndarray,
+    obstacle_ignore_mask: np.ndarray,
+    config: PlannerConfig,
+) -> tuple[set[tuple[int, int]], float, float]:
+    """Cast a conservative sector of rays from origin_world to the 2-D convex hull edges.
+
+    Returns:
+        hit_edges: Set of (gx, gy) hull edge cells hit by unoccluded sector rays.
+        sector_clear_fraction: Fraction of rays that reached the hull without hitting obstacles.
+        known_los_fraction: Fraction of traversed approach cells that are known in the map.
+    """
+
+    origin_xy = np.asarray(origin_world, dtype=np.float64)[:2]
+    center_xy = np.asarray(target_centroid, dtype=np.float64)[:2]
+    start_grid = projection.world_to_grid(origin_xy)
+    if not projection.in_bounds(start_grid):
+        return set(), 0.0, 0.0
+
+    center_angle = math.atan2(center_xy[1] - origin_xy[1], center_xy[0] - origin_xy[0])
+    dist_to_center = float(np.linalg.norm(center_xy - origin_xy))
+    half_fov = 0.5 * config.viewpoint_sector_fov
+
+    if hull_vertices_xy is not None and hull_vertices_xy.shape[0] >= 2:
+        rel_angles = [
+            wrap_angle(math.atan2(v[1] - origin_xy[1], v[0] - origin_xy[0]) - center_angle)
+            for v in hull_vertices_xy
+        ]
+        min_rel = max(-half_fov, min(rel_angles))
+        max_rel = min(half_fov, max(rel_angles))
+        if max_rel - min_rel < 1.0e-3:
+            angular_half = min(half_fov, math.atan2(max(target_radius, projection.resolution), max(dist_to_center, 0.1)))
+            min_rel, max_rel = -angular_half, angular_half
+    else:
+        angular_half = min(half_fov, math.atan2(max(target_radius, projection.resolution), max(dist_to_center, 0.1)))
+        min_rel, max_rel = -angular_half, angular_half
+
+    ray_count = max(3, int(config.viewpoint_sector_rays))
+    ray_angles = center_angle + np.linspace(min_rel, max_rel, ray_count)
+    max_ray_length = dist_to_center + target_radius + 0.25
+
+    hit_edges: set[tuple[int, int]] = set()
+    clear_rays = 0
+    known_Approach_cells = 0
+    total_approach_cells = 0
+
+    for angle in ray_angles:
+        end_world = origin_xy + max_ray_length * np.asarray([math.cos(angle), math.sin(angle)])
+        end_grid = projection.world_to_grid(end_world)
+        ray = _grid_line(start_grid, end_grid)
+
+        blocked = False
+        for gx, gy in ray:
+            cell = (int(gx), int(gy))
+            if not projection.in_bounds(cell):
+                blocked = True
+                break
+            if hull_mask[cell]:
+                # First entry into the filled hull lands on hull_edge_mask.
+                if hull_edge_mask[cell]:
+                    hit_edges.add(cell)
+                break
+            if not obstacle_ignore_mask[cell] and projection.occupied[cell]:
+                blocked = True
+                break
+            total_approach_cells += 1
+            if projection.known[cell]:
+                known_Approach_cells += 1
+
+        if not blocked:
+            clear_rays += 1
+
+    sector_clear_fraction = float(clear_rays) / float(ray_count)
+    known_los_fraction = (
+        float(known_Approach_cells) / float(total_approach_cells) if total_approach_cells > 0 else 1.0
+    )
+    return hit_edges, sector_clear_fraction, known_los_fraction
 
 def _angle_bin(angle: float, count: int) -> int:
     normalized = (wrap_angle(angle) + math.pi) / (2.0 * math.pi)

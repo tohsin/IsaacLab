@@ -458,6 +458,8 @@ class FrontierNBVController:
             self.target.view_angles,
             self.target.view_positions,
             self.planner_config,
+            hull_vertices_xy=self.target.hull_vertices_xy,
+            semantic_points=self.target.points,
         )
         self.last_view_candidates = candidates
         if not candidates:
@@ -468,8 +470,9 @@ class FrontierNBVController:
         self._install_plan(selected, "viewpoint")
         print(
             f"[NBV] goal=({selected.goal_world[0]:.2f}, {selected.goal_world[1]:.2f}) "
-            f"score={selected.score:.2f} novelty={selected.novelty:.2f} "
-            f"path={selected.path_length:.2f} m candidates={len(candidates)}"
+            f"score={selected.score:.2f} hull_gain={selected.hull_coverage_gain:.2f} "
+            f"novelty={selected.novelty:.2f} path={selected.path_length:.2f} m "
+            f"candidates={len(candidates)}"
         )
         return True
 
@@ -495,6 +498,8 @@ class FrontierNBVController:
                 clearance=float(projection.clearance[replanned.goal_grid]),
                 known_los_fraction=self.plan.known_los_fraction,
                 desired_world=self.plan.desired_world,
+                hull_coverage_gain=self.plan.hull_coverage_gain,
+                sector_clear_fraction=self.plan.sector_clear_fraction,
             )
         self._install_plan(replanned, self.phase)
         return True
@@ -641,11 +646,15 @@ class FrontierNBVController:
             position = self._robot_position()
             bearing = math.atan2(centroid[1] - position[1], centroid[0] - position[0])
             desired_pan = wrap_angle(bearing - self._robot_yaw())
+            if self.phase == "dwell":
+                desired_pan = wrap_angle(desired_pan + 0.55 * math.sin(0.35 * self.step_count))
             joint_positions = self.env.robot.data.joint_pos[0, self.env._ptz_joint_indices]
             pan_position = float(joint_positions[0].item())
             camera_height = float(self.env._ptz_camera.data.pos_w[0, 2].item())
             horizontal_distance = float(np.linalg.norm(centroid[:2] - position[:2]))
             desired_tilt = -math.atan2(centroid[2] - camera_height, max(horizontal_distance, 1.0e-4))
+            if self.phase == "dwell":
+                desired_tilt += 0.06 * math.sin(0.23 * self.step_count)
             tilt_position = float(joint_positions[1].item())
             return (
                 float(np.clip(0.7 * wrap_angle(desired_pan - pan_position), -0.8, 0.8)),
@@ -688,6 +697,7 @@ class FrontierNBVController:
         self._update_motion_statistics()
         self._update_shield_statistics()
         mask_error = self._semantic_observation()
+        # Set target lock by checking conseequituve detections and min pixel count
         newly_confirmed_prior = (
             self.consecutive_detections >= self.args.semantic_confirmations
             and self.target.voxel_count >= self.args.semantic_min_pixels
@@ -734,6 +744,7 @@ class FrontierNBVController:
                 self.completed_viewpoints += 1
                 self.plan = None
                 self.phase = "viewpoint"
+        #Bootstrap spin in place at max speed
         elif not self.target_locked and self.step_count < self.args.bootstrap_steps:
             self.phase = "bootstrap"
             angular_action = float(np.clip(self.args.bootstrap_turn_action, -1.0, 1.0))
